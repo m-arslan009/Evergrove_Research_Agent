@@ -1,0 +1,41 @@
+[project]
+name = "evergrove-research-agent"
+version = "0.1.0"
+description = "Before-focus research agent for Evergrove: turns a vague task into a validated, source-grounded focus preparation."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# Day 1 runtime dependencies only. Everything else in the plan's stack table
+# (trafilatura, pypdf, mcp, search backends) arrives on the day that needs it.
+dependencies = [
+    "pydantic>=2.11,<3",       # schemas + structured-output JSON Schema (plan 6, 17)
+    "pydantic-settings>=2.8,<3", # config.py reads .env (plan 21, feature 1)
+    "httpx>=0.28,<1",          # the only HTTP client: Ollama + Google AI Studio (plan 6)
+]
+
+[project.scripts]
+evergrove-agent = "evergrove_agent.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.25,<2",
+    "respx>=0.22,<1",          # mocks httpx so provider tests run with no model (plan 29)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evergrove_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# The default run is offline and model-free (plan 29). `-m live` opts in.
+addopts = "-m 'not live' --strict-markers"
+markers = [
+    "live: requires a running Ollama instance or a hosted API key; excluded by default",
+]
