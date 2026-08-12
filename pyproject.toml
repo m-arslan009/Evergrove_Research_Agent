@@ -22,6 +22,7 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.25,<2",
     "respx>=0.22,<1",          # mocks httpx so provider tests run with no model (plan 29)
+    "ruff>=0.14,<1",           # lint + format; the pre-push gate runs both
 ]
 
 [build-system]
@@ -39,3 +40,11 @@ addopts = "-m 'not live' --strict-markers"
 markers = [
     "live: requires a running Ollama instance or a hosted API key; excluded by default",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88   # matches how the codebase is already written; ruff's default
+
+[tool.ruff.lint]
+# Ruff's defaults: pycodestyle errors, Pyflakes. Real mistakes, not style opinions.
+select = ["E4", "E7", "E9", "F"]

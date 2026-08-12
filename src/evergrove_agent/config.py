@@ -69,10 +69,12 @@ class Settings(BaseSettings):
 
     # --- Hosted model runtime (Google AI Studio, free tier, opt-in) --------------------
     hosted_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.6-flash",
         description=(
             "Google AI Studio model id. Confirm the exact id against your own AI Studio "
-            "console before relying on it — free-tier model ids change."
+            "console before relying on it — free-tier model ids change. The previous "
+            "default, gemini-2.5-flash, now 404s for newly issued keys: ListModels still "
+            "advertises it, but generateContent answers 'no longer available to new users'."
         ),
     )
     hosted_api_base: str = Field(
