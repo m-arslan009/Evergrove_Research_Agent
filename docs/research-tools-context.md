@@ -163,20 +163,34 @@ contents are cheap to change, the classification *values* are not · the output 
 
 ---
 
-### S5 — SQLite and the source cache · **pending**
+### S5 — SQLite and the source cache · **partially complete** (base layer done, cache pending)
 
-*Inspect first:* `config.py` (`db_path`, `cache_ttl_days`)
-*Only if needed:* `tests/conftest.py`
+*Inspect first:* `memory/db.py`, `config.py` (`db_path`, `cache_ttl_days`)
+*Only if needed:* `tests/unit/test_db.py`, `tests/conftest.py`
 
-**Expected output:** `memory/db.py` (connection + schema creation) and the `source_cache` table
-with its read/write helpers. This subtask creates the cache; nothing wires it into a hook yet.
+**Provides (base layer, done):** re-exported from `memory/__init__.py` —
+`connect(db_path=None)`, `initialize_schema(conn)`, `transaction(conn)` (a context manager
+yielding a cursor), `open_database(db_path=None)` (connect → initialise → close), plus
+`SCHEMA_STATEMENTS` and `SCHEMA_VERSION`. `connect` falls back to `DB_PATH` from config, creates
+the parent directory, sets `row_factory = sqlite3.Row` and the pragmas `foreign_keys=ON`,
+`journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. The only table so far is
+`schema_meta(key, value)`, holding `schema_version`.
 
-**Contracts:** stdlib `sqlite3`, no ORM · one SQLite file for everything (cache, later memory,
-budget and traces) · entries expire after `CACHE_TTL_DAYS` · a cache hit must be reportable as
-`from_cache=true`.
+**Still to do:** the `source_cache` table and its read/write helpers, with `CACHE_TTL_DAYS`
+expiry and a `from_cache=true`-reportable hit. Nothing wires it into a hook yet.
 
-**Must not use or change:** no Redis, no ORM, no second database file · tests must not write to
-the real `DB_PATH` — point it at a temporary path.
+**Decisions:** **`db.py` owns all DDL**, in `SCHEMA_STATEMENTS`; feature modules own only their
+queries — `cache.py` needs `connect`, so `db.py` importing it back would be a cycle and creation
+order would follow import order. Adding a table later is appending an `IF NOT EXISTS` statement
+to that tuple; the layer itself does not change · `initialize_schema` is idempotent and
+non-destructive, cheap enough to run on every open, which is why `open_database` does · writes
+that span statements go through `transaction`, not `with connection:` — the latter does not wrap
+DDL and leaves the cursor to the caller · no migration runner: `SCHEMA_VERSION` is a marker for
+whoever first needs to change an existing table's shape.
+
+**Must not use or change:** no Redis, no ORM, no second database file · `db.py` stays free of
+tools, models, HTTP and search backends (stdlib + `config` only) · tests must not write to the
+real `DB_PATH` — point it at a temporary path.
 
 ---
 

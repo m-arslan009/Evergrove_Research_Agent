@@ -300,3 +300,22 @@ small static authority map. Keep one shared loader/classifier that both source n
 later search ranking reuse. Do not duplicate the map. Keep URL canonicalization conservative, and
 treat www. equivalence only during authority-domain lookup rather than rewriting every canonical
 URL.
+
+---
+
+`Title`: SQLite base layer before any cache
+
+`User prompt`: Implement the next Research Tools capability subtask: SQLite Base Layer only.
+Implement a minimal reusable SQLite layer that provides: database path from existing
+configuration; connection creation/cleanup; schema initialization mechanism; safe
+transaction/commit/rollback handling where needed; reusable helpers only when they remove real
+duplication. Use Python's stdlib `sqlite3`; no ORM. Keep the layer independent of agents, LLMs,
+HTTP, search providers, and business logic. Do not implement `source_cache`, `search_cache`,
+search budgets, memory, or tracing yet. Reuse existing config instead of hardcoding paths. Schema
+initialization must be idempotent and safe to run repeatedly. Keep SQL/schema ownership clear so
+later tables can be added without redesigning the database layer. Avoid unnecessary
+repository/database abstractions. Add short descriptive responsibility comments/docstrings for new
+files and non-obvious functions only. Add only minimum high-value offline tests, such as database
+initialization, repeat initialization, and basic connection/transaction behavior if not already
+naturally covered. Do not run Ollama, Gemini, SerpAPI, live HTTP, or unrelated/full test suites.
+Update the Research Tools capability context file. Do not implement caching or the next subtask.
