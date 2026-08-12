@@ -235,3 +235,68 @@ implementation, explain in non-technical and technical form what changed, why th
 implementation was chosen, files/functions affected, tests performed, remaining limitations,
 completion status, and the next subtask. Do not implement the next subtask. Do not start
 implementation unless explicitly told to.
+
+---
+
+`Title`: Capability context file as the default starting point for Research Tools subtasks
+
+`User prompt`: Create a lightweight capability context file for the current **Research Tools**
+capability, e.g. `docs/research-tools-context.md`, and use it as the default starting point for
+all related subtasks. The file should be concise and contain: capability purpose and scope;
+current feature branch; relevant folders/files; files/folders that should **not** be inspected by
+default; ordered subtasks and their dependencies; for each subtask: status
+(pending / in progress / complete), **inspect first** files, **inspect only if needed** files,
+expected responsibility/output, important dependencies/contracts, what must not be used or
+changed; important implementation decisions already made; testing/resource rules specific to this
+capability. Rules for using this file: read this context file before every Research Tools
+subtask; do not scan the whole repository; inspect only the current subtask's `inspect first`
+files initially; use targeted search to locate symbols/references when needed; expand to
+`inspect only if needed` files only when the initial context is insufficient; do not open
+unrelated modules just for general understanding; treat the context file as a navigation map, not
+as a requirement to read every file mentioned; update the relevant subtask section after
+implementation with status, files changed, public interfaces, and important decisions; keep the
+file short — do not duplicate the full architecture document or implementation details that
+already live in code; use meaningful capability names, not `Day 2` naming. Before creating it,
+inspect only enough of the current Research Tools structure to accurately map the relevant files.
+Do not implement any new feature while creating this context file.
+
+---
+
+`Title`: Source / URL normalization subtask (S4)
+
+`User prompt`: Implement the next Research Tools capability subtask: Source / URL Normalization
+only. First read the Research Tools capability context file and inspect only the files listed for
+this subtask. Do not scan the whole repository. Expand context only through targeted search if
+required. Before coding, briefly explain in both non-technical and technical form: what source
+normalization solves; how it fits into search/fetching later; which existing contracts/config can
+be reused; the proposed minimal implementation. Required behavior: raw sources → URL
+canonicalization → deduplication → domain classification → deterministic authority ranking →
+normalized sources. Normalize URLs consistently, including sensible handling of host casing,
+fragments, trailing slashes, and tracking parameters such as `utm_*`. Detect duplicate URLs after
+normalization and keep one deterministic result. Classify domains using a small maintainable
+authority mapping such as `official`, `standards`, `primary`, `secondary`, or `unknown`, following
+existing project schemas if already defined. Prefer configuration/data files such as
+`domains.yaml` only if they fit the current structure; do not create unnecessary abstractions.
+Support deterministic ranking so official/authoritative sources can outrank weaker secondary
+sources later. Preserve useful source metadata such as title/snippet/backend where existing
+schemas require it. No LLM, embeddings, SerpAPI, live HTTP, SQLite, or external services. Reuse
+existing schemas/contracts rather than redesigning them. Add short descriptive responsibility
+comments/docstrings for new files and non-obvious functions only; avoid excessive comments. Add
+only minimum high-value tests: canonicalization, duplicate collapse, authority classification, and
+deterministic ranking. Prefer parameterization over many repetitive tests. Use focused offline
+tests only. Do not run Ollama, Gemini, SerpAPI, live HTTP, or unrelated/full test suites. After
+implementation, explain in both non-technical and technical form: what changed; files/functions
+added or modified; normalization/ranking flow; tests added and why; test results; any limitations;
+status: subtask complete / partially complete / blocked; next dependency-first subtask. Update the
+Research Tools capability context file with the completed status, relevant files, public
+interfaces, and important decisions. Do not start implementation unless user told.
+
+---
+
+`Title`: JSON authority map, one shared classifier, conservative canonicalization
+
+`User prompt`: Use domains.json instead of domains.yaml to avoid introducing PyYAML solely for a
+small static authority map. Keep one shared loader/classifier that both source normalization and
+later search ranking reuse. Do not duplicate the map. Keep URL canonicalization conservative, and
+treat www. equivalence only during authority-domain lookup rather than rewriting every canonical
+URL.

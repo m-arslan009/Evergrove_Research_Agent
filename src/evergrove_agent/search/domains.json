@@ -1,0 +1,77 @@
+{
+  "_comment": "The project's authority map, grouped by class so the file documents itself (JSON has no comments). Each entry is a domain suffix: it matches that host and any subdomain of it. Longest match wins, so 'nist.gov' beats the bare 'gov' rule. Contents are cheap to change; the four class names are not - they are SourceAuthority, which the final report already uses.",
+
+  "official": [
+    "python.org",
+    "postgresql.org",
+    "developer.mozilla.org",
+    "nodejs.org",
+    "react.dev",
+    "kubernetes.io",
+    "docker.com",
+    "go.dev",
+    "rust-lang.org",
+    "djangoproject.com",
+    "fastapi.tiangolo.com",
+    "typescriptlang.org",
+    "learn.microsoft.com",
+    "cloud.google.com",
+    "docs.aws.amazon.com",
+    "git-scm.com",
+    "sqlite.org",
+    "nginx.org",
+    "redis.io"
+  ],
+
+  "standards": [
+    "w3.org",
+    "whatwg.org",
+    "ietf.org",
+    "rfc-editor.org",
+    "iso.org",
+    "ecma-international.org",
+    "unicode.org",
+    "iana.org",
+    "khronos.org",
+    "opengroup.org",
+    "nist.gov"
+  ],
+
+  "primary": [
+    "arxiv.org",
+    "doi.org",
+    "crossref.org",
+    "openalex.org",
+    "ncbi.nlm.nih.gov",
+    "acm.org",
+    "ieee.org",
+    "nature.com",
+    "science.org",
+    "springer.com",
+    "sciencedirect.com",
+    "jstor.org",
+    "gov",
+    "edu",
+    "ac.uk"
+  ],
+
+  "secondary": [
+    "stackoverflow.com",
+    "stackexchange.com",
+    "wikipedia.org",
+    "medium.com",
+    "substack.com",
+    "dev.to",
+    "hashnode.dev",
+    "github.com",
+    "github.io",
+    "reddit.com",
+    "youtube.com",
+    "quora.com",
+    "geeksforgeeks.org",
+    "w3schools.com",
+    "baeldung.com",
+    "freecodecamp.org",
+    "digitalocean.com"
+  ]
+}
