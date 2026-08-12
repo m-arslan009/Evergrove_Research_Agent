@@ -116,16 +116,17 @@ reasoning is organised, not how many services are deployed.
 
 ## Current status
 
-**Day 1 of 7 complete; Day 2 started.** A task description goes into a model and a
-validated `FocusPreparationReport` comes out, and the tool registry — the single path
-every tool will be called through — now exists with no tools registered in it yet. There
-is no search, no file reading, no memory, no tracing, no MCP server, and no multi-agent
-loop yet.
+**Day 1 of 7 complete; Day 2 in progress.** A task description goes into a model and a
+validated `FocusPreparationReport` comes out; the tool registry — the single path every
+tool will be called through — exists with no tools registered in it yet; and the
+deterministic passage selector that decides how much of a source the model ever sees is
+in place, though nothing calls it until the readers land. There is no search, no file
+reading, no memory, no tracing, no MCP server, and no multi-agent loop yet.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
-| 2 | Deterministic tools: search backends, fetch, document readers, SQLite cache, registry | **In progress** — registry only |
+| 2 | Deterministic tools: search backends, fetch, document readers, SQLite cache, registry | **In progress** — registry and passage selector |
 | 3 | Single research agent — the core loop (`--mode single`) | Not started |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser (`--mode multi`) | Not started |
@@ -144,8 +145,10 @@ src/evergrove_agent/
                        fake_provider.py · prompts/finalise.md
   tools/               base.py (Tool protocol · RunContext · hook signatures) ·
                        registry.py (the only path to a tool; hook lists empty until Day 4)
+  documents/           excerpt.py (deterministic passage selector — keyword overlap only,
+                       no model and no embeddings; readers join it on Day 2)
 tests/unit/            test_schemas.py · test_llm_provider.py · test_config.py ·
-                       test_main.py · test_tool_registry.py
+                       test_main.py · test_tool_registry.py · test_excerpt.py
 ```
 
 ## Prerequisites
@@ -394,10 +397,12 @@ confused. Everything runs offline by default — `FakeProvider` replays scripted
 responses, and the fixture search backend replays recorded results — and the whole suite
 must finish in under 60 seconds at zero cost.
 
-Today: 91 unit tests, running in ~1.2 s, covering the report schema and each of its constraints, the tool
+Today: 100 unit tests, running in ~1.2 s, covering the report schema and each of its constraints, the tool
 result envelope, config defaults and budget overrides, all three providers (via `respx`,
-so no model runs), the Gemini schema translation, the Day 1 round trip, and the tool
-registry (dispatch, unknown tools, invalid arguments, tool failures, hook ordering).
+so no model runs), the Gemini schema translation, the Day 1 round trip, the tool
+registry (dispatch, unknown tools, invalid arguments, tool failures, hook ordering), and
+the passage selector (budget ceiling, relevance, document order, heading context, and the
+pages nothing matches).
 
 > **TODO (Day 7):** the five agent evaluations (`evals/`), integration tests across
 > search → fetch → read, and the Phase 2 requirement audit.
