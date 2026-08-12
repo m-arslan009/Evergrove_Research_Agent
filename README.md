@@ -116,14 +116,16 @@ reasoning is organised, not how many services are deployed.
 
 ## Current status
 
-**Day 1 of 7 complete: foundations only.** A task description goes into a model and a
-validated `FocusPreparationReport` comes out. There is no search, no file reading, no
-tool registry, no memory, no tracing, no MCP server, and no multi-agent loop yet.
+**Day 1 of 7 complete; Day 2 started.** A task description goes into a model and a
+validated `FocusPreparationReport` comes out, and the tool registry — the single path
+every tool will be called through — now exists with no tools registered in it yet. There
+is no search, no file reading, no memory, no tracing, no MCP server, and no multi-agent
+loop yet.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
-| 2 | Deterministic tools: search backends, fetch, document readers, SQLite cache, registry | Not started |
+| 2 | Deterministic tools: search backends, fetch, document readers, SQLite cache, registry | **In progress** — registry only |
 | 3 | Single research agent — the core loop (`--mode single`) | Not started |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser (`--mode multi`) | Not started |
@@ -140,8 +142,10 @@ src/evergrove_agent/
   schemas/             task.py · report.py · tools.py   (Pydantic only, imports nothing)
   llm/                 base.py · ollama_provider.py · hosted_provider.py ·
                        fake_provider.py · prompts/finalise.md
+  tools/               base.py (Tool protocol · RunContext · hook signatures) ·
+                       registry.py (the only path to a tool; hook lists empty until Day 4)
 tests/unit/            test_schemas.py · test_llm_provider.py · test_config.py ·
-                       test_main.py
+                       test_main.py · test_tool_registry.py
 ```
 
 ## Prerequisites
@@ -218,15 +222,60 @@ uv run pytest                  # the offline suite: no model, no network, no cos
 uv run pytest -q               # quiet
 uv run pytest tests/unit/test_schemas.py
 uv run pytest -m live          # opt in to tests needing a real model (none pass without Ollama)
+uv run ruff check .            # lint
 uv run python -c "import evergrove_agent, evergrove_agent.main"   # import check
 ```
 
 The default run excludes anything marked `live`, so `uv run pytest` is safe with no
 Ollama, no keys, and no internet.
 
-> **TODO:** there is no linter or type checker configured yet. Ruff and mypy are not in
-> the plan's dependency list for Phase 2; if they are added, this section gets their
-> commands.
+Ruff is configured in `pyproject.toml` with its default rule set (`E4`, `E7`, `E9`, `F`)
+— real errors and unused names, not style opinions — at line length 88. There is still
+no type checker; mypy is not in the Phase 2 dependency list.
+
+## Pre-push quality gate
+
+`.githooks/pre-push` blocks `git push` when the offline checks fail. It is
+version-controlled, so it is reviewed like any other file rather than living untracked
+in `.git/hooks`.
+
+**Enable it once per clone:**
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That one line is the whole setup — it is a local git setting, so every fresh clone needs
+it. On Windows use Git Bash or any shell where `git` is on PATH; the hook is POSIX `sh`
+and Git for Windows supplies the interpreter.
+
+On every push it runs, in order, stopping at the first failure:
+
+| Check | Command | Typical cost |
+| --- | --- | --- |
+| Lint | `uv run ruff check .` | < 1 s |
+| Offline tests | `uv run pytest -q` | ~2 s |
+
+**It never spends quota or tokens.** No Ollama, no Gemini/`GOOGLE_API_KEY`, no SerpAPI,
+no live HTTP. The live exclusion is not re-implemented in the hook: `pyproject.toml`
+already sets `addopts = "-m 'not live' --strict-markers"`, and the hook calls bare
+`pytest` so that single setting stays the only source of truth. Anything needing a real
+model or key must carry `@pytest.mark.live`, which keeps it out of the gate
+automatically.
+
+Pushing a **branch deletion** skips the checks — there is no new code to validate.
+
+When a check fails, the hook names it and aborts before any network traffic:
+
+```
+pre-push blocked: ruff lint failed.
+  Command: uv run ruff check .
+  Fix it and push again, or bypass with `git push --no-verify`.
+```
+
+`git push --no-verify` bypasses the gate. It exists for genuine emergencies; the checks
+take about two seconds, so routine use of it just moves the failure to CI or to someone
+else's clone.
 
 ## Running the agent
 
@@ -345,9 +394,10 @@ confused. Everything runs offline by default — `FakeProvider` replays scripted
 responses, and the fixture search backend replays recorded results — and the whole suite
 must finish in under 60 seconds at zero cost.
 
-Today: 67 unit tests, running in ~1.2 s, covering the report schema and each of its constraints, the tool
+Today: 91 unit tests, running in ~1.2 s, covering the report schema and each of its constraints, the tool
 result envelope, config defaults and budget overrides, all three providers (via `respx`,
-so no model runs), the Gemini schema translation, and the Day 1 round trip.
+so no model runs), the Gemini schema translation, the Day 1 round trip, and the tool
+registry (dispatch, unknown tools, invalid arguments, tool failures, hook ordering).
 
 > **TODO (Day 7):** the five agent evaluations (`evals/`), integration tests across
 > search → fetch → read, and the Phase 2 requirement audit.
