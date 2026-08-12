@@ -34,7 +34,7 @@ branch).
 | Path | Role |
 | --- | --- |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), the tools themselves |
-| `src/evergrove_agent/documents/` | `excerpt.py` today; `pdf.py`, `text.py`, `html.py` land with the readers |
+| `src/evergrove_agent/documents/` | `excerpt.py`, `base.py`, `reader.py` and the format readers `text.py`/`pdf.py`/`docx.py`; `html.py` lands with `fetch_url` |
 | `src/evergrove_agent/search/` | `domains.json`/`domains.py` and `normalize.py` (S4), `base.py` (the backend contract); `fixture.py`, `serpapi.py`, `academic.py` land with S7 |
 | `src/evergrove_agent/memory/` | *not created yet* — `db.py`, `cache.py`, `search_cache.py`, `budget.py` |
 | `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
@@ -110,23 +110,47 @@ and `fetch_url` end in this function.
 
 ---
 
-### S3 — Document readers and `read_document` · **pending**
+### S3 — Document readers and `read_document` · **complete**
 
-*Inspect first:* `tools/base.py`, `schemas/tools.py`, `documents/__init__.py`
-*Only if needed:* `tools/registry.py` (dispatch expectations), `config.py`
-(`allowed_attachment_dir`), `tests/unit/test_excerpt.py` (fixture style)
+*Inspect first:* `documents/reader.py`, `tools/read_document.py`
+*Only if needed:* `documents/base.py`, the format module in question (`text.py`, `pdf.py`,
+`docx.py`), `tests/unit/test_read_document.py`
 
-**Expected output:** `documents/text.py` + `documents/pdf.py`, and one `read_document` tool with
-`ReadDocumentInput{path, mode: outline|full|section, section_hint?}` →
-`ReadDocumentOutput{path, file_type, page_count, outline, text, truncated}`.
+**Provides:** re-exported from `documents/__init__.py` — `read_document_file(path, *,
+settings=None) -> ParsedDocument` (path guard → size guard → suffix routing),
+`select_section(document, hint) -> (OutlineEntry, str) | None`, the readers `read_text` /
+`read_pdf` / `read_docx`, the `READERS` suffix map, and the types `ParsedDocument{text, outline,
+page_count}`, `OutlineEntry{title, level, char_offset, page}`, `Block`, `DocumentReadError`. The
+registered tool is `ReadDocumentTool` in `tools/read_document.py` (`ReadDocumentInput{path,
+mode=full, section_hint?}` → `ReadDocumentOutput{path, file_type, page_count, outline, text,
+truncated}`). Also added: `MAX_DOCUMENT_BYTES` (config + `.env.example`), `ErrorCode.CORRUPT_DOCX`,
+and `pypdf` as a runtime dependency.
 
-**Contracts:** `.txt`/`.md`/`.pdf` only · `path` must resolve inside `ALLOWED_ATTACHMENT_DIR`,
-else `PATH_NOT_ALLOWED` · every failure returns its own existing `ErrorCode`
-(`CORRUPT_PDF`, `ENCRYPTED_PDF`, `NO_TEXT_LAYER`, `EMPTY_FILE`, `UNSUPPORTED_TYPE`, `NOT_FOUND`) ·
-never raise · `full`/`section` end in `select_passages` · no retry — reads are deterministic.
+**Contracts:** `.txt`/`.md`/`.pdf`/`.docx` · `path` resolves inside `ALLOWED_ATTACHMENT_DIR`
+(relative paths are taken as relative to *it*, not the cwd; containment is checked before
+existence, so a probe outside cannot learn what is there) · every failure is its own `ErrorCode`
+(`NOT_FOUND`, `PATH_NOT_ALLOWED`, `UNSUPPORTED_TYPE`, `EMPTY_FILE`, `BUDGET_EXCEEDED` for oversize,
+`CORRUPT_PDF`, `ENCRYPTED_PDF`, `NO_TEXT_LAYER`, `CORRUPT_DOCX`), always `retryable=False` · readers
+raise `DocumentReadError`, the tool converts it once — the same split as `SearchBackendError` ·
+`full`/`section` end in `select_passages`, `outline` returns no body text.
+
+**Decisions:** `.docx` was added to the S3 scope on request · **no `python-docx`** — a `.docx` is a
+zip of XML, so stdlib `zipfile` + `ElementTree` read `word/document.xml` directly, and `outline`
+/`section` need only paragraphs and their Word heading styles; `lxml` is not worth it · the outline
+is never guessed: Markdown ATX/setext headings, Word heading styles, PDF bookmarks — a `.txt`, a
+style-less `.docx` and a bookmark-less PDF all get an empty outline, and `section` then falls back
+to keyword selection over the whole text rather than slicing at an invented boundary · a section
+runs to the next heading at the same or a higher level, so subsections stay inside their parent ·
+`select_section` matches headings by exact/substring/word overlap — heading *lookup*, deliberately
+not passage scoring, which stays `select_passages`' job · `full` with a `section_hint` steers the
+trimming; without one, `select_passages` falls through to its own truncation · `truncated` means
+the returned text is shorter than what was extracted · a PDF page that fails to extract is skipped,
+not fatal; a malformed bookmark tree yields no outline rather than losing the document · bad bytes
+in text/Markdown decode with `errors="replace"`, never raise.
 
 **Must not use or change:** no OCR · no new `ErrorCode` unless a failure genuinely has none · one
-tool with a `mode` enum, not three tools · `pypdf` is the PDF dependency named by the plan.
+tool with a `mode` enum, not three tools · `pypdf` is the PDF dependency named by the plan · S6
+reuses `read_pdf`/`read_document_file` — do not write a second PDF path for `fetch_url`.
 
 ---
 

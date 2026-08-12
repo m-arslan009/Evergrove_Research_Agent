@@ -120,6 +120,12 @@ class Settings(BaseSettings):
         description="How much of a source the model ever sees. Separate from how much "
         "we extract and cache (plan 11).",
     )
+    max_document_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Largest attachment `read_document` will open. A refusal is cheaper "
+        "than parsing a 500 MB file on a 16 GB machine.",
+    )
     total_run_timeout_s: int = Field(
         default=900,
         ge=10,

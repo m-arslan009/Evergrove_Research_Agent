@@ -12,6 +12,8 @@ dependencies = [
     "pydantic>=2.11,<3",       # schemas + structured-output JSON Schema (plan 6, 17)
     "pydantic-settings>=2.8,<3", # config.py reads .env (plan 21, feature 1)
     "httpx>=0.28,<1",          # the only HTTP client: Ollama + Google AI Studio (plan 6)
+    "pypdf>=5.1,<7",           # read_document's PDF reader (plan 6). DOCX needs no
+                               # dependency: stdlib zipfile + ElementTree read its XML.
 ]
 
 [project.scripts]

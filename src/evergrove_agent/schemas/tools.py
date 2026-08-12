@@ -36,6 +36,7 @@ class ErrorCode(str, Enum):
 
     # documents
     CORRUPT_PDF = "CORRUPT_PDF"
+    CORRUPT_DOCX = "CORRUPT_DOCX"
     ENCRYPTED_PDF = "ENCRYPTED_PDF"
     NO_TEXT_LAYER = "NO_TEXT_LAYER"
     EMPTY_FILE = "EMPTY_FILE"

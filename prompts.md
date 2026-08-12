@@ -339,3 +339,26 @@ files/classes/non-obvious functions only. Add only minimal high-value tests if t
 meaningful runtime behavior; do not create tests merely for a `Protocol` or type declaration. Use
 focused offline verification only. No Ollama, Gemini, SerpAPI, or live HTTP. Update the Research
 Tools capability context file. Do not implement search providers or the next subtask.
+
+
+---
+
+`Title`: Document Reader with deterministic .txt/.md/.pdf/.docx reading
+
+`User prompt`: Implement the next Research Tools capability subtask: Document Reader only.
+Implement deterministic reading for .txt .md .pdf .docx. Support `full`, `outline`, and `section`
+modes according to existing schemas. TXT/Markdown should handle normal UTF-8 and malformed
+encoding safely. PDF reading should extract text and useful structure using the planned PDF
+library. DOCX reading should extract paragraphs/headings and preserve enough structure for
+`outline` and `section` modes. Use a lightweight appropriate library only if required; avoid
+unnecessary dependencies. Reuse the existing excerpt selector when relevant instead of duplicating
+text-selection logic. Handle meaningful failures through existing structured `ToolResult` /
+`ToolError` codes rather than uncontrolled exceptions, including file not found, empty file,
+unsupported type, corrupt/encrypted/scanned PDF, corrupt DOCX, and configured size/path limits.
+Do not implement URL fetching, search, caches, agents, memory, or tracing. No Ollama, Gemini,
+SerpAPI, or live HTTP. Follow existing architecture and reuse contracts instead of creating
+duplicate abstractions. Add short descriptive comments/docstrings for new files and non-obvious
+functions only. Add only minimum high-value tests for normal document types and genuinely
+different failure behavior; parameterize similar cases instead of creating excessive tests. Run
+only focused offline tests after the functionality is complete. Update the Research Tools
+capability context file. Do not implement the next subtask.
