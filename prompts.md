@@ -319,3 +319,23 @@ files and non-obvious functions only. Add only minimum high-value offline tests,
 initialization, repeat initialization, and basic connection/transaction behavior if not already
 naturally covered. Do not run Ollama, Gemini, SerpAPI, live HTTP, or unrelated/full test suites.
 Update the Research Tools capability context file. Do not implement caching or the next subtask.
+
+
+---
+
+`Title`: Provider-independent search backend contract
+
+`User prompt`: Implement the next Research Tools capability subtask: SearchBackend Interface only.
+Implement a provider-independent search backend contract that allows future search
+implementations to be swapped without changing callers. Define the shared `SearchBackend`
+abstraction/protocol and only minimal related types if they do not already exist. Reuse existing
+`SearchResult`, source-type enums, schemas, and error contracts where available; do not duplicate
+or redesign them unnecessarily. Keep the interface independent of SerpAPI, HTTP, SQLite, LLMs,
+agents, and specific provider logic. Do not implement SerpAPI, fixture, academic, caching, quota
+logic, or `web_search` yet. Keep the contract small and focused on the behavior every search
+provider genuinely shares. Do not create abstractions for hypothetical future providers unless
+required by the current plan. Add short descriptive responsibility comments/docstrings for new
+files/classes/non-obvious functions only. Add only minimal high-value tests if the contract has
+meaningful runtime behavior; do not create tests merely for a `Protocol` or type declaration. Use
+focused offline verification only. No Ollama, Gemini, SerpAPI, or live HTTP. Update the Research
+Tools capability context file. Do not implement search providers or the next subtask.

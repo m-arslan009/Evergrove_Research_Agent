@@ -35,7 +35,7 @@ branch).
 | --- | --- |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), the tools themselves |
 | `src/evergrove_agent/documents/` | `excerpt.py` today; `pdf.py`, `text.py`, `html.py` land with the readers |
-| `src/evergrove_agent/search/` | *not created yet* — `base.py`, `serpapi.py`, `academic.py`, `fixture.py`, `domains.yaml` |
+| `src/evergrove_agent/search/` | `domains.json`/`domains.py` and `normalize.py` (S4), `base.py` (the backend contract); `fixture.py`, `serpapi.py`, `academic.py` land with S7 |
 | `src/evergrove_agent/memory/` | *not created yet* — `db.py`, `cache.py`, `search_cache.py`, `budget.py` |
 | `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
 | `src/evergrove_agent/config.py` | every budget, path, TTL and backend switch |
@@ -214,17 +214,37 @@ one URL per call · never bypass the registry.
 
 ---
 
-### S7 — `web_search`, backends, search cache and quota guard · **pending**
+### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract done, everything else pending)
 
-*Inspect first:* `tools/base.py`, `schemas/tools.py`, `config.py` (search block),
-`memory/db.py` (from S5)
+*Inspect first:* `search/base.py`, `tools/base.py`, `schemas/tools.py`, `config.py` (search
+block), `memory/db.py` (from S5)
 *Only if needed:* the normalisation tool from S4, `.env.example`
 
-**Expected output:** `WebSearchInput{query 3–200 chars, source_type: docs|technical|academic|general,
-max_results=6}` → `WebSearchOutput{results: [{title, url, snippet, source_backend, domain_class}]}`;
-a `SearchBackend` protocol with `fixture`, `serpapi`, `academic` (OpenAlex/Crossref/arXiv) and
-optional `ddgs` implementations; `search_cache` and `search_budget` tables with the monthly guard;
-`search/domains.yaml`; recorded responses in `fixtures/search/`.
+**Provides (backend contract, done):** re-exported from `search/__init__.py` —
+`SearchBackend` (a `runtime_checkable` Protocol: `name: str` plus
+`async search(query, *, source_type, max_results) -> list[RawSource]`),
+`SearchSourceType = Literal["docs","technical","academic","general"]`, and
+`SearchBackendError(backend, message, *, retryable=True)`.
+
+**Still to do:** the `fixture`, `serpapi`, `academic` (OpenAlex/Crossref/arXiv) and optional
+`ddgs` implementations · the `WebSearchInput`/`WebSearchOutput` models and the `web_search`
+tool · the name→backend resolution from `SEARCH_BACKEND` · the `search_cache` and
+`search_budget` tables with the monthly guard · recorded responses in `fixtures/search/`.
+
+**Expected output:** `WebSearchInput{query 3–200 chars, source_type: SearchSourceType,
+max_results=6}` → `WebSearchOutput{results: [{title, url, snippet, source_backend, domain_class}]}`.
+
+**Contract decisions (settled):** a backend returns **`RawSource`** — S4's existing model, not a
+new `SearchResult` — because `normalize_sources` takes exactly that, so ranking, dedup and
+authority stay out of every provider · a backend **raises `SearchBackendError`** rather than
+returning a `ToolResult`, the same split as `LLMError` and its providers: the failure ladder is
+the tool's control flow, and an empty list must stay distinguishable from a broken backend (a
+query that found nothing succeeded, and is not retried) · `retryable=False` marks what a second
+identical call cannot fix — an exhausted quota, a rejected key — and is what keeps the retry step
+from spending the rest of the budget · `source_type` and `max_results` are keyword-only and have
+**no defaults in the protocol**, so the defaults live once, in `WebSearchInput` · `base.py`
+imports only `typing` and `RawSource`: no config, no httpx, no sqlite3, no registry ·
+`domains.json` (S4) is the ranking map — S7 never adds a `domains.yaml`.
 
 **Contracts:** the search-cache read happens **before** the quota check, so a cached query costs
 neither network nor quota · past `MONTHLY_SEARCH_BUDGET` a live call is refused with
