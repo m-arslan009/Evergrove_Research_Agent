@@ -187,12 +187,12 @@ contents are cheap to change, the classification *values* are not · the output 
 
 ---
 
-### S5 — SQLite and the source cache · **partially complete** (base layer done, cache pending)
+### S5 — SQLite and the source cache · **complete**
 
-*Inspect first:* `memory/db.py`, `config.py` (`db_path`, `cache_ttl_days`)
-*Only if needed:* `tests/unit/test_db.py`, `tests/conftest.py`
+*Inspect first:* `memory/cache.py`, `memory/db.py`, `config.py` (`db_path`, `cache_ttl_days`)
+*Only if needed:* `tests/unit/test_source_cache.py`, `tests/unit/test_db.py`, `tests/conftest.py`
 
-**Provides (base layer, done):** re-exported from `memory/__init__.py` —
+**Provides (base layer):** re-exported from `memory/__init__.py` —
 `connect(db_path=None)`, `initialize_schema(conn)`, `transaction(conn)` (a context manager
 yielding a cursor), `open_database(db_path=None)` (connect → initialise → close), plus
 `SCHEMA_STATEMENTS` and `SCHEMA_VERSION`. `connect` falls back to `DB_PATH` from config, creates
@@ -200,8 +200,30 @@ the parent directory, sets `row_factory = sqlite3.Row` and the pragmas `foreign_
 `journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. The only table so far is
 `schema_meta(key, value)`, holding `schema_version`.
 
-**Still to do:** the `source_cache` table and its read/write helpers, with `CACHE_TTL_DAYS`
-expiry and a `from_cache=true`-reportable hit. Nothing wires it into a hook yet.
+**Provides (source cache):** also re-exported from `memory/__init__.py` — `CachedSource`
+(a frozen dataclass: `url`, `final_url`, `title`, `text`, `content_type`, `fetched_at`,
+`expires_at`), `get_cached_source(connection, url, *, now=None) -> CachedSource | None`
+and `store_cached_source(connection, *, url, text, final_url=None, title="",
+content_type="", ttl_days=None, now=None) -> CachedSource`, all in `memory/cache.py`. The
+`source_cache` table (canonical `url` as primary key) was appended to `SCHEMA_STATEMENTS`;
+`SCHEMA_VERSION` stayed 1 — no existing table changed shape. Nothing wires it into a hook
+yet, and no tool reads it until S6.
+
+**Cache decisions:** the key is `canonicalize_url(url)` from S4, applied on both get and
+store, so the trailing-slash / `utm_*` / uppercase-host / default-port / scheme-less
+variants of one page share one entry (`www.` still does not — S4 keeps it deliberately) ·
+a missing row, an expired row and an uncanonicalizable URL are all one answer, `None`,
+because the caller does the same thing with each · **reads never write**: an expired row is
+left in place and overwritten by the next store, so there is no purge sweep and no write on
+the read path · expiry is compared in Python, not SQL, so the stored ISO-8601 format stays
+inside `cache.py`; timestamps are written timezone-aware in UTC and a naive one parses back
+as UTC · `store` is `INSERT OR REPLACE`, so refreshing an expired page is the same call as
+caching it the first time · `store` raises `ValueError` on an uncanonicalizable URL — the
+caller canonicalises before it fetches, and an invented key would poison the table · `now`
+is the only injected seam (default `datetime.now(UTC)`), which is what makes expiry testable
+without freezing global time · `ttl_days` falls back to `CACHE_TTL_DAYS` at call time, the
+same late-binding as `connect`'s `db_path` · `CachedSource` is a dataclass, not a pydantic
+model: it never crosses a tool boundary, and tool-facing shapes stay in `schemas/`.
 
 **Decisions:** **`db.py` owns all DDL**, in `SCHEMA_STATEMENTS`; feature modules own only their
 queries — `cache.py` needs `connect`, so `db.py` importing it back would be a cycle and creation
@@ -213,14 +235,18 @@ DDL and leaves the cursor to the caller · no migration runner: `SCHEMA_VERSION`
 whoever first needs to change an existing table's shape.
 
 **Must not use or change:** no Redis, no ORM, no second database file · `db.py` stays free of
-tools, models, HTTP and search backends (stdlib + `config` only) · tests must not write to the
-real `DB_PATH` — point it at a temporary path.
+tools, models, HTTP and search backends (stdlib + `config` only) · `cache.py` opens no
+connection of its own — the caller passes one from `connect`/`open_database` · it stays free
+of HTTP, extraction and ranking: S6 fetches and extracts, then hands the result here · no
+generic repository or cache abstraction, and the search cache (S7) gets its own table and
+queries rather than a shared one · tests must not write to the real `DB_PATH` — point it at a
+temporary path.
 
 ---
 
 ### S6 — `fetch_url` · **pending**
 
-*Inspect first:* `tools/base.py`, `schemas/tools.py`, `memory/db.py` (from S5),
+*Inspect first:* `tools/base.py`, `schemas/tools.py`, `memory/cache.py` (from S5),
 `documents/__init__.py`
 *Only if needed:* `documents/pdf.py` (from S3), `tests/unit/test_llm_provider.py` (the `respx`
 pattern), `config.py` (`max_fetch_calls`)

@@ -362,3 +362,21 @@ functions only. Add only minimum high-value tests for normal document types and 
 different failure behavior; parameterize similar cases instead of creating excessive tests. Run
 only focused offline tests after the functionality is complete. Update the Research Tools
 capability context file. Do not implement the next subtask.
+
+---
+
+`Title`: SQLite-backed source cache for fetched content
+
+`User prompt`: Implement the next Research Tools capability subtask: Source Cache only. Implement
+persistent SQLite-backed caching for fetched source content. Reuse the existing SQLite base layer;
+do not create separate DB connection logic. Reuse URL canonicalization so equivalent URLs map to
+the same cache entry where appropriate. Store the useful source fields required by later
+`fetch_url`, such as canonical/final URL, title, extracted text, content type, fetch timestamp, and
+expiry. Support deterministic cache get/set behavior and configured TTL. Expired entries must not
+be returned as valid hits. Keep cache logic independent of HTTP fetching, search, agents, LLMs, and
+tracing. Do not implement `fetch_url`, search cache, budgets, or live requests yet. Avoid
+unnecessary generic repository/cache abstractions. Add short descriptive responsibility
+comments/docstrings for new files and non-obvious functions only. Add only minimum high-value
+tests: miss → store → hit, canonical URL reuse, and expiry behavior. Parameterize where useful. Use
+focused offline tests only. No Ollama, Gemini, SerpAPI, or live HTTP. Update the Research Tools
+capability context file. Do not implement the next subtask.

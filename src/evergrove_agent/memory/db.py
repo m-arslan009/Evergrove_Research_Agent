@@ -29,6 +29,17 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         value TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS source_cache (
+        url          TEXT PRIMARY KEY,
+        final_url    TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        text         TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        fetched_at   TEXT NOT NULL,
+        expires_at   TEXT NOT NULL
+    )
+    """,
     f"""
     INSERT OR IGNORE INTO schema_meta (key, value)
     VALUES ('schema_version', '{SCHEMA_VERSION}')
