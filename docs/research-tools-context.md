@@ -67,7 +67,8 @@ config ─► S5 sqlite cache ────┴─► S6 fetch_url ─┤
 ```
 
 `S3`–`S5` are independent of each other and may be done in any order. `S6` needs `S3`'s PDF
-reader, `S4` and `S5`. `S7` needs `S4` and `S5`. `S8` is last.
+reader, `S4` and `S5`. `S7` needs `S4` and `S5`. `S9` assembles the finished tools into one
+registry and comes before `S8`, which is a thin surface over it. `S8` is last.
 
 ---
 
@@ -87,7 +88,7 @@ duplicate registration raises at wiring time, everything at call time is a `Tool
 
 **Must not change:** the `Tool` protocol or `ToolResult` shape (breaks every tool, the future
 hooks and both future workers) · the registry must stay free of models, HTTP, SQLite and any
-specific tool.
+specific tool — which is why the tools are assembled into it from outside, in `S9`.
 
 ---
 
@@ -460,6 +461,43 @@ nothing else.
 and in `Settings` · never change it to make a test pass · never loop, retry-storm or sweep queries
 against a live backend · the tool's input schema is expensive to change (a future prompt depends
 on it); its backend is free to change.
+
+---
+
+### S9 — Final tool registry wiring · **complete**
+
+*Inspect first:* `tools/wiring.py`
+*Only if needed:* `tests/unit/test_tool_wiring.py`, `tools/registry.py`
+
+**Provides:** `build_tool_registry(settings=None, *, connection=None) -> ToolRegistry` and
+`TOOL_NAMES` in `tools/wiring.py` — the composition root where the finished tools meet the
+registry. Registers all four: `fetch_url`, `normalize_sources`, `read_document`, `web_search`.
+`settings` and `connection` pass straight through to the two cache-using tools; given no
+connection they keep opening their own per call, exactly as before. No new dependency, no
+config value, no change to any tool or to the registry.
+
+**Decisions:** **a fresh registry per call, no module-level singleton** — duplicate names raise
+at wiring time by design, so a shared registry would turn a second build into a spurious
+`ValueError` and leak one caller's tools into another's · **not re-exported from
+`tools/__init__.py`**, which imports only `base` and `registry`: re-exporting would pull
+`httpx`, `sqlite3`, `pypdf` and the search backends into every import of `RunContext`, and
+would close an import cycle · `TOOL_NAMES` is **declared, not derived** — a finished tool that
+is never wired, or a name that drifts from the tool's own `name`, is then a failing assertion
+rather than a capability the agent silently lost · `normalize_sources` is registered like the
+rest so a trace shows what normalisation discarded; which subset is *advertised* to a model is
+the tool-spec layer's call (Day 3), not the registry's · the hook lists are left untouched —
+installing one here would move a concern into the composition root, and they belong to the
+tracing capability.
+
+**Known limitation:** `read_document` takes no `settings`, so the factory's `settings`
+argument does not reach it; it resolves `ALLOWED_ATTACHMENT_DIR` through `get_settings()` when
+it reads. Widening its constructor would change a finished S3 contract for one caller — do
+that only if a real caller needs a per-run attachment directory.
+
+**Must not use or change:** no DI container, no entry-point/plugin discovery, no auto-import
+scanning of `tools/` — the menu is explicit and reviewable · no provider, cache, quota or
+parsing logic in the factory · the factory does not install hooks · S8's CLI calls
+`build_tool_registry`, it does not construct tools.
 
 ---
 

@@ -542,3 +542,31 @@ SEARCH_BACKEND=fixture always stays fixture; when a live backend is configured, 
 SEARCH_BACKEND names — never redirect a query onto a metered backend the user did not configure.
 Truthful fallback cache key: when the ladder falls back to source_type 'general', cache the
 results under 'general', the parameters that actually produced them.
+
+`Title`: Final tool registry wiring
+
+`User prompt`: Implement the next Research Tools subtask: Final Tool Registry Wiring. First read
+docs/research-tools-context.md and inspect only the registry, completed tools, schemas/contracts,
+and existing registration/bootstrap code. Do not scan the whole repo. Before coding, briefly
+explain in non-technical + technical form how completed tools should be exposed through one
+central registry and what minimal wiring you propose. Required behavior: register the completed
+Day 2 tools in the existing ToolRegistry; reuse the existing tool names, schemas,
+ToolResult / ToolError contracts, and registry APIs; ensure normal callers use the registry path
+instead of bypassing it; wire only tools that are actually complete at this point, such as
+read_document, fetch_url, web_search; preserve the existing pre/post hook extension points for
+Day 4 and do not implement logging/tracing hooks yet; keep registration deterministic and prevent
+duplicate tool-name conflicts according to the current registry contract; do not move
+provider/cache/business logic into the registry; do not implement memory, agents, tracing, MCP, or
+new tools. Prefer the smallest composition that fits the existing project. Do not create a new
+dependency-injection/container framework just for wiring. Testing stays offline: add only
+high-value checks that prove expected tools are registered, lookup/call through the registry
+works, duplicate/unknown tool behavior follows existing contracts, and registry calls reach the
+real completed tool boundary without live external services. Use mocks/fixtures where needed. Do
+not call SerpAPI, academic APIs, live websites, Gemini, or Ollama. Update the relevant section in
+docs/research-tools-context.md.
+
+`Title`: Wiring scope and placement decisions
+
+`User prompt`: [Decision on two options offered during planning] Register all four completed
+tools including normalize_sources, and place the factory in a new tools/wiring.py rather than in
+tools/__init__.py.
