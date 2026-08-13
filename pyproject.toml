@@ -40,7 +40,7 @@ asyncio_mode = "auto"
 # The default run is offline and model-free (plan 29). `-m live` opts in.
 addopts = "-m 'not live' --strict-markers"
 markers = [
-    "live: requires a running Ollama instance or a hosted API key; excluded by default",
+    "live: requires a running Ollama instance, a hosted API key, a metered search backend or network access; excluded by default",
 ]
 
 [tool.ruff]

@@ -507,3 +507,38 @@ aliasing unless required by existing tests; HTML extraction design; web_search. 
 tests that prove: the same cached source can produce different excerpts for different excerpt_for
 values; a cache write/read SQLite failure does not make fetch_url fail; the failure is observable
 through logging/warning.
+
+---
+
+`Title`: Implement the `web_search` tool on the existing S7 pieces
+
+`User prompt`: Plan the feature first. Explain the feature, how it is useful in our research
+agent, what tech we are using and why (answered independently), what the alternatives are and why
+they don't fit. After approval, implement web_search. First read
+docs/research-tools-context.md and inspect only the relevant search/cache/backend/normalization/
+tool-contract files; do not scan the whole repo. Decide the exact implementation based on existing
+contracts; do not force a new architecture if the repo already has the right pieces. Required
+behavior: accept the existing search input (query, source_type, result limit); check Search Cache
+first; a cache hit must return immediately with no backend call and no budget usage; use the
+existing backend factory/selection; SEARCH_BACKEND=fixture must stay fully offline and must never
+fall through to live APIs; in live mode route using the existing source intent, e.g. academic →
+AcademicBackend, docs/web/general → SerpAPIBackend; apply the monthly budget guard only to
+quota-consuming live searches; reuse existing source normalization, canonicalization,
+deduplication, authority classification and ranking; cache successful normalized results; return
+failures through the existing ToolResult / ToolError / ErrorCode contracts. Keep responsibilities
+separate: web_search must not reimplement SerpAPI/OpenAlex/Crossref/arXiv parsing, fetch_url,
+agent reasoning, query rewriting, semantic cache matching, memory, or tracing. Testing for this
+subtask must be offline only using fixtures/mocks — high-value tests only for cache hit/miss,
+backend routing, fixture isolation, budget blocking, normalization/dedupe/ranking, and structured
+failures. Do not run live SerpAPI, academic APIs, websites, Gemini, or Ollama yet. Prepare the
+design so live acceptance tests can be added afterwards as a separate marked suite (for example
+@pytest.mark.live) excluded from normal development and pre-push tests.
+
+`Title`: Live-mode backend routing and fallback cache key
+
+`User prompt`: [Decision on two options offered during planning] Academic-only override:
+SEARCH_BACKEND=fixture always stays fixture; when a live backend is configured, source_type
+'academic' is redirected to AcademicBackend, and docs/technical/general use whatever
+SEARCH_BACKEND names — never redirect a query onto a metered backend the user did not configure.
+Truthful fallback cache key: when the ladder falls back to source_type 'general', cache the
+results under 'general', the parameters that actually produced them.

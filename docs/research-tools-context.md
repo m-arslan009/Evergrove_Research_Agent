@@ -306,12 +306,12 @@ bypass the registry · do not add a second PDF path or a second HTML extractor.
 
 ---
 
-### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract, search cache, quota guard and all three backends done; the tool pending)
+### S7 — `web_search`, backends, search cache and quota guard · **complete**
 
-*Inspect first:* `search/base.py`, `tools/base.py`, `schemas/tools.py`, `config.py` (search
-block), `memory/search_cache.py`, `memory/budget.py`, `search/__init__.py` (the factory)
-*Only if needed:* `search/fixture.py`, `search/serpapi.py`, `search/academic.py`, the
-normalisation tool from S4, `.env.example`, `tests/unit/test_search_backends.py`,
+*Inspect first:* `tools/web_search.py`, `search/base.py`, `search/__init__.py` (the factory)
+*Only if needed:* `memory/search_cache.py`, `memory/budget.py`, `config.py` (search block),
+`search/fixture.py`, `search/serpapi.py`, `search/academic.py`, `schemas/tools.py`,
+`.env.example`, `tests/unit/test_web_search.py`, `tests/unit/test_search_backends.py`,
 `tests/unit/test_search_cache.py`, `tests/unit/test_search_budget.py`
 
 **Provides (backend contract, done):** re-exported from `search/__init__.py` —
@@ -397,13 +397,44 @@ are rebuilt from `abstract_inverted_index`, or the model would choose sources by
 `ddgs` is deliberately unimplemented — `build_search_backend` refuses it rather than resolving
 to something that merely looks right.
 
-**Still to do:** the `WebSearchInput`/`WebSearchOutput` models and the `web_search` tool ·
-wiring the cache, then the guard, then the backend, in that order · the optional `ddgs`
-backend · real recorded responses in `fixtures/search/` (S8; the committed one is
-hand-written).
+**Provides (the tool, done):** `WebSearchTool` in `tools/web_search.py`
+(`WebSearchInput{query 3–200 chars, source_type=general, max_results=6}` →
+`WebSearchOutput{results: list[NormalizedSource]}`), constructed as
+`WebSearchTool(settings=None, *, backend=None, connection=None)` — the same injection seams
+`fetch_url` takes. Also the private `_select_backend(source_type, configured)` and
+`_widening(source_type)`. No new config value, no new `ErrorCode`, no new dependency; the
+only other edit was widening `pyproject.toml`'s `live` marker description to name a metered
+search backend and the network.
 
-**Expected output:** `WebSearchInput{query 3–200 chars, source_type: SearchSourceType,
-max_results=6}` → `WebSearchOutput{results: [{title, url, snippet, source_backend, domain_class}]}`.
+Flow: `_select_backend` → `get_cached_search` → (miss) `consumes_quota` /
+`reserve_search_call` → `backend.search` → `store_cached_search` → `normalize_sources`.
+A hit and a fresh search end in the same shaping function, so they return identical output.
+
+**Tool decisions:** **selection is a pure function and the factory is unchanged** —
+`fixture` resolves to `fixture` for *every* source type (an offline run must be provably
+offline, and a routing rule with an exception is not provable); otherwise `academic` intent
+goes to the free `academic` backend, and everything else uses the configured backend
+untouched, so a query is never redirected *onto* a metered backend the user did not choose ·
+the backend name is resolved **before** the cache read, because it is part of the key — a
+recording must never answer a `serpapi` query · **each live attempt reserves its own quota**
+(the ladder is up to three searches at the provider, and there is no refund path) · a budget
+ledger that cannot be read **refuses** the live call as `SEARCH_UNAVAILABLE`, not
+`MONTHLY_BUDGET_EXCEEDED`, which would claim to know something unreadable — the one place a
+`sqlite3.Error` is not degraded to "carry on"; cache read/write failures *are* degraded, and
+logged, exactly as in S6 · a backend is built once per name and reused, so the fixture index
+is read once · the retry fires only on the first rung and only for `retryable=True`; the
+fallback to `general` is one further attempt, and the error reported is the **first** failure
+because it describes the search actually asked for · **fallback results are cached under the
+source type that answered** (`general`), never the one requested — no row may claim a search
+returned what it did not, at the cost of re-running the ladder on a repeat · results are
+trimmed to `max_results` **after** normalisation, since dedup can only shrink the list ·
+`WebSearchOutput.results` is S4's `NormalizedSource`, not a second result model.
+
+**Still to do (S8, not S7):** the optional `ddgs` backend · real recorded responses in
+`fixtures/search/` (the committed one is hand-written) · a `@pytest.mark.live` acceptance
+suite: one real SerpAPI query, recorded into `fixtures/search/` in the same session. The
+design already supports it — the tool takes real `Settings` and a real connection, and the
+marker keeps it out of the default run and `.githooks/pre-push`.
 
 **Contract decisions (settled):** a backend returns **`RawSource`** — S4's existing model, not a
 new `SearchResult` — because `normalize_sources` takes exactly that, so ranking, dedup and
@@ -419,10 +450,11 @@ imports only `typing` and `RawSource`: no config, no httpx, no sqlite3, no regis
 
 **Contracts:** the search-cache read happens **before** the quota check, so a cached query costs
 neither network nor quota · past `MONTHLY_SEARCH_BUDGET` a live call is refused with
-`MONTHLY_BUDGET_EXCEEDED` · failure ladder: cache → one retry with 2 s backoff → fall back to
-`source_type="general"` → optional `ddgs` → `ToolError(SEARCH_UNAVAILABLE)` with an empty list,
-never an exception · results pass through S4 so official docs re-rank above blogs · switching
-backend is a `.env` change and nothing else.
+`MONTHLY_BUDGET_EXCEEDED` · failure ladder as built: cache → one retry with 2 s backoff → fall
+back to `source_type="general"` → `ToolError(SEARCH_UNAVAILABLE)`, never an exception (the
+plan's optional `ddgs` rung is absent because the backend is unimplemented) · results pass
+through S4 so official docs re-rank above blogs · switching backend is a `.env` change and
+nothing else.
 
 **Must not use or change:** `SEARCH_BACKEND=fixture` stays the committed default in `.env.example`
 and in `Settings` · never change it to make a test pass · never loop, retry-storm or sweep queries
