@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -34,36 +35,6 @@ EXPLAIN reports whether the planner chose an index scan.
 """
 
 
-def build_pdf(lines: list[str]) -> bytes:
-    """A one-page PDF with a genuine text layer. Offsets are computed, not guessed."""
-    show = "\n".join(
-        f"BT /F1 12 Tf 72 {720 - 20 * index} Td ({line}) Tj ET"
-        for index, line in enumerate(lines)
-    ).encode()
-    objects = [
-        b"<</Type/Catalog/Pages 2 0 R>>",
-        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
-        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-        b"/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
-        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
-        b"<</Length %d>>stream\n%s\nendstream" % (len(show), show),
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets: list[int] = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += b"%d 0 obj" % number + body + b"endobj\n"
-    xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
-    for offset in offsets:
-        out += b"%010d 00000 n \n" % offset
-    out += b"trailer<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF\n" % (
-        len(objects) + 1,
-        xref,
-    )
-    return bytes(out)
-
-
 def build_docx(paragraphs: list[tuple[str, str | None]]) -> bytes:
     """A minimal DOCX from (text, style) pairs; a style of `None` is body text."""
     body = "".join(
@@ -84,7 +55,11 @@ def build_docx(paragraphs: list[tuple[str, str | None]]) -> bytes:
 
 
 @pytest.fixture
-def attachments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def attachments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_pdf: Callable[[list[str]], bytes],
+) -> Path:
     """`tmp_path` as the allowed attachment directory, holding one file per format."""
     (tmp_path / "guide.md").write_text(MARKDOWN, encoding="utf-8")
     (tmp_path / "notes.txt").write_text(

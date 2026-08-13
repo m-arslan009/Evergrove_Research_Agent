@@ -126,11 +126,32 @@ class Settings(BaseSettings):
         description="How much of a source the model ever sees. Separate from how much "
         "we extract and cache (plan 11).",
     )
+    max_source_text_chars: int = Field(
+        default=200_000,
+        ge=1000,
+        description="Ceiling on the extracted text kept and cached per source. A safety "
+        "bound, not a reading budget: what the cache holds must stay large enough for a "
+        "later, differently-worded question to find different passages in it, so this is "
+        "deliberately far above SOURCE_EXCERPT_CHARS.",
+    )
     max_document_bytes: int = Field(
         default=10 * 1024 * 1024,
         ge=1024,
         description="Largest attachment `read_document` will open. A refusal is cheaper "
         "than parsing a 500 MB file on a 16 GB machine.",
+    )
+    max_fetch_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        description="Largest response body `fetch_url` will download. Deliberately not "
+        "MAX_DOCUMENT_BYTES: a page a stranger's server hands us is not an attachment "
+        "the user chose, and 5 MB is already far larger than any article.",
+    )
+    fetch_timeout_s: int = Field(
+        default=15,
+        ge=1,
+        description="Per-request timeout for `fetch_url`. Separate from SEARCH_TIMEOUT_S "
+        "so a slow page and a slow search backend can be tuned apart.",
     )
     total_run_timeout_s: int = Field(
         default=900,

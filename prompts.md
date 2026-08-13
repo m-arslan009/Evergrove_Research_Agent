@@ -448,3 +448,62 @@ Gemini, or any live HTTP service.
 `Title`: Tests run at push time, not during a session
 
 `User prompt`: Tests should be run when pushing to repo.
+
+---
+
+`Title`: fetch_url implementation
+
+`User prompt`: Implement the next Research Tools subtask: fetch_url. First read
+docs/research-tools-context.md and inspect only the relevant existing files/contracts. Do not scan
+the whole repo. Before coding, briefly explain in non-technical + technical form what fetch_url
+should do and the minimal flow you plan to use. fetch_url receives a known URL and returns clean,
+structured readable content for later agent use. Requirements: reuse existing URL
+normalization/canonicalization; reuse Source Cache, and a valid cache hit must avoid HTTP; fetch
+through the existing HTTP/config setup only on cache miss; handle redirects/final URL correctly;
+extract readable text from HTML using the existing/planned extraction approach; for PDFs reuse the
+existing document/PDF reader and do not duplicate PDF parsing/error handling; reuse the existing
+excerpt selector for long content when appropriate; respect existing timeout, size, excerpt and
+cache limits; cache useful successful results according to the current Source Cache contract;
+return failures through existing ToolResult / ToolError / ErrorCode contracts; handle meaningful
+cases such as invalid URL, timeout/network failure, HTTP errors, unsupported content, empty
+extraction and unreadable PDF. Decide the exact internal flow yourself after inspecting the
+existing code. Prefer minimal composition of existing components over new abstractions. If there
+is a design choice such as what representation to cache or how PDF bytes should reach the document
+reader, choose the approach that best fits current contracts and explain it. Scope: do not
+implement web_search, search routing/providers, agents, LLMs, memory or tracing — fetch_url only
+retrieves a URL already chosen by the caller. Testing: offline only; use mocked HTTP and existing
+fixtures/helpers; add only high-value tests for cache hit, HTML success, PDF path, redirects where
+relevant, major HTTP/network failures and unusable content; avoid duplicate/excessive tests; no
+live websites, SerpAPI, academic APIs, Gemini or Ollama. Update the fetch_url section in
+docs/research-tools-context.md.
+
+---
+
+`Title`: HTML extraction uses the standard library, not trafilatura
+
+`User prompt`: [Design decision, chosen from the options presented] Stdlib now, trafilatura later
+if quality is poor — ship documents/html.py behind one extract_html() entry point, and swap the
+internals to trafilatura in S8 only if real recorded fixtures show the stdlib output is too noisy.
+Add FETCH_TIMEOUT_S and MAX_FETCH_BYTES as their own config settings rather than reusing
+SEARCH_TIMEOUT_S and MAX_DOCUMENT_BYTES.
+
+---
+
+`Title`: Source Cache stores reusable source text, not a question-specific excerpt
+
+`User prompt`: Fix the current fetch_url / Source Cache semantics before moving to web_search.
+Source Cache must store reusable extracted source text, not a question-specific excerpt. If the
+current implementation truncates cached text using the small excerpt/agent-response limit, change
+that behavior. A later request for a different excerpt_for must still be able to select different
+passages from the same cached source. Desired behavior: fetch URL → extract reusable text → store
+reusable text in Source Cache → for each request, select_passages(excerpt_for) → return smaller
+question-specific excerpt. If a safety ceiling is needed for cached extracted text, reuse or add an
+appropriate source-level limit; do not use the small question-specific excerpt limit for cache
+storage. Also improve SQLite cache failure handling: cache read/write failures must remain
+non-fatal; fetch_url should still return successfully fetched content; but do not silently swallow
+sqlite3.Error with no visibility — log/warn using the project's existing logging approach if one
+exists. Do not change: PDF temporary-file approach; document reader contracts; redirect cache
+aliasing unless required by existing tests; HTML extraction design; web_search. Add only focused
+tests that prove: the same cached source can produce different excerpts for different excerpt_for
+values; a cache write/read SQLite failure does not make fetch_url fail; the failure is observable
+through logging/warning.

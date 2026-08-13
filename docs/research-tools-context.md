@@ -34,7 +34,7 @@ branch).
 | Path | Role |
 | --- | --- |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), the tools themselves |
-| `src/evergrove_agent/documents/` | `excerpt.py`, `base.py`, `reader.py` and the format readers `text.py`/`pdf.py`/`docx.py`; `html.py` lands with `fetch_url` |
+| `src/evergrove_agent/documents/` | `excerpt.py`, `base.py`, `reader.py`, the format readers `text.py`/`pdf.py`/`docx.py`, and `html.py` (S6) |
 | `src/evergrove_agent/search/` | `domains.json`/`domains.py` and `normalize.py` (S4), `base.py` (the backend contract); `fixture.py`, `serpapi.py`, `academic.py` land with S7 |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
 | `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
@@ -244,23 +244,65 @@ temporary path.
 
 ---
 
-### S6 — `fetch_url` · **pending**
+### S6 — `fetch_url` · **complete**
 
-*Inspect first:* `tools/base.py`, `schemas/tools.py`, `memory/cache.py` (from S5),
-`documents/__init__.py`
-*Only if needed:* `documents/pdf.py` (from S3), `tests/unit/test_llm_provider.py` (the `respx`
-pattern), `config.py` (`max_fetch_calls`)
+*Inspect first:* `tools/fetch_url.py`, `documents/html.py`
+*Only if needed:* `tests/unit/test_fetch_url.py`, `memory/cache.py` (from S5), `documents/pdf.py`
+(from S3), `config.py` (`fetch_timeout_s`, `max_fetch_bytes`)
 
-**Expected output:** `FetchUrlInput{url, max_chars=20000, excerpt_for?}` →
-`FetchUrlOutput{url, final_url, title, text, char_count, truncated, from_cache, retrieved_at}`.
+**Provides:** `FetchUrlTool` in `tools/fetch_url.py` (`FetchUrlInput{url, max_chars=20000,
+excerpt_for?}` → `FetchUrlOutput{url, final_url, title, text, char_count, truncated, from_cache,
+retrieved_at}`), constructed as `FetchUrlTool(settings=None, *, client=None, connection=None)` —
+the same injection seams the search backends use. Also `extract_html(markup) -> (title, text)` in
+`documents/html.py`, re-exported from `documents/__init__.py`. Added `MAX_FETCH_BYTES`,
+`FETCH_TIMEOUT_S` and `MAX_SOURCE_TEXT_CHARS` (config + `.env.example`). No new dependency and no
+new `ErrorCode`. The PDF builder moved from `tests/unit/test_read_document.py` to the `build_pdf`
+fixture in `tests/conftest.py`, since both suites now need one. First use of `logging` in `src/`:
+a module-level `logging.getLogger(__name__)`, warnings only, no handler configured — a library
+names its logger and leaves handlers to the application.
 
-**Contracts:** `httpx` with a timeout and exactly one retry on timeout/5xx · a PDF content-type
-routes to the S3 PDF reader automatically · the cache is checked before the network · empty
-extraction is a `ToolError` the agent can act on, not an exception · `excerpt_for` runs
-`select_passages` · `trafilatura` is the extraction dependency named by the plan.
+Flow: `canonicalize_url` → `get_cached_source` → (miss) streamed `httpx` GET → content-type
+routing → `store_cached_source` → `select_passages`. Cache hit and fresh fetch end in the same
+shaping function, so one URL and one question give one answer either way.
 
-**Must not use or change:** no headless browser, no JS rendering · no crawling or link-following —
-one URL per call · never bypass the registry.
+**Contracts:** one URL per call, redirects followed, `final_url` reports where it landed while the
+cache stays keyed on the **requested** canonical URL (S5's `final_url` column is what that column
+is for) · exactly one retry, fired when the failure is marked `retryable` — a timeout, a network
+error, a 5xx or a 429; a 4xx is never asked twice · failures: `BAD_ARGUMENTS` (uncanonicalizable
+URL), `TIMEOUT`, `FETCH_FAILED`, `NOT_FOUND` (404/410), `BUDGET_EXCEEDED` (over
+`MAX_FETCH_BYTES`), `UNSUPPORTED_TYPE`, `EMPTY_FILE` (nothing extracted), and the PDF reader's own
+`CORRUPT_PDF`/`ENCRYPTED_PDF`/`NO_TEXT_LAYER` · nothing that failed is cached · a `sqlite3.Error`
+on either cache path is **non-fatal but logged** at `WARNING`: the fetched page is still returned,
+and a cache that silently never answers is indistinguishable from a slow network.
+
+**Decisions:** **the cache stores the whole extracted source text**, bounded only by
+`MAX_SOURCE_TEXT_CHARS` — never raw HTML (every hit would re-extract and the file would bloat),
+never an excerpt, and never a reading budget. Neither `SOURCE_EXCERPT_CHARS` nor the caller's
+`max_chars` may bound it: both describe *one answer*, and trimming the source to either is what
+would make a later, differently-worded `excerpt_for` re-read the previous question's paragraphs
+from a page that is never re-fetched to correct it. `max_chars` caps only what a call returns;
+`select_passages` runs on the full cached text every time, against
+`min(max_chars, SOURCE_EXCERPT_CHARS)` · **PDF bytes reach `read_pdf` through a file in a
+`TemporaryDirectory`**,
+named after the URL so the reader's messages stay recognisable — `read_document_file` cannot be
+used because its guard resolves inside `ALLOWED_ATTACHMENT_DIR` and would answer
+`PATH_NOT_ALLOWED` for bytes we downloaded, and widening `read_pdf`'s signature would change a
+finished S3 contract for one caller · **`html.py` is stdlib `html.parser`, not `trafilatura`** (a
+deliberate, recorded departure from the plan's named dependency, on the user's call): it drops
+`script`/`style`/`nav`/`header`/`footer`/`aside`/`form` subtrees and emits blank-line-separated
+paragraphs with Markdown `#` headings and four-space-indented `<pre>`, which is exactly the shape
+`select_passages` splits and scores — so heading context and the code bonus work on a web page the
+same way they do on a local document. **Revisit when** S8's recorded fixtures show the output is
+too noisy; the swap is `extract_html`'s body and no caller's business · the download is streamed
+and abandoned the moment it passes `MAX_FETCH_BYTES` · `MAX_FETCH_BYTES` and `FETCH_TIMEOUT_S` are
+separate from `MAX_DOCUMENT_BYTES` and `SEARCH_TIMEOUT_S`: a page a stranger's server hands us is
+not an attachment the user chose, and a slow page is not a slow search backend · `MAX_FETCH_CALLS`
+is **not** enforced here — that is a registry pre-hook, and the hook lists stay empty for this
+capability.
+
+**Must not use or change:** no headless browser, no JS rendering — a client-side-rendered page
+comes back as `EMPTY_FILE`, by design · no crawling or link-following — one URL per call · never
+bypass the registry · do not add a second PDF path or a second HTML extractor.
 
 ---
 
