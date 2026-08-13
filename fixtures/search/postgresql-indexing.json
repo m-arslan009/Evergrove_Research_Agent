@@ -1,0 +1,23 @@
+{
+  "query": "postgresql b-tree index",
+  "source_type": "docs",
+  "recorded_from": "handwritten",
+  "note": "Seed fixture so SEARCH_BACKEND=fixture answers out of the box. Real recorded SerpAPI responses land here from S8.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-types.html",
+      "title": "PostgreSQL: Documentation: Index Types",
+      "snippet": "PostgreSQL provides several index types: B-tree, Hash, GiST, SP-GiST, GIN, BRIN. Each index type uses a different algorithm best suited to different types of queries."
+    },
+    {
+      "url": "https://www.postgresql.org/docs/current/using-explain.html",
+      "title": "PostgreSQL: Documentation: Using EXPLAIN",
+      "snippet": "PostgreSQL devises a query plan for each query it receives. EXPLAIN shows that plan, including whether a scan is a sequential scan or an index scan."
+    },
+    {
+      "url": "https://use-the-index-luke.com/sql/anatomy/the-tree",
+      "title": "The B-Tree — Use The Index, Luke!",
+      "snippet": "A B-tree index keeps its entries sorted, which is what makes a lookup a logarithmic walk down the tree rather than a full scan of the table."
+    }
+  ]
+}

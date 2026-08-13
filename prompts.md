@@ -406,3 +406,45 @@ covering: search miss to store to hit, equivalent deterministic cache keys, expi
 affecting budget, budget increment, monthly limit enforcement, and month separation/reset behavior.
 Parameterize related cases rather than creating excessive tests. Run only focused offline tests.
 Update the Research Tools capability context file.
+
+---
+
+`Title`: Search backend implementations (fixture, SerpAPI, academic)
+
+`User prompt`: Implement the next Research Tools capability subtask: Search Backend
+Implementations only. Before implementation create an implementation plan. Explain what a search
+backend is, how it works, why we need it, what technology we are using, why such technology fits
+here and what the other alternatives are. Stay on the existing Research Tools capability branch.
+Read the capability context file first and inspect only the files listed for this subtask. Inspect
+the existing SearchBackend contract, search schemas, configuration, normalization contracts, and
+relevant fixtures before designing anything. Do not scan the whole repository. Before coding,
+briefly explain in both non-technical and technical form: what each backend is responsible for; why
+all backends must expose the same contract; what provider-specific behavior belongs inside a backend
+versus what belongs later in `web_search`; the minimal implementation proposed. Implement: (1)
+Fixture backend — primary development/testing backend, reads deterministic recorded search responses
+from existing/planned fixtures, no network calls, same search-result schema as every other backend,
+clear structured failure when the requested fixture does not exist. (2) SerpAPI backend — minimal
+SerpAPI HTTP integration using the existing HTTP/config stack, API key from existing
+settings/environment configuration, parse only fields needed by the project's search-result schema,
+handle provider/network/invalid-response failures through existing structured error contracts, no
+retry complexity unless already defined by the project, no live SerpAPI request during normal
+implementation/testing. (3) Academic backend — the academic sources required by the project plan
+such as OpenAlex, Crossref and/or arXiv per the existing architecture/context, provider-specific
+parsing kept internal, results mapped into the same shared result schema, no unnecessary
+abstractions if one small backend can cleanly support the planned providers. Backends do: query →
+provider request / fixture lookup → provider-specific parsing → shared SearchResult objects. They do
+not own the search cache, monthly budget accounting, source deduplication, authority/domain ranking,
+`web_search` orchestration, agent logic, or LLM usage. Reuse the existing SearchBackend, schemas,
+errors, configuration, and HTTP conventions; do not duplicate contracts. Add short descriptive
+comments/docstrings only for files/classes/functions whose responsibility is not obvious. Add only
+minimum high-value offline tests: fixture replay, missing/malformed fixture failure, SerpAPI parsing
+with mocked HTTP, meaningful SerpAPI/provider failure, academic parsing with mocked/fixture
+responses, and conformance to the shared backend behavior where useful. Parameterize similar
+provider cases. Use mocks/fixtures only — do not call SerpAPI, OpenAlex, Crossref, arXiv, Ollama,
+Gemini, or any live HTTP service.
+
+---
+
+`Title`: Tests run at push time, not during a session
+
+`User prompt`: Tests should be run when pushing to repo.

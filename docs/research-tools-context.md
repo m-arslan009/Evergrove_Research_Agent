@@ -264,11 +264,12 @@ one URL per call · never bypass the registry.
 
 ---
 
-### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract, search cache and quota guard done; backends and the tool pending)
+### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract, search cache, quota guard and all three backends done; the tool pending)
 
 *Inspect first:* `search/base.py`, `tools/base.py`, `schemas/tools.py`, `config.py` (search
-block), `memory/search_cache.py`, `memory/budget.py`
-*Only if needed:* the normalisation tool from S4, `.env.example`,
+block), `memory/search_cache.py`, `memory/budget.py`, `search/__init__.py` (the factory)
+*Only if needed:* `search/fixture.py`, `search/serpapi.py`, `search/academic.py`, the
+normalisation tool from S4, `.env.example`, `tests/unit/test_search_backends.py`,
 `tests/unit/test_search_cache.py`, `tests/unit/test_search_budget.py`
 
 **Provides (backend contract, done):** re-exported from `search/__init__.py` —
@@ -325,10 +326,39 @@ off the tool boundary, and `web_search` maps `granted=False` onto the already-ex
 here rather than in `web_search` is what makes "an offline run cannot burn the live tier"
 provable before a backend exists.
 
-**Still to do:** the `fixture`, `serpapi`, `academic` (OpenAlex/Crossref/arXiv) and optional
-`ddgs` implementations · the `WebSearchInput`/`WebSearchOutput` models and the `web_search`
-tool · the name→backend resolution from `SEARCH_BACKEND` · wiring the cache and the guard
-into the tool in that order · recorded responses in `fixtures/search/`.
+**Provides (backends, done):** re-exported from `search/__init__.py` —
+`FixtureSearchBackend` (`search/fixture.py`), `SerpApiSearchBackend` (`search/serpapi.py`),
+`AcademicSearchBackend` (`search/academic.py`) and
+`build_search_backend(name=None, settings=None) -> SearchBackend`, the one place a
+`SEARCH_BACKEND` value becomes a class (the shape `build_provider` already has for models).
+Added `SEARCH_FIXTURE_DIR` and `SEARCH_TIMEOUT_S` (config + `.env.example`), and the seed
+recording `fixtures/search/postgresql-indexing.json`. No new dependency: `httpx` plus stdlib
+`json`/`ElementTree` cover all three.
+
+**Backend decisions:** a fixture file is **self-describing** (`query`, `source_type`,
+`recorded_from`, `results`) and the backend indexes the directory on first use, so a recording
+can be renamed and read by hand and a miss can list what *is* recorded — the filename is not
+the key · the fixture key repeats `normalize_query`'s one-line rule locally rather than
+importing it: `memory` imports `search`, so the reverse is a cycle · a corrupt, missing or
+duplicated fixture is a **loud** `SearchBackendError(retryable=False)`, never an empty list —
+unlike a stale cache row, this backend has nothing to fall back to, and silence here is
+indistinguishable from "found nothing" · results are stamped `source_backend="fixture"`, not
+the `recorded_from` provenance, because that is where *this run's* source came from ·
+SerpAPI's `organic_results_state == "Fully empty"` is read as an empty list, not a failure ·
+SerpAPI 401/403/429 are `retryable=False` (a rejected key, an exhausted tier) and 5xx/network
+are retryable — the flag is what stops the retry step spending the rest of the month · no
+retry, backoff or fallback inside any backend; that ladder is the tool's · `academic` is **one**
+backend trying OpenAlex → Crossref → arXiv in order, first answer wins, so a normal search is
+one HTTP call; a provider that fails is stepped over and only a clean sweep raises · it
+accepts and ignores `source_type` (every provider is already scholarly) · OpenAlex abstracts
+are rebuilt from `abstract_inverted_index`, or the model would choose sources by title alone ·
+`ddgs` is deliberately unimplemented — `build_search_backend` refuses it rather than resolving
+to something that merely looks right.
+
+**Still to do:** the `WebSearchInput`/`WebSearchOutput` models and the `web_search` tool ·
+wiring the cache, then the guard, then the backend, in that order · the optional `ddgs`
+backend · real recorded responses in `fixtures/search/` (S8; the committed one is
+hand-written).
 
 **Expected output:** `WebSearchInput{query 3–200 chars, source_type: SearchSourceType,
 max_results=6}` → `WebSearchOutput{results: [{title, url, snippet, source_backend, domain_class}]}`.

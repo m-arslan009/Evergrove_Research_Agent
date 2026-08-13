@@ -107,6 +107,12 @@ class Settings(BaseSettings):
         description="Live searches allowed per calendar month. 200 of SerpAPI's 250, "
         "leaving 50 in reserve (plan 10).",
     )
+    search_timeout_s: int = Field(
+        default=15,
+        ge=1,
+        description="Per-request timeout for a live search backend. Shared by serpapi "
+        "and academic so the two cannot drift apart.",
+    )
 
     # --- Per-run budgets (plan 14.4, revised for this hardware) ------------------------
     max_hops: int = Field(default=2, ge=1, le=3)
@@ -161,8 +167,12 @@ class Settings(BaseSettings):
             "matters the moment the tool is exposed over MCP (plan 30)."
         ),
     )
+    search_fixture_dir: Path = Field(
+        default=PROJECT_ROOT / "fixtures" / "search",
+        description="Recorded search responses the `fixture` backend replays (plan 10).",
+    )
 
-    @field_validator("db_path", "allowed_attachment_dir")
+    @field_validator("db_path", "allowed_attachment_dir", "search_fixture_dir")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()
