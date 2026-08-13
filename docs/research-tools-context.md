@@ -36,7 +36,7 @@ branch).
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), the tools themselves |
 | `src/evergrove_agent/documents/` | `excerpt.py`, `base.py`, `reader.py` and the format readers `text.py`/`pdf.py`/`docx.py`; `html.py` lands with `fetch_url` |
 | `src/evergrove_agent/search/` | `domains.json`/`domains.py` and `normalize.py` (S4), `base.py` (the backend contract); `fixture.py`, `serpapi.py`, `academic.py` land with S7 |
-| `src/evergrove_agent/memory/` | *not created yet* — `db.py`, `cache.py`, `search_cache.py`, `budget.py` |
+| `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
 | `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
 | `src/evergrove_agent/config.py` | every budget, path, TTL and backend switch |
 | `tests/unit/`, `tests/conftest.py` | offline suites; `settings` fixture is `Settings(_env_file=None)` |
@@ -264,11 +264,12 @@ one URL per call · never bypass the registry.
 
 ---
 
-### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract done, everything else pending)
+### S7 — `web_search`, backends, search cache and quota guard · **partially complete** (backend contract, search cache and quota guard done; backends and the tool pending)
 
 *Inspect first:* `search/base.py`, `tools/base.py`, `schemas/tools.py`, `config.py` (search
-block), `memory/db.py` (from S5)
-*Only if needed:* the normalisation tool from S4, `.env.example`
+block), `memory/search_cache.py`, `memory/budget.py`
+*Only if needed:* the normalisation tool from S4, `.env.example`,
+`tests/unit/test_search_cache.py`, `tests/unit/test_search_budget.py`
 
 **Provides (backend contract, done):** re-exported from `search/__init__.py` —
 `SearchBackend` (a `runtime_checkable` Protocol: `name: str` plus
@@ -276,10 +277,58 @@ block), `memory/db.py` (from S5)
 `SearchSourceType = Literal["docs","technical","academic","general"]`, and
 `SearchBackendError(backend, message, *, retryable=True)`.
 
+**Provides (search cache, done):** re-exported from `memory/__init__.py` — `CachedSearch`
+(frozen dataclass: `key`, `query`, `backend`, `source_type`, `max_results`,
+`results: tuple[RawSource, ...]`, `searched_at`, `expires_at`), `normalize_query(query)`,
+`search_cache_key(query, *, backend, source_type, max_results)`,
+`get_cached_search(connection, query, *, backend, source_type, max_results, now=None)`
+and `store_cached_search(connection, *, query, backend, source_type, max_results, results,
+ttl_days=None, now=None)`, all in `memory/search_cache.py`. Added `SEARCH_CACHE_TTL_DAYS`
+(config + `.env.example`) and the `search_cache` table.
+
+**Provides (quota guard, done):** also from `memory/__init__.py` — `BudgetReservation`
+(frozen dataclass: `granted`, `month`, `used`, `limit`), `consumes_quota(backend)`,
+`QUOTA_CONSUMING_BACKENDS`, `current_month(now=None)`, `get_search_usage(connection, *,
+now=None)` and `reserve_search_call(connection, *, limit=None, now=None)`, in
+`memory/budget.py`, plus the `search_budget` table. `SCHEMA_VERSION` stayed 1 — both tables
+are new, no existing table changed shape. Nothing wires either into `web_search` yet.
+
+**Cache decisions:** the key is `sha256` over
+`normalized_query \x1f backend \x1f source_type \x1f max_results` — the only four inputs
+that change what a backend would return, so case and whitespace variants of one query share
+an entry while a different backend, source type or limit never falsely does · `max_results`
+stays *in* the key: serving a 6-result request from a cached 10-result row is a wider policy
+that was deliberately not taken · the payload is JSON `RawSource` (S4's model), so a hit
+reconstructs exactly what a live call would have returned and nothing provider-specific
+reaches the table · a missing row, an expired row, an empty query and unreadable
+`results_json` are all one answer, `None` — a row from an older build degrades to a miss
+rather than taking a tool down · an **empty result list is cached like any other**: a query
+that found nothing has been answered, and re-asking costs quota for the same silence ·
+otherwise it mirrors `cache.py` exactly (reads never write, `INSERT OR REPLACE` so refresh
+and first store are one call, expiry compared in Python against an injected `now`, TTL
+late-bound from config) · `SEARCH_CACHE_TTL_DAYS` is separate from `CACHE_TTL_DAYS` because
+search freshness and page-text freshness are independently tunable, and this is the one that
+protects quota.
+
+**Budget decisions:** the check and the increment are **one atomic statement** —
+`INSERT ... ON CONFLICT(month) DO UPDATE SET used = used + 1 WHERE used < ? RETURNING used`
+(SQLite ≥ 3.35) — so no two callers can both read `limit - 1` and both spend it; a returned
+row *is* the grant · a `limit <= 0` is refused *before* that statement, because the `WHERE`
+guards only the update branch and a fresh month would otherwise slip one call through the
+plain `INSERT` · the month is UTC `YYYY-MM`, so a new month is a new row and a fresh
+allowance with nothing to reset · **reserve before the call, and no refund path**: a search
+that times out may still have counted at the provider, so over-counting is the safe
+direction · `reserve_search_call` returns a dataclass, **not** a `ToolResult` — storage stays
+off the tool boundary, and `web_search` maps `granted=False` onto the already-existing
+`ErrorCode.MONTHLY_BUDGET_EXCEEDED`, `retryable=False` · `QUOTA_CONSUMING_BACKENDS` is
+`{"serpapi"}` only: `fixture`, `academic` and `ddgs` are unmetered, and keeping that list
+here rather than in `web_search` is what makes "an offline run cannot burn the live tier"
+provable before a backend exists.
+
 **Still to do:** the `fixture`, `serpapi`, `academic` (OpenAlex/Crossref/arXiv) and optional
 `ddgs` implementations · the `WebSearchInput`/`WebSearchOutput` models and the `web_search`
-tool · the name→backend resolution from `SEARCH_BACKEND` · the `search_cache` and
-`search_budget` tables with the monthly guard · recorded responses in `fixtures/search/`.
+tool · the name→backend resolution from `SEARCH_BACKEND` · wiring the cache and the guard
+into the tool in that order · recorded responses in `fixtures/search/`.
 
 **Expected output:** `WebSearchInput{query 3–200 chars, source_type: SearchSourceType,
 max_results=6}` → `WebSearchOutput{results: [{title, url, snippet, source_backend, domain_class}]}`.

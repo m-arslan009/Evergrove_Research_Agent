@@ -140,6 +140,13 @@ class Settings(BaseSettings):
 
     # --- Expiry (plan 12) ---------------------------------------------------------------
     cache_ttl_days: int = Field(default=7, ge=1)
+    search_cache_ttl_days: int = Field(
+        default=7,
+        ge=1,
+        description="How long a cached result list keeps answering a repeated query. "
+        "Separate from CACHE_TTL_DAYS so search freshness can be tuned without "
+        "expiring fetched page text — this is the cache that protects the quota.",
+    )
     memory_recall_max_age_days: int = Field(default=30, ge=1)
 
     # --- Paths ---------------------------------------------------------------------------

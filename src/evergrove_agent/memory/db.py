@@ -40,6 +40,24 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         expires_at   TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS search_cache (
+        key          TEXT PRIMARY KEY,
+        query        TEXT NOT NULL,
+        backend      TEXT NOT NULL,
+        source_type  TEXT NOT NULL,
+        max_results  INTEGER NOT NULL,
+        results_json TEXT NOT NULL,
+        searched_at  TEXT NOT NULL,
+        expires_at   TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS search_budget (
+        month TEXT PRIMARY KEY,
+        used  INTEGER NOT NULL DEFAULT 0
+    )
+    """,
     f"""
     INSERT OR IGNORE INTO schema_meta (key, value)
     VALUES ('schema_version', '{SCHEMA_VERSION}')

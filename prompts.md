@@ -380,3 +380,29 @@ comments/docstrings for new files and non-obvious functions only. Add only minim
 tests: miss → store → hit, canonical URL reuse, and expiry behavior. Parameterize where useful. Use
 focused offline tests only. No Ollama, Gemini, SerpAPI, or live HTTP. Update the Research Tools
 capability context file. Do not implement the next subtask.
+
+---
+
+`Title`: Search cache and monthly live-search budget guard
+
+`User prompt`: Implement the next Research Tools capability subtask: Search Cache + Monthly Budget
+Guard only. Implement persistent SQLite-backed search caching and monthly live-search budget
+tracking. Search cache: reuse the existing SQLite base layer; build deterministic cache keys from
+the normalized query and only parameters that genuinely affect results, such as backend and result
+limit where applicable; equivalent searches should reuse the same entry where safe; store enough
+metadata to reconstruct the existing search-result schema without provider-specific coupling;
+respect configured search-cache TTL; expired entries must behave as misses; keep cache code
+independent of SerpAPI HTTP calls and agents. Monthly budget guard: implement persistent monthly
+usage tracking for quota-consuming search backends; track usage by calendar month so a new month
+naturally gets a fresh budget; reuse existing configuration for the monthly limit; do not hardcode
+250 if configuration already exposes the value; cache hits must not consume budget; fixture/offline
+backends must not consume live-search budget; avoid race-prone read-then-write logic where a simple
+atomic SQLite operation can provide safer behavior; follow existing error/schema contracts instead
+of inventing unrelated result types; keep the budget component provider-independent enough for
+`web_search` to use later, while avoiding unnecessary abstractions. Do not implement SerpAPI HTTP
+calls, academic search, fixture backend behavior, `web_search`, `fetch_url`, agents, LLMs, or
+tracing. No Ollama, Gemini, SerpAPI, or live HTTP calls. Add only minimum high-value offline tests
+covering: search miss to store to hit, equivalent deterministic cache keys, expiry, cache hit not
+affecting budget, budget increment, monthly limit enforcement, and month separation/reset behavior.
+Parameterize related cases rather than creating excessive tests. Run only focused offline tests.
+Update the Research Tools capability context file.
