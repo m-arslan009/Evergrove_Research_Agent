@@ -314,6 +314,34 @@ Day 3 loop. It does not silently fall back.
 > `--mode multi` (supervisor + two workers, the eventual default), plus `--trace` and
 > `--offline`.
 
+## Running one tool directly
+
+The Day 2 tools are usable without an agent or a model at all, which is how a suspect tool
+gets ruled out before the loop is blamed for it:
+
+```bash
+uv run python -m evergrove_agent.tools.cli search "postgresql b-tree index" --type docs
+uv run python -m evergrove_agent.tools.cli fetch https://example.com/page --excerpt-for "b-tree"
+uv run python -m evergrove_agent.tools.cli read documents/indexing-brief.md --mode outline
+uv run python -m evergrove_agent.tools.cli normalize https://a.dev/x https://a.dev/x/
+```
+
+| Command | Tool | Options |
+| --- | --- | --- |
+| `search QUERY` | `web_search` | `--type docs\|technical\|academic\|general`, `--max-results N`, `--backend NAME` |
+| `fetch URL` | `fetch_url` | `--excerpt-for QUESTION`, `--max-chars N` |
+| `read PATH` | `read_document` | `--mode full\|outline\|section`, `--section HINT` |
+| `normalize URL…` | `normalize_sources` | — |
+
+Every command also takes `--json`, which prints the whole `ToolResult` envelope instead of
+the summary. Exit codes: `0` the tool succeeded, `1` the tool refused (its error code and
+message, never a traceback), `2` unusable arguments.
+
+With the shipped `SEARCH_BACKEND=fixture`, `search` replays `fixtures/search/` and costs no
+quota; `read` resolves a relative path inside `ALLOWED_ATTACHMENT_DIR`, which defaults to
+`fixtures/`. `fetch` is the one command that does reach the network. `--backend` overrides
+`SEARCH_BACKEND` for a single call.
+
 ## Inputs
 
 Today: a task title, a session length, and an optional free-text description

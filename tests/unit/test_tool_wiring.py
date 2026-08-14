@@ -7,6 +7,9 @@ a hook slipped in early, or a factory that quietly returns one shared registry. 
 end-to-end cases run against a temporary attachment directory and a temporary SQLite file,
 with `respx` active and no routes registered, so any HTTP request at all fails the test
 rather than leaving the machine.
+
+The tools CLI is tested here too, for the same reason: it is nothing but wiring — flags onto
+the input models, one `registry.call`, a formatter — so its failures are wiring failures.
 """
 
 from __future__ import annotations
@@ -21,8 +24,9 @@ import respx
 
 from evergrove_agent.config import Settings
 from evergrove_agent.memory import db
-from evergrove_agent.schemas import ErrorCode
+from evergrove_agent.schemas import ErrorCode, ToolResult
 from evergrove_agent.tools import RunContext
+from evergrove_agent.tools.cli import _build_call, build_parser, run
 from evergrove_agent.tools.read_document import ReadDocumentTool
 from evergrove_agent.tools.wiring import TOOL_NAMES, build_tool_registry
 
@@ -176,3 +180,132 @@ async def test_web_search_through_the_wired_registry_stays_offline(
     assert [source.url for source in result.data.results] == [
         "https://www.postgresql.org/docs/current/indexes.html"
     ]
+
+
+# --- the tools CLI ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["search", QUERY, "--type", "docs", "--max-results", "3"],
+            ("web_search", {"query": QUERY, "source_type": "docs", "max_results": 3}),
+        ),
+        # An option left unset is dropped, never passed as None: the defaults stay on the
+        # input model, and `--backend` is settings, not a tool argument.
+        (["search", QUERY, "--backend", "fixture"], ("web_search", {"query": QUERY})),
+        (
+            ["fetch", "https://example.com/page", "--excerpt-for", "what is a b-tree"],
+            (
+                "fetch_url",
+                {"url": "https://example.com/page", "excerpt_for": "what is a b-tree"},
+            ),
+        ),
+        (
+            ["read", "notes.txt", "--mode", "section", "--section", "Costs"],
+            (
+                "read_document",
+                {"path": "notes.txt", "mode": "section", "section_hint": "Costs"},
+            ),
+        ),
+        (
+            ["normalize", "https://a.dev/x", "https://a.dev/x/"],
+            (
+                "normalize_sources",
+                {
+                    "sources": [
+                        {"url": "https://a.dev/x", "source_backend": "cli"},
+                        {"url": "https://a.dev/x/", "source_backend": "cli"},
+                    ]
+                },
+            ),
+        ),
+    ],
+)
+def test_every_cli_flag_reaches_a_field_of_the_tools_own_input_model(
+    settings: Settings, argv: list[str], expected: tuple[str, dict[str, object]]
+) -> None:
+    """Catches a flag whose `dest` drifted away from the field it feeds — a rename that
+    breaks nothing at import time and shows up only when a person runs the command. The
+    `model_validate` is the second half: `extra="forbid"` on every input model turns a key
+    that is no longer a field into a failure here rather than a `BAD_ARGUMENTS` in a
+    terminal."""
+    name, call_args = _build_call(build_parser().parse_args(argv))
+
+    assert (name, call_args) == expected
+
+    tool = build_tool_registry(settings).get(name)
+    assert tool is not None
+    tool.input_model.model_validate(call_args)
+
+
+@respx.mock
+async def test_cli_search_answers_from_the_committed_recordings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The documented `search --backend fixture` flow, end to end through the registry.
+
+    Two regressions at once: a CLI that bypasses `build_tool_registry` (nothing would come
+    back), and a `--backend` that never reaches `Settings.search_backend` — the settings
+    here say `serpapi`, so an override that quietly did nothing would attempt a metered live
+    call, which the no-routes `respx` mock turns into a failure instead of a bill."""
+    settings = Settings(
+        _env_file=None, db_path=tmp_path / "agent.sqlite3", search_backend="serpapi"
+    )
+    args = build_parser().parse_args(
+        ["search", QUERY, "--type", "docs", "--backend", "fixture"]
+    )
+
+    code = await run(args, settings=settings)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ok  web_search" in out
+    assert "https://www.postgresql.org/docs/current/" in out
+
+
+async def test_cli_prints_a_tool_failure_as_its_code_and_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The contract that makes the CLI usable for debugging: a refusing tool is a readable
+    line and exit 1, never a traceback. Catches a formatter that reads `result.data` before
+    checking `ok`, which would turn every structured failure into an AttributeError."""
+    monkeypatch.setattr(
+        "evergrove_agent.documents.reader.get_settings",
+        lambda: Settings(_env_file=None, allowed_attachment_dir=tmp_path),
+    )
+    args = build_parser().parse_args(["read", "missing.md"])
+
+    code = await run(
+        args, settings=Settings(_env_file=None, db_path=tmp_path / "a.sqlite3")
+    )
+
+    assert code == 1
+    captured = capsys.readouterr()
+    assert ErrorCode.NOT_FOUND.value in captured.err
+    assert "missing.md" in captured.err
+    assert "Traceback" not in captured.err + captured.out
+
+
+async def test_cli_json_prints_the_real_toolresult_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--json` is what a person falls back to when the summary is not enough, so it has to
+    be the envelope itself. Catches a hand-rolled dict drifting from `ToolResult` — at which
+    point the CLI would no longer be evidence of what the agent will receive."""
+    (tmp_path / "notes.txt").write_text("A B-tree index is sorted.\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "evergrove_agent.documents.reader.get_settings",
+        lambda: Settings(_env_file=None, allowed_attachment_dir=tmp_path),
+    )
+    args = build_parser().parse_args(["read", "notes.txt", "--json"])
+
+    code = await run(
+        args, settings=Settings(_env_file=None, db_path=tmp_path / "a.sqlite3")
+    )
+
+    assert code == 0
+    result = ToolResult.model_validate_json(capsys.readouterr().out)
+    assert result.ok is True
+    assert "B-tree index" in result.data["text"]
