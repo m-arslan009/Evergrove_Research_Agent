@@ -151,8 +151,8 @@ def normalize_sources(sources: Sequence[RawSource]) -> NormalizeSourcesOutput:
 def _canonical_host(parts: SplitResult) -> str | None:
     """The host lowercased, without a trailing dot or a redundant default port.
 
-    `None` for a URL with no host, an unparseable port, or embedded credentials — a
-    source list is no place to be carrying those.
+    `None` for a URL with no host, a host no resolver could ever accept, an unparseable
+    port, or embedded credentials — a source list is no place to be carrying those.
     """
     try:
         if parts.username or parts.password:
@@ -162,7 +162,11 @@ def _canonical_host(parts: SplitResult) -> str | None:
         return None
 
     host = (hostname or "").rstrip(".")
-    if not host:
+    # Whitespace only reaches here through the scheme-less branch above, which turns a
+    # phrase like "not a url" into a host no name server can hold. Rejecting it is what
+    # makes `fetch_url` answer BAD_ARGUMENTS instead of spending two attempts resolving
+    # it. Anything else non-ASCII is left alone: an IDN host is legitimate.
+    if not host or any(character.isspace() for character in host):
         return None
     if port is not None and port != _DEFAULT_PORTS[parts.scheme.lower()]:
         return f"{host}:{port}"

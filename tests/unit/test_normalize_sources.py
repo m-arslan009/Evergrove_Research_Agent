@@ -55,6 +55,10 @@ from evergrove_agent.tools.normalize_sources import NormalizeSourcesTool
         ("https:///a", None),
         ("", None),
         ("   ", None),
+        # A phrase, not a URL. The scheme-less branch above would otherwise make it
+        # `https://not a url/` — a host no resolver can answer for, which `fetch_url`
+        # would then spend two network attempts failing to reach.
+        ("not a url", None),
     ],
 )
 def test_canonicalize_url(raw: str, expected: str | None) -> None:
