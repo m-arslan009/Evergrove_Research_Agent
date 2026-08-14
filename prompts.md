@@ -646,3 +646,46 @@ completed components unnecessarily.
 `User prompt`: Moving towards our next major deliverable, make sure the research tool is complete
 and works correctly if already tested and confirmed. Then merge the research-tool branch into
 main, but keep the research branch as it is to work with it in future if required.
+
+`Title`: Rename and repurpose the context document as the project source of truth
+
+`User prompt`: Before starting Day 3 Subtask 1, update the project context documentation. We have
+completed Day 1 and Day 2 only; no Day 3 subtask has been implemented yet. Analyze the entire
+repository, not only the existing context file, and review the actual implementation from Day 1
+and Day 2. Rename the Day 2/tool-focused context document to docs/research-agent-context.md,
+using git mv to preserve history — the new name reflects that this file now represents the whole
+Research Agent project, not only the tools. Rewrite it as a concise, component-oriented technical
+context document rather than an S1–S10 chronological build diary, containing: project purpose and
+architecture, current repository map, Day 1 and Day 2 completed summaries, core
+contracts/interfaces future work must preserve, existing LLM architecture, tool/registry
+architecture, search/fetching/documents/SQLite-cache, configuration relevant to upcoming work,
+testing and offline strategy, important engineering decisions, verified deviations from the
+original 7-day plan, reuse/dependency guidance, known limitations and not-yet-implemented work,
+the current Day 3 milestone, the Day 3 subtask breakdown, and rules for maintaining the document.
+Keep completed work summarized; do not keep detailed history of how it was implemented unless it
+prevents a future AI from making a wrong architectural decision, and do not remove important
+contracts, invariants, deviations or dependencies. Repository reality is authoritative: document
+what was actually verified and do not "restore" the original plan where the repository
+intentionally differs. Clearly separate "implemented now" from "planned for later". After this
+rewrite the document becomes the primary implementation context future AI sessions read first,
+but the repository remains the ultimate evidence — if the two disagree, inspect the code and
+correct the document. Do not include the stale README edit in this task; record it as a known
+documentation issue only.
+
+`Title`: Day 3 subtask decomposition
+
+`User prompt`: Use this Day 3 subtask decomposition, and do not combine agent schemas and
+tool-spec integration into one subtask. Day 3 Subtask 1 is Agent schemas: create the typed
+Pydantic contracts needed by the four reasoning boundaries — decide_next_step(),
+run_research_step(), judge_sufficiency() and finalise() — primarily in schemas/agents.py, reusing
+existing Day 1/2 schemas and containing no loop, prompts or model calls. Day 3 Subtask 2 is
+model-facing tool integration: implement the missing bridge between the existing tool system and
+LLM tool calling — registered Tool to the existing llm.base.ToolSpec, decide which existing tools
+are advertised during each reasoning stage, validate model tool arguments, dispatch through the
+existing ToolRegistry, and never bypass or duplicate existing tool implementations. Decompose the
+remaining Day 3 work logically from the Day 3 plan, covering at minimum agent prompts, the
+single-agent core loop, task narrowing, sufficiency judgement, a genuine second research hop with
+MAX_HOPS, in-memory Day 3 budgets, validate_report and grounding, structured finalisation and
+retries, service.py, CLI integration, integration tests, and live end-to-end verification. Keep
+the subtasks small enough that each can be planned, approved, implemented and tested
+independently.

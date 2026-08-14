@@ -1,725 +1,660 @@
-# Capability context — Research Tools
+# Evergrove Research Agent — implementation context
 
-Navigation map for every subtask of the **Research Tools** capability. Read this file first,
-then open only the current subtask's *inspect first* files. Do not scan the repository, and do
-not open a file listed here just for general understanding.
+The primary context for AI development sessions on this project. Read it before implementing
+anything.
 
-This is a map, not a reading list. It deliberately does not restate the architecture plan
-(`Evergrove_Research_Agent_Architecture_and_7_Day_Plan.NEW.docx`) or anything the code already
-says.
+It describes **what exists in the repository today**, the contracts that must not be broken,
+the decisions that must not be accidentally reversed, and what the next milestone depends on.
+It is a technical context document, not a build diary: completed work is summarised, and
+implementation detail is kept only where losing it would let a later session make a wrong
+architectural decision.
 
-## Purpose and scope
+**The repository is the ultimate evidence.** Where this document and the code disagree, the
+code is right — inspect it, then correct this file. Where this document and the 7-day plan
+(`Evergrove_Research_Agent_Architecture_and_7_Day_Plan.NEW.docx`) disagree, the repository has
+usually deviated on purpose; see *Verified deviations from the plan* before "restoring"
+anything.
 
-Every deterministic tool the agent will call, working and tested **before any agent or model
-exists** — so when the research loop later misbehaves, the tools are already ruled out.
+---
 
-**In scope:** the tool registry and shared contract · document readers and `read_document` ·
-URL normalisation and domain classification · SQLite connection plus the source cache ·
-`fetch_url` · `web_search` with its pluggable backends, search cache and monthly quota guard ·
-the deterministic passage selector · a tools CLI and recorded fixtures.
+## Status
 
-**Out of scope (later capabilities):** the agent loop and tool-calling integration · session and
-persistent memory (`recall_previous_preparation`, `save_preparation`) · hooks, tracing and budget
-counters (the registry's hook lists stay empty here) · the supervisor/worker split · MCP · evals.
-
-`validate_report` is **not** part of this capability — plan §23 feature 5 places it in the
-single-agent loop. (`README.md` calls it a Day 2 item; the plan wins. Raise it if it is wanted
-here.)
-
-**Branch:** `feature/research-tools` (all subtasks stay on it; a subtask never gets its own
-branch).
-
-## Relevant folders and files
-
-| Path | Role |
+| | |
 | --- | --- |
-| `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), the tools themselves |
-| `src/evergrove_agent/documents/` | `excerpt.py`, `base.py`, `reader.py`, the format readers `text.py`/`pdf.py`/`docx.py`, and `html.py` (S6) |
-| `src/evergrove_agent/search/` | `domains.json`/`domains.py` and `normalize.py` (S4), `base.py` (the backend contract); `fixture.py`, `serpapi.py`, `academic.py` land with S7 |
+| **Completed** | **Day 1**, **Day 2** |
+| **Current milestone** | **Day 3 — Single research agent (the core loop)** |
+| **Completed Day 3 subtasks** | **None. Day 3 has not started.** |
+| **Next task** | **Day 3 Subtask 1 — Agent schemas** |
+
+Nothing in `agents/`, no research loop, no `service.py`, no `validate_report` exists yet. Do
+not describe or assume any Day 3 capability as present.
+
+| Day | Area | Status |
+| --- | --- | --- |
+| 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
+| 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
+| 3 | Single research agent — the core loop | **Current — not started** |
+| 4 | Memory, hooks, tracing | Not started |
+| 5 | Supervisor + Researcher + Appraiser | Not started |
+| 6 | MCP server and client, hardening | Not started |
+| 7 | Tests, five evaluations, requirement audit, final demo | Not started |
+
+---
+
+## Project purpose
+
+A standalone Python service that prepares a focus session *before* the Evergrove timer starts.
+Input: a task title, a session length, optionally a description and a local attachment. Output:
+one validated, source-grounded `FocusPreparationReport` — a narrowed objective, session-sized
+topics, real sources that were actually read, what to skip, one practice exercise, one success
+criterion, plus `assumptions` and `unknowns`.
+
+It is a **separate project in its own repository**. It does not touch the Evergrove frontend,
+backend, database or `CONTRACT.md`. Integration is Phase 3 and out of scope.
+
+Three decisions genuinely need a model — how big a slice fits one session, whether the sources
+found support it, and what to search for next when they do not. **Everything else is
+deterministic Python and is written as such.**
+
+## Architecture
+
+One process, a modular monolith layered internally. "Multi-agent" describes how the reasoning
+is organised, not how many services are deployed.
+
+```
+                    CLI  ·  MCP server            ← surfaces   (CLI: partial · MCP: Day 6)
+                          │
+                     service.py                   ← NOT BUILT (Day 3)
+                          │
+       Supervisor ──► Researcher ──► Appraiser     ← NOT BUILT (Day 3 as four functions,
+                          │                          split into three agents on Day 5)
+                   tool registry                  ← BUILT. The only path to a tool.
+                          │                          Hook lists exist but are empty (Day 4)
+        ┌─────────────────┼─────────────────┐
+        ▼                 ▼                 ▼
+   search backends   documents/         SQLite          ← all BUILT
+   (serpapi ·        (pdf · docx ·      (source cache ·
+    academic ·        html · text ·      search cache ·
+    fixture)          excerpt)           search budget)
+        │                 │                 │
+        └──────── schemas/ (Pydantic) ──────┘      ← imports nothing from the package;
+                          │                           everything imports it
+                       config.py
+```
+
+| Decision | Choice |
+| --- | --- |
+| Language / tooling | Python 3.12, `uv`, `ruff` (no type checker) |
+| Orchestration | Plain Python state machine — no LangGraph, no LangChain |
+| Model runtime | Ollama local (`qwen3:4b`), Google AI Studio (Gemini) as opt-in second provider |
+| Web search | SerpAPI free tier + keyless OpenAlex / Crossref / arXiv, `fixture` by default |
+| Storage | One SQLite file, stdlib `sqlite3`, no ORM |
+| Structured output | Pydantic → JSON Schema → constrained decoding → re-validated |
+| Cost | $0 mandatory. Local path needs no key; both free tiers need no card |
+
+## Repository map
+
+| Path | Contents |
+| --- | --- |
+| `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py` — Pydantic only, imports nothing from the package |
+| `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
+| `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `finalise.md`) |
+| `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
+| `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
+| `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
-| `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
-| `src/evergrove_agent/config.py` | every budget, path, TTL and backend switch |
-| `tests/unit/`, `tests/integration/`, `tests/conftest.py` | offline suites — units, then the assembled stack (S10); `settings` fixture is `Settings(_env_file=None)` |
-| `fixtures/` | offline replay data: `search/` recordings, `documents/` attachments, `html/` markup, and `README.md` (the provenance rules) |
-| `.env.example` | the documented setting set; committed defaults must stay offline |
+| `src/evergrove_agent/main.py` | CLI entry point — `--no-research` is the only working mode |
+| `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
+| `fixtures/` | `search/` recordings, `documents/` attachments, `html/` markup, `README.md` (provenance policy) |
+| `.githooks/pre-push` | `ruff check` then `pytest -q`; enable per clone with `git config core.hooksPath .githooks` |
+| `.env.example` | The documented setting set; committed defaults must stay offline |
+| `docs/research-agent-context.md` | This file |
+| `prompts.md` | The required AI interaction log |
 
-## Do not inspect by default
+**Not present, do not assume:** `agents/`, `schemas/agents.py`, `service.py`, `evals/`,
+`scripts/`, `.mcp.json`.
 
-- `frontend/`, `backend/`, and the repository-root Evergrove docs (`project_idea.md`,
-  `product_analysis.md`, `backend_architecture.md`, `CONTRACT.md`) — a different product.
-- `src/evergrove_agent/llm/` and `schemas/report.py` — no tool talks to a model or builds a
-  report.
-- `src/evergrove_agent/main.py` — the CLI wires tools in only at the CLI subtask.
-- `.venv/`, `.pytest_cache/`, `.ruff_cache/`, `uv.lock`, the `.docx` plan (extract a section only
-  when a decision is genuinely unclear).
-- Tests belonging to other subtasks.
+---
 
-## Subtasks
+## Day 1 — completed (summary)
 
-Order and dependencies:
+**Schemas** (`schemas/`, re-exported from `schemas/__init__.py`):
 
+- `TaskContext{task_title, session_minutes=25 (5–180), task_description?, attachment_path?}` —
+  deliberately identical to the future MCP tool signature.
+- `FocusPreparationReport` — the deliverable. Provenance (`run_id`, `generated_at`,
+  `model_used`), `original_task`, `session_duration_minutes`, `interpreted_goal`,
+  `session_objective`, `topics_to_cover` (2–8), `topics_to_skip` (≤10), `resources` (≤5 of
+  `Resource{title, url: HttpUrl, why_this_source, authority}`), `practice?`,
+  `success_criteria`, `assumptions` (≤6), `unknowns` (≤6), `hops_used` (0–3),
+  `sources_examined`.
+- `SourceAuthority = official | standards | primary | secondary | unknown`. `unknown` exists
+  for a URL discovered but never read.
+- `ToolResult` / `ToolError` / `ErrorCode` — the tool envelope (see *Core contracts*).
+- Every model is `extra="forbid"`.
+
+**Configuration** (`config.py`) — one file, `Settings(BaseSettings)` reading `.env`,
+`get_settings()` `lru_cache`d process-wide. Secrets are `SecretStr`. Paths resolve against
+`PROJECT_ROOT`. Helpers: `provider_for(role)`, `roles_using_hosted`, `force_fully_local()`
+(refuses rather than silently rewriting, so the $0-local claim stays checkable).
+
+**LLM layer** (`llm/`) — see *LLM architecture* below.
+
+**Prompts** (`llm/prompts/`) — prompts are version-controlled `.md` files, one per agent turn,
+loaded by `load_prompt(name)` / `render_prompt(name, **values)` (`{placeholder}` substitution,
+`lru_cache`d, raises `PromptNotFound` listing what exists). Only `finalise.md` exists today.
+
+**CLI** (`main.py`) — one working path: `--no-research`, a single structured round trip
+producing a validated report from model knowledge alone. `max_topics_for(minutes)` =
+`min(8, max(3, minutes // 5))`. `_apply_bookkeeping()` overwrites everything the model does not
+get to decide (`run_id`, `generated_at`, `model_used`, `original_task`,
+`session_duration_minutes`, `resources=[]`, `sources_examined=0`, `hops_used=0`, and the
+no-research assumption/unknown) — which is also what stops a model smuggling an invented URL
+into a no-research report. Research mode and `--attachment` **exit 2 with an explanatory
+message rather than faking a result**. Exit codes: 0 success, 1 run failure, 2 bad usage.
+
+## Day 2 — completed (summary)
+
+Every deterministic tool the agent will call, working and tested **before any agent exists** —
+so when the Day 3 loop misbehaves, the tools are already ruled out.
+
+**Registry and wiring** — `ToolRegistry` in `tools/registry.py`; `build_tool_registry(settings=None,
+*, connection=None)` and `TOOL_NAMES` in `tools/wiring.py`. Four tools are registered:
+`fetch_url`, `normalize_sources`, `read_document`, `web_search`.
+
+**Tools:**
+
+| Tool | Input → Output |
+| --- | --- |
+| `web_search` | `WebSearchInput{query 3–200, source_type=general, max_results=6}` → `WebSearchOutput{results: list[NormalizedSource]}` |
+| `fetch_url` | `FetchUrlInput{url, max_chars=20000, excerpt_for?}` → `FetchUrlOutput{url, final_url, title, text, char_count, truncated, from_cache, retrieved_at}` |
+| `read_document` | `ReadDocumentInput{path, mode=full\|outline\|section, section_hint?}` → `ReadDocumentOutput{path, file_type, page_count, outline, text, truncated}` |
+| `normalize_sources` | `NormalizeSourcesInput{sources}` → `NormalizeSourcesOutput{sources, dropped, duplicates_removed}` |
+
+Each tool carries a `description` string written for a model to read; `web_search`, `fetch_url`
+and `read_document` describe when to use them, and `normalize_sources`' description says
+"Pipeline step; not offered to the model."
+
+**Tools CLI** (`tools/cli.py`, `python -m evergrove_agent.tools.cli`) — `search`, `fetch`,
+`read`, `normalize`, each `--json`-capable. Thin by design: argument parsing → one
+`build_tool_registry()` call → formatting. Flags map 1:1 onto existing input-model fields and
+the CLI re-checks none of their bounds (the registry answers `BAD_ARGUMENTS`); an unset option
+is dropped rather than passed as `None`, so defaults live once on the input models. `--backend`
+is the one flag that is not a tool argument — it is `settings.model_copy(update=…)`. Exit codes:
+0 success, 1 the tool returned a `ToolError` (code and message on stderr, never a traceback),
+2 argparse.
+
+**Fixtures** (`fixtures/`) — 5 search recordings covering all four `source_type` values plus an
+empty result, 2 document attachments, 1 HTML page. Self-describing format
+(`query`, `source_type`, `recorded_from`, `results`); the backend indexes the directory, so the
+filename is not the key. `ALLOWED_ATTACHMENT_DIR` defaults to `fixtures/`, so a fresh clone
+answers with no configuration. No committed binaries — PDFs and DOCX files are built in memory
+by the test helpers.
+
+---
+
+## Core contracts future work must preserve
+
+Changing any of these breaks work that is already finished, or work that is planned on top of
+it. Treat each as expensive.
+
+**`schemas/` imports nothing from `evergrove_agent`.** Everything imports it. This is what makes
+a circular import impossible. Never add a package import to `schemas/`.
+
+**The tool envelope** (`schemas/tools.py`):
+
+```python
+class ToolResult(BaseModel, Generic[T]):
+    ok: bool; data: T | None; error: ToolError | None; duration_ms: int; from_cache: bool
+class ToolError(BaseModel):
+    code: ErrorCode; message: str; retryable: bool
 ```
-S1 registry ──┬─► S3 read_document ──┐
-S2 excerpt ───┘                      │
-S1 ──► S4 normalize_sources ──┬──────┼─► S8 tools CLI + fixtures ──► S10 acceptance
-config ─► S5 sqlite cache ────┴─► S6 fetch_url ─┤
-                              └─► S7 web_search ┘
+A validator enforces exactly one outcome. **Tools never raise** — a failure is a value the agent
+can reason about and the trace can record. Changing this shape breaks the registry, every tool,
+the Day 4 hooks and both Day 5 workers.
+
+`ErrorCode` members: `BAD_ARGUMENTS`, `BUDGET_EXCEEDED`, `MONTHLY_BUDGET_EXCEEDED`, `TIMEOUT`,
+`FETCH_FAILED`, `NOT_FOUND`, `SEARCH_UNAVAILABLE`, `CORRUPT_PDF`, `CORRUPT_DOCX`,
+`ENCRYPTED_PDF`, `NO_TEXT_LAYER`, `EMPTY_FILE`, `UNSUPPORTED_TYPE`, `PATH_NOT_ALLOWED`,
+`UNKNOWN`. Add one only when a failure genuinely has none.
+
+**The runtime tool contract** (`tools/base.py`):
+
+```python
+class Tool(Protocol):
+    name: str; description: str; input_model: type[BaseModel]; output_model: type[BaseModel]
+    async def run(self, args: BaseModel, ctx: RunContext) -> ToolResult[Any]: ...
 ```
-
-`S3`–`S5` are independent of each other and may be done in any order. `S6` needs `S3`'s PDF
-reader, `S4` and `S5`. `S7` needs `S4` and `S5`. `S9` assembles the finished tools into one
-registry and comes before `S8`, which is a thin surface over it. `S10` is the offline
-acceptance pass over everything above it and is last.
-
----
-
-### S1 — Tool registry and shared contract · **complete**
-
-*Inspect first:* `tools/base.py`, `tools/registry.py`
-*Only if needed:* `tests/unit/test_tool_registry.py`, `schemas/tools.py`
-
-**Provides:** `ToolRegistry.register/get/names/call`, `add_pre_hook`, `add_post_hook`;
-`Tool` protocol, `RunContext`, `ToolInvocation`, `PreToolHook`, `PostToolHook`.
-Call order: resolve → validate args → pre-hooks → `Tool.run` → post-hooks. `call` never raises;
-it times the call and stamps `duration_ms` centrally.
-
-**Decisions:** hook lists exist but stay empty until the tracing capability · a pre-hook
-returning a `ToolResult` short-circuits the tool (how cache hits and budget refusals will work) ·
-duplicate registration raises at wiring time, everything at call time is a `ToolResult`.
-
-**Must not change:** the `Tool` protocol or `ToolResult` shape (breaks every tool, the future
-hooks and both future workers) · the registry must stay free of models, HTTP, SQLite and any
-specific tool — which is why the tools are assembled into it from outside, in `S9`.
-
----
-
-### S2 — Deterministic passage selector · **complete**
-
-*Inspect first:* `documents/excerpt.py`
-*Only if needed:* `tests/unit/test_excerpt.py`, `config.py` (`source_excerpt_chars`)
-
-**Provides:** `select_passages(text, question, *, max_chars=None) -> str` and `GAP_MARKER`,
-re-exported from `documents/__init__.py`. Scores paragraph blocks by keyword overlap, returns the
-best of them in document order with heading context, under `SOURCE_EXCERPT_CHARS`.
-
-**Decisions:** keyword overlap only — no model, embeddings, network or database, so the same page
-and question always give the same excerpt · text shorter than the limit is returned unchanged ·
-`SOURCE_EXCERPT_CHARS` (what the model sees) stays separate from each reader's `max_chars` (what
-is extracted and cached).
-
-**Must not change:** the scoring weights or the signature without a stated reason — both readers
-and `fetch_url` end in this function.
-
----
-
-### S3 — Document readers and `read_document` · **complete**
-
-*Inspect first:* `documents/reader.py`, `tools/read_document.py`
-*Only if needed:* `documents/base.py`, the format module in question (`text.py`, `pdf.py`,
-`docx.py`), `tests/unit/test_read_document.py`
-
-**Provides:** re-exported from `documents/__init__.py` — `read_document_file(path, *,
-settings=None) -> ParsedDocument` (path guard → size guard → suffix routing),
-`select_section(document, hint) -> (OutlineEntry, str) | None`, the readers `read_text` /
-`read_pdf` / `read_docx`, the `READERS` suffix map, and the types `ParsedDocument{text, outline,
-page_count}`, `OutlineEntry{title, level, char_offset, page}`, `Block`, `DocumentReadError`. The
-registered tool is `ReadDocumentTool` in `tools/read_document.py` (`ReadDocumentInput{path,
-mode=full, section_hint?}` → `ReadDocumentOutput{path, file_type, page_count, outline, text,
-truncated}`). Also added: `MAX_DOCUMENT_BYTES` (config + `.env.example`), `ErrorCode.CORRUPT_DOCX`,
-and `pypdf` as a runtime dependency.
-
-**Contracts:** `.txt`/`.md`/`.pdf`/`.docx` · `path` resolves inside `ALLOWED_ATTACHMENT_DIR`
-(relative paths are taken as relative to *it*, not the cwd; containment is checked before
-existence, so a probe outside cannot learn what is there) · every failure is its own `ErrorCode`
-(`NOT_FOUND`, `PATH_NOT_ALLOWED`, `UNSUPPORTED_TYPE`, `EMPTY_FILE`, `BUDGET_EXCEEDED` for oversize,
-`CORRUPT_PDF`, `ENCRYPTED_PDF`, `NO_TEXT_LAYER`, `CORRUPT_DOCX`), always `retryable=False` · readers
-raise `DocumentReadError`, the tool converts it once — the same split as `SearchBackendError` ·
-`full`/`section` end in `select_passages`, `outline` returns no body text.
-
-**Decisions:** `.docx` was added to the S3 scope on request · **no `python-docx`** — a `.docx` is a
-zip of XML, so stdlib `zipfile` + `ElementTree` read `word/document.xml` directly, and `outline`
-/`section` need only paragraphs and their Word heading styles; `lxml` is not worth it · the outline
-is never guessed: Markdown ATX/setext headings, Word heading styles, PDF bookmarks — a `.txt`, a
-style-less `.docx` and a bookmark-less PDF all get an empty outline, and `section` then falls back
-to keyword selection over the whole text rather than slicing at an invented boundary · a section
-runs to the next heading at the same or a higher level, so subsections stay inside their parent ·
-`select_section` matches headings by exact/substring/word overlap — heading *lookup*, deliberately
-not passage scoring, which stays `select_passages`' job · `full` with a `section_hint` steers the
-trimming; without one, `select_passages` falls through to its own truncation · `truncated` means
-the returned text is shorter than what was extracted · a PDF page that fails to extract is skipped,
-not fatal; a malformed bookmark tree yields no outline rather than losing the document · bad bytes
-in text/Markdown decode with `errors="replace"`, never raise.
-
-**Must not use or change:** no OCR · no new `ErrorCode` unless a failure genuinely has none · one
-tool with a `mode` enum, not three tools · `pypdf` is the PDF dependency named by the plan · S6
-reuses `read_pdf`/`read_document_file` — do not write a second PDF path for `fetch_url`.
-
----
-
-### S4 — `normalize_sources` · **complete**
-
-*Inspect first:* `search/normalize.py`, `search/domains.py`
-*Only if needed:* `search/domains.json`, `tools/normalize_sources.py`,
-`tests/unit/test_normalize_sources.py`
-
-**Provides:** re-exported from `search/__init__.py` —
-`canonicalize_url(raw) -> str | None`, `classify_domain(host) -> SourceAuthority`,
-`normalize_sources(sources) -> NormalizeSourcesOutput`, the models `RawSource`,
-`NormalizedSource`, `NormalizeSourcesOutput{sources, dropped, duplicates_removed}`, and
-`AUTHORITY_ORDER`. `NormalizedSource` carries `url`, `domain`, `domain_class`, `title`,
-`snippet`, `source_backend`. The registered tool is `NormalizeSourcesTool` in
-`tools/normalize_sources.py` (`NormalizeSourcesInput{sources}` → `NormalizeSourcesOutput`).
-Pipeline: canonicalise → drop unusable → dedupe → classify → stable authority sort.
-
-**Decisions:** the map is `search/domains.json`, not YAML — PyYAML is not worth adding for a
-static file; grouped by class, longest suffix wins, so `nist.gov` beats the broad `gov` entry ·
-`search/domains.py` is the *only* loader and classifier, reused as-is by S7's ranking — never
-copy the map · `domain_class` reuses the existing `SourceAuthority` literal, no new enum ·
-canonicalisation is deliberately conservative: scheme/host lowercased, fragment, default port,
-trailing slash, `utm_*` and named tracking params dropped, and nothing else — query order is
-preserved and `www.` is *not* stripped from the URL, only during authority lookup · dedup is
-exact canonical-string match, so `www`/non-`www` and `http`/`https` variants of one page still
-survive as two (one-line fix if S6 shows it wastes fetches) · S6/S7 compose with the pure
-function; routing through the registry from inside another tool would be circular · unusable
-URLs are counted in `dropped`, never raised.
-
-**Must not use or change:** no network lookups, no live domain reputation service · `domains.json`
-contents are cheap to change, the classification *values* are not · the output shape belongs to
-`web_search` and `fetch_url` too.
-
----
-
-### S5 — SQLite and the source cache · **complete**
-
-*Inspect first:* `memory/cache.py`, `memory/db.py`, `config.py` (`db_path`, `cache_ttl_days`)
-*Only if needed:* `tests/unit/test_source_cache.py`, `tests/unit/test_db.py`, `tests/conftest.py`
-
-**Provides (base layer):** re-exported from `memory/__init__.py` —
-`connect(db_path=None)`, `initialize_schema(conn)`, `transaction(conn)` (a context manager
-yielding a cursor), `open_database(db_path=None)` (connect → initialise → close), plus
-`SCHEMA_STATEMENTS` and `SCHEMA_VERSION`. `connect` falls back to `DB_PATH` from config, creates
-the parent directory, sets `row_factory = sqlite3.Row` and the pragmas `foreign_keys=ON`,
-`journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. The only table so far is
-`schema_meta(key, value)`, holding `schema_version`.
-
-**Provides (source cache):** also re-exported from `memory/__init__.py` — `CachedSource`
-(a frozen dataclass: `url`, `final_url`, `title`, `text`, `content_type`, `fetched_at`,
-`expires_at`), `get_cached_source(connection, url, *, now=None) -> CachedSource | None`
-and `store_cached_source(connection, *, url, text, final_url=None, title="",
-content_type="", ttl_days=None, now=None) -> CachedSource`, all in `memory/cache.py`. The
-`source_cache` table (canonical `url` as primary key) was appended to `SCHEMA_STATEMENTS`;
-`SCHEMA_VERSION` stayed 1 — no existing table changed shape. Nothing wires it into a hook
-yet, and no tool reads it until S6.
-
-**Cache decisions:** the key is `canonicalize_url(url)` from S4, applied on both get and
-store, so the trailing-slash / `utm_*` / uppercase-host / default-port / scheme-less
-variants of one page share one entry (`www.` still does not — S4 keeps it deliberately) ·
-a missing row, an expired row and an uncanonicalizable URL are all one answer, `None`,
-because the caller does the same thing with each · **reads never write**: an expired row is
-left in place and overwritten by the next store, so there is no purge sweep and no write on
-the read path · expiry is compared in Python, not SQL, so the stored ISO-8601 format stays
-inside `cache.py`; timestamps are written timezone-aware in UTC and a naive one parses back
-as UTC · `store` is `INSERT OR REPLACE`, so refreshing an expired page is the same call as
-caching it the first time · `store` raises `ValueError` on an uncanonicalizable URL — the
-caller canonicalises before it fetches, and an invented key would poison the table · `now`
-is the only injected seam (default `datetime.now(UTC)`), which is what makes expiry testable
-without freezing global time · `ttl_days` falls back to `CACHE_TTL_DAYS` at call time, the
-same late-binding as `connect`'s `db_path` · `CachedSource` is a dataclass, not a pydantic
-model: it never crosses a tool boundary, and tool-facing shapes stay in `schemas/`.
-
-**Decisions:** **`db.py` owns all DDL**, in `SCHEMA_STATEMENTS`; feature modules own only their
-queries — `cache.py` needs `connect`, so `db.py` importing it back would be a cycle and creation
-order would follow import order. Adding a table later is appending an `IF NOT EXISTS` statement
-to that tuple; the layer itself does not change · `initialize_schema` is idempotent and
-non-destructive, cheap enough to run on every open, which is why `open_database` does · writes
-that span statements go through `transaction`, not `with connection:` — the latter does not wrap
-DDL and leaves the cursor to the caller · no migration runner: `SCHEMA_VERSION` is a marker for
-whoever first needs to change an existing table's shape.
-
-**Must not use or change:** no Redis, no ORM, no second database file · `db.py` stays free of
-tools, models, HTTP and search backends (stdlib + `config` only) · `cache.py` opens no
-connection of its own — the caller passes one from `connect`/`open_database` · it stays free
-of HTTP, extraction and ranking: S6 fetches and extracts, then hands the result here · no
-generic repository or cache abstraction, and the search cache (S7) gets its own table and
-queries rather than a shared one · tests must not write to the real `DB_PATH` — point it at a
-temporary path.
-
----
-
-### S6 — `fetch_url` · **complete**
-
-*Inspect first:* `tools/fetch_url.py`, `documents/html.py`
-*Only if needed:* `tests/unit/test_fetch_url.py`, `memory/cache.py` (from S5), `documents/pdf.py`
-(from S3), `config.py` (`fetch_timeout_s`, `max_fetch_bytes`)
-
-**Provides:** `FetchUrlTool` in `tools/fetch_url.py` (`FetchUrlInput{url, max_chars=20000,
-excerpt_for?}` → `FetchUrlOutput{url, final_url, title, text, char_count, truncated, from_cache,
-retrieved_at}`), constructed as `FetchUrlTool(settings=None, *, client=None, connection=None)` —
-the same injection seams the search backends use. Also `extract_html(markup) -> (title, text)` in
-`documents/html.py`, re-exported from `documents/__init__.py`. Added `MAX_FETCH_BYTES`,
-`FETCH_TIMEOUT_S` and `MAX_SOURCE_TEXT_CHARS` (config + `.env.example`). No new dependency and no
-new `ErrorCode`. The PDF builder moved from `tests/unit/test_read_document.py` to the `build_pdf`
-fixture in `tests/conftest.py`, since both suites now need one. First use of `logging` in `src/`:
-a module-level `logging.getLogger(__name__)`, warnings only, no handler configured — a library
-names its logger and leaves handlers to the application.
-
-Flow: `canonicalize_url` → `get_cached_source` → (miss) streamed `httpx` GET → content-type
-routing → `store_cached_source` → `select_passages`. Cache hit and fresh fetch end in the same
-shaping function, so one URL and one question give one answer either way.
-
-**Contracts:** one URL per call, redirects followed, `final_url` reports where it landed while the
-cache stays keyed on the **requested** canonical URL (S5's `final_url` column is what that column
-is for) · exactly one retry, fired when the failure is marked `retryable` — a timeout, a network
-error, a 5xx or a 429; a 4xx is never asked twice · failures: `BAD_ARGUMENTS` (uncanonicalizable
-URL), `TIMEOUT`, `FETCH_FAILED`, `NOT_FOUND` (404/410), `BUDGET_EXCEEDED` (over
-`MAX_FETCH_BYTES`), `UNSUPPORTED_TYPE`, `EMPTY_FILE` (nothing extracted), and the PDF reader's own
-`CORRUPT_PDF`/`ENCRYPTED_PDF`/`NO_TEXT_LAYER` · nothing that failed is cached · a `sqlite3.Error`
-on either cache path is **non-fatal but logged** at `WARNING`: the fetched page is still returned,
-and a cache that silently never answers is indistinguishable from a slow network.
-
-**Decisions:** **the cache stores the whole extracted source text**, bounded only by
-`MAX_SOURCE_TEXT_CHARS` — never raw HTML (every hit would re-extract and the file would bloat),
-never an excerpt, and never a reading budget. Neither `SOURCE_EXCERPT_CHARS` nor the caller's
-`max_chars` may bound it: both describe *one answer*, and trimming the source to either is what
-would make a later, differently-worded `excerpt_for` re-read the previous question's paragraphs
-from a page that is never re-fetched to correct it. `max_chars` caps only what a call returns;
-`select_passages` runs on the full cached text every time, against
-`min(max_chars, SOURCE_EXCERPT_CHARS)` · **PDF bytes reach `read_pdf` through a file in a
-`TemporaryDirectory`**,
-named after the URL so the reader's messages stay recognisable — `read_document_file` cannot be
-used because its guard resolves inside `ALLOWED_ATTACHMENT_DIR` and would answer
-`PATH_NOT_ALLOWED` for bytes we downloaded, and widening `read_pdf`'s signature would change a
-finished S3 contract for one caller · **`html.py` is stdlib `html.parser`, not `trafilatura`** (a
-deliberate, recorded departure from the plan's named dependency, on the user's call): it drops
-`script`/`style`/`nav`/`header`/`footer`/`aside`/`form` subtrees and emits blank-line-separated
-paragraphs with Markdown `#` headings and four-space-indented `<pre>`, which is exactly the shape
-`select_passages` splits and scores — so heading context and the code bonus work on a web page the
-same way they do on a local document. **Revisit when** S8's recorded fixtures show the output is
-too noisy; the swap is `extract_html`'s body and no caller's business · the download is streamed
-and abandoned the moment it passes `MAX_FETCH_BYTES` · `MAX_FETCH_BYTES` and `FETCH_TIMEOUT_S` are
-separate from `MAX_DOCUMENT_BYTES` and `SEARCH_TIMEOUT_S`: a page a stranger's server hands us is
-not an attachment the user chose, and a slow page is not a slow search backend · `MAX_FETCH_CALLS`
-is **not** enforced here — that is a registry pre-hook, and the hook lists stay empty for this
-capability.
-
-**Must not use or change:** no headless browser, no JS rendering — a client-side-rendered page
-comes back as `EMPTY_FILE`, by design · no crawling or link-following — one URL per call · never
-bypass the registry · do not add a second PDF path or a second HTML extractor.
-
----
-
-### S7 — `web_search`, backends, search cache and quota guard · **complete**
-
-*Inspect first:* `tools/web_search.py`, `search/base.py`, `search/__init__.py` (the factory)
-*Only if needed:* `memory/search_cache.py`, `memory/budget.py`, `config.py` (search block),
-`search/fixture.py`, `search/serpapi.py`, `search/academic.py`, `schemas/tools.py`,
-`.env.example`, `tests/unit/test_web_search.py`, `tests/unit/test_search_backends.py`,
-`tests/unit/test_search_cache.py`, `tests/unit/test_search_budget.py`
-
-**Provides (backend contract, done):** re-exported from `search/__init__.py` —
-`SearchBackend` (a `runtime_checkable` Protocol: `name: str` plus
-`async search(query, *, source_type, max_results) -> list[RawSource]`),
-`SearchSourceType = Literal["docs","technical","academic","general"]`, and
-`SearchBackendError(backend, message, *, retryable=True)`.
-
-**Provides (search cache, done):** re-exported from `memory/__init__.py` — `CachedSearch`
-(frozen dataclass: `key`, `query`, `backend`, `source_type`, `max_results`,
-`results: tuple[RawSource, ...]`, `searched_at`, `expires_at`), `normalize_query(query)`,
-`search_cache_key(query, *, backend, source_type, max_results)`,
-`get_cached_search(connection, query, *, backend, source_type, max_results, now=None)`
-and `store_cached_search(connection, *, query, backend, source_type, max_results, results,
-ttl_days=None, now=None)`, all in `memory/search_cache.py`. Added `SEARCH_CACHE_TTL_DAYS`
-(config + `.env.example`) and the `search_cache` table.
-
-**Provides (quota guard, done):** also from `memory/__init__.py` — `BudgetReservation`
-(frozen dataclass: `granted`, `month`, `used`, `limit`), `consumes_quota(backend)`,
-`QUOTA_CONSUMING_BACKENDS`, `current_month(now=None)`, `get_search_usage(connection, *,
-now=None)` and `reserve_search_call(connection, *, limit=None, now=None)`, in
-`memory/budget.py`, plus the `search_budget` table. `SCHEMA_VERSION` stayed 1 — both tables
-are new, no existing table changed shape. Nothing wires either into `web_search` yet.
-
-**Cache decisions:** the key is `sha256` over
-`normalized_query \x1f backend \x1f source_type \x1f max_results` — the only four inputs
-that change what a backend would return, so case and whitespace variants of one query share
-an entry while a different backend, source type or limit never falsely does · `max_results`
-stays *in* the key: serving a 6-result request from a cached 10-result row is a wider policy
-that was deliberately not taken · the payload is JSON `RawSource` (S4's model), so a hit
-reconstructs exactly what a live call would have returned and nothing provider-specific
-reaches the table · a missing row, an expired row, an empty query and unreadable
-`results_json` are all one answer, `None` — a row from an older build degrades to a miss
-rather than taking a tool down · an **empty result list is cached like any other**: a query
-that found nothing has been answered, and re-asking costs quota for the same silence ·
-otherwise it mirrors `cache.py` exactly (reads never write, `INSERT OR REPLACE` so refresh
-and first store are one call, expiry compared in Python against an injected `now`, TTL
-late-bound from config) · `SEARCH_CACHE_TTL_DAYS` is separate from `CACHE_TTL_DAYS` because
-search freshness and page-text freshness are independently tunable, and this is the one that
-protects quota.
-
-**Budget decisions:** the check and the increment are **one atomic statement** —
-`INSERT ... ON CONFLICT(month) DO UPDATE SET used = used + 1 WHERE used < ? RETURNING used`
-(SQLite ≥ 3.35) — so no two callers can both read `limit - 1` and both spend it; a returned
-row *is* the grant · a `limit <= 0` is refused *before* that statement, because the `WHERE`
-guards only the update branch and a fresh month would otherwise slip one call through the
-plain `INSERT` · the month is UTC `YYYY-MM`, so a new month is a new row and a fresh
-allowance with nothing to reset · **reserve before the call, and no refund path**: a search
-that times out may still have counted at the provider, so over-counting is the safe
-direction · `reserve_search_call` returns a dataclass, **not** a `ToolResult` — storage stays
-off the tool boundary, and `web_search` maps `granted=False` onto the already-existing
-`ErrorCode.MONTHLY_BUDGET_EXCEEDED`, `retryable=False` · `QUOTA_CONSUMING_BACKENDS` is
-`{"serpapi"}` only: `fixture`, `academic` and `ddgs` are unmetered, and keeping that list
-here rather than in `web_search` is what makes "an offline run cannot burn the live tier"
-provable before a backend exists.
-
-**Provides (backends, done):** re-exported from `search/__init__.py` —
-`FixtureSearchBackend` (`search/fixture.py`), `SerpApiSearchBackend` (`search/serpapi.py`),
-`AcademicSearchBackend` (`search/academic.py`) and
-`build_search_backend(name=None, settings=None) -> SearchBackend`, the one place a
-`SEARCH_BACKEND` value becomes a class (the shape `build_provider` already has for models).
-Added `SEARCH_FIXTURE_DIR` and `SEARCH_TIMEOUT_S` (config + `.env.example`), and the seed
-recording `fixtures/search/postgresql-indexing.json`. No new dependency: `httpx` plus stdlib
-`json`/`ElementTree` cover all three.
-
-**Backend decisions:** a fixture file is **self-describing** (`query`, `source_type`,
-`recorded_from`, `results`) and the backend indexes the directory on first use, so a recording
-can be renamed and read by hand and a miss can list what *is* recorded — the filename is not
-the key · the fixture key repeats `normalize_query`'s one-line rule locally rather than
-importing it: `memory` imports `search`, so the reverse is a cycle · a corrupt, missing or
-duplicated fixture is a **loud** `SearchBackendError(retryable=False)`, never an empty list —
-unlike a stale cache row, this backend has nothing to fall back to, and silence here is
-indistinguishable from "found nothing" · results are stamped `source_backend="fixture"`, not
-the `recorded_from` provenance, because that is where *this run's* source came from ·
-SerpAPI's `organic_results_state == "Fully empty"` is read as an empty list, not a failure ·
-SerpAPI 401/403/429 are `retryable=False` (a rejected key, an exhausted tier) and 5xx/network
-are retryable — the flag is what stops the retry step spending the rest of the month · no
-retry, backoff or fallback inside any backend; that ladder is the tool's · `academic` is **one**
-backend trying OpenAlex → Crossref → arXiv in order, first answer wins, so a normal search is
-one HTTP call; a provider that fails is stepped over and only a clean sweep raises · it
-accepts and ignores `source_type` (every provider is already scholarly) · OpenAlex abstracts
-are rebuilt from `abstract_inverted_index`, or the model would choose sources by title alone ·
-`ddgs` is deliberately unimplemented — `build_search_backend` refuses it rather than resolving
-to something that merely looks right.
-
-**Provides (the tool, done):** `WebSearchTool` in `tools/web_search.py`
-(`WebSearchInput{query 3–200 chars, source_type=general, max_results=6}` →
-`WebSearchOutput{results: list[NormalizedSource]}`), constructed as
-`WebSearchTool(settings=None, *, backend=None, connection=None)` — the same injection seams
-`fetch_url` takes. Also the private `_select_backend(source_type, configured)` and
-`_widening(source_type)`. No new config value, no new `ErrorCode`, no new dependency; the
-only other edit was widening `pyproject.toml`'s `live` marker description to name a metered
-search backend and the network.
-
-Flow: `_select_backend` → `get_cached_search` → (miss) `consumes_quota` /
-`reserve_search_call` → `backend.search` → `store_cached_search` → `normalize_sources`.
-A hit and a fresh search end in the same shaping function, so they return identical output.
-
-**Tool decisions:** **selection is a pure function and the factory is unchanged** —
-`fixture` resolves to `fixture` for *every* source type (an offline run must be provably
-offline, and a routing rule with an exception is not provable); otherwise `academic` intent
-goes to the free `academic` backend, and everything else uses the configured backend
-untouched, so a query is never redirected *onto* a metered backend the user did not choose ·
-the backend name is resolved **before** the cache read, because it is part of the key — a
-recording must never answer a `serpapi` query · **each live attempt reserves its own quota**
-(the ladder is up to three searches at the provider, and there is no refund path) · a budget
-ledger that cannot be read **refuses** the live call as `SEARCH_UNAVAILABLE`, not
-`MONTHLY_BUDGET_EXCEEDED`, which would claim to know something unreadable — the one place a
-`sqlite3.Error` is not degraded to "carry on"; cache read/write failures *are* degraded, and
-logged, exactly as in S6 · a backend is built once per name and reused, so the fixture index
-is read once · the retry fires only on the first rung and only for `retryable=True`; the
-fallback to `general` is one further attempt, and the error reported is the **first** failure
-because it describes the search actually asked for · **fallback results are cached under the
-source type that answered** (`general`), never the one requested — no row may claim a search
-returned what it did not, at the cost of re-running the ladder on a repeat · results are
-trimmed to `max_results` **after** normalisation, since dedup can only shrink the list ·
-`WebSearchOutput.results` is S4's `NormalizedSource`, not a second result model.
-
-**Still to do (S8, not S7):** the optional `ddgs` backend · **real** recorded responses in
-`fixtures/search/` — the seed set is complete but every file is still `handwritten` · a
-`@pytest.mark.live` acceptance suite: one real SerpAPI query, recorded into
-`fixtures/search/` in the same session. The design already supports it — the tool takes real
-`Settings` and a real connection, and the marker keeps it out of the default run and
-`.githooks/pre-push`.
-
-**Contract decisions (settled):** a backend returns **`RawSource`** — S4's existing model, not a
-new `SearchResult` — because `normalize_sources` takes exactly that, so ranking, dedup and
-authority stay out of every provider · a backend **raises `SearchBackendError`** rather than
-returning a `ToolResult`, the same split as `LLMError` and its providers: the failure ladder is
-the tool's control flow, and an empty list must stay distinguishable from a broken backend (a
-query that found nothing succeeded, and is not retried) · `retryable=False` marks what a second
-identical call cannot fix — an exhausted quota, a rejected key — and is what keeps the retry step
-from spending the rest of the budget · `source_type` and `max_results` are keyword-only and have
-**no defaults in the protocol**, so the defaults live once, in `WebSearchInput` · `base.py`
-imports only `typing` and `RawSource`: no config, no httpx, no sqlite3, no registry ·
-`domains.json` (S4) is the ranking map — S7 never adds a `domains.yaml`.
-
-**Contracts:** the search-cache read happens **before** the quota check, so a cached query costs
-neither network nor quota · past `MONTHLY_SEARCH_BUDGET` a live call is refused with
-`MONTHLY_BUDGET_EXCEEDED` · failure ladder as built: cache → one retry with 2 s backoff → fall
-back to `source_type="general"` → `ToolError(SEARCH_UNAVAILABLE)`, never an exception (the
-plan's optional `ddgs` rung is absent because the backend is unimplemented) · results pass
-through S4 so official docs re-rank above blogs · switching backend is a `.env` change and
-nothing else.
-
-**Must not use or change:** `SEARCH_BACKEND=fixture` stays the committed default in `.env.example`
-and in `Settings` · never change it to make a test pass · never loop, retry-storm or sweep queries
-against a live backend · the tool's input schema is expensive to change (a future prompt depends
-on it); its backend is free to change.
-
----
-
-### S9 — Final tool registry wiring · **complete**
-
-*Inspect first:* `tools/wiring.py`
-*Only if needed:* `tests/unit/test_tool_wiring.py`, `tools/registry.py`
-
-**Provides:** `build_tool_registry(settings=None, *, connection=None) -> ToolRegistry` and
-`TOOL_NAMES` in `tools/wiring.py` — the composition root where the finished tools meet the
-registry. Registers all four: `fetch_url`, `normalize_sources`, `read_document`, `web_search`.
-`settings` and `connection` pass straight through to the two cache-using tools; given no
-connection they keep opening their own per call, exactly as before. No new dependency, no
-config value, no change to any tool or to the registry.
-
-**Decisions:** **a fresh registry per call, no module-level singleton** — duplicate names raise
-at wiring time by design, so a shared registry would turn a second build into a spurious
-`ValueError` and leak one caller's tools into another's · **not re-exported from
-`tools/__init__.py`**, which imports only `base` and `registry`: re-exporting would pull
-`httpx`, `sqlite3`, `pypdf` and the search backends into every import of `RunContext`, and
-would close an import cycle · `TOOL_NAMES` is **declared, not derived** — a finished tool that
-is never wired, or a name that drifts from the tool's own `name`, is then a failing assertion
-rather than a capability the agent silently lost · `normalize_sources` is registered like the
-rest so a trace shows what normalisation discarded; which subset is *advertised* to a model is
-the tool-spec layer's call (Day 3), not the registry's · the hook lists are left untouched —
-installing one here would move a concern into the composition root, and they belong to the
-tracing capability.
-
-**Known limitation:** `read_document` takes no `settings`, so the factory's `settings`
-argument does not reach it; it resolves `ALLOWED_ATTACHMENT_DIR` through `get_settings()` when
-it reads. Widening its constructor would change a finished S3 contract for one caller — do
-that only if a real caller needs a per-run attachment directory.
-
-**Must not use or change:** no DI container, no entry-point/plugin discovery, no auto-import
-scanning of `tools/` — the menu is explicit and reviewable · no provider, cache, quota or
-parsing logic in the factory · the factory does not install hooks · S8's CLI calls
-`build_tool_registry`, it does not construct tools.
-
----
-
-### S8 — Tools CLI and recorded fixtures · **complete**
-
-*Inspect first:* `tools/cli.py`, `fixtures/README.md`
-*Only if needed:* `main.py` (the CLI conventions it mirrors), `search/fixture.py`,
-`tests/unit/test_tool_wiring.py`, `README.md` (the command table to update)
-
-#### Fixtures and offline replay data · **complete**
-
-**Provides:** the `fixtures/` tree — no source file changed, no dependency, no config value.
-
+`description` and `input_model` are **the half the model sees** — they are what Day 3 Subtask 2
+turns into a `ToolSpec`. `run` is the half only the registry calls.
+
+**`RunContext`** — currently `run_id` only. Day 3 adds in-memory budget counters, Day 4 the span
+stack. The registry, every hook and every agent read it, so its shape is expensive to change.
+
+**`ToolRegistry`** — `register`, `get`, `names`, `add_pre_hook`, `add_post_hook`, and
+`async call(name, args, ctx) -> ToolResult`. `args` may be the tool's input model, a raw mapping
+(**which is the form a model's tool call arrives in**) or `None`. Order: resolve → validate args
+→ pre-hooks → `Tool.run` → post-hooks. **`call` never raises**; it times the call and stamps
+`duration_ms` centrally; an unknown name returns `UNKNOWN` with the menu, invalid arguments
+return `BAD_ARGUMENTS`, and a tool that raises anyway is caught. A pre-hook returning a
+`ToolResult` short-circuits the tool — that is how Day 4's cache hits and budget refusals will
+work. Duplicate registration raises at wiring time; everything at call time is a `ToolResult`.
+
+**The LLM contract** (`llm/base.py`): `Message{role, content}`, `ToolSpec{name, description,
+parameters: JSON Schema}`, `ToolCall{name, arguments: dict}`, `LLMResponse{text, model, provider,
+tool_calls, duration_ms, finish_reason}` with `parse_as(schema)`, `LLMError(provider, message)`,
+and
+
+```python
+async def generate(self, messages, *, schema=None, tools=None, temperature=0.0) -> LLMResponse
 ```
-fixtures/
-├── README.md      layout, provenance policy, the format, how to add a recording
-├── search/        5 recordings: postgresql-indexing (docs), explain-plans (general),
-│                  learned-indexes (academic), asyncio-cancellation (technical),
-│                  no-results (general, empty)
-├── documents/     indexing-brief.md (headings + fenced code), session-notes.txt (no headings)
-└── html/          article.html — a page with nav, header, aside, form, footer and <pre><code>
-```
+Changing this signature forces updates to all three agents. **`ToolSpec` and `ToolCall` already
+exist — Day 3 must reuse them, not define new model-facing types.**
 
-All four `source_type` values are covered, so `SEARCH_BACKEND=fixture` answers each of them out
-of the box; `ALLOWED_ATTACHMENT_DIR` already defaults to `fixtures/`, so `read_document` opens
-`documents/…` with no configuration.
+**The search contract** (`search/base.py`): `SearchBackend` protocol (`name`, `async search(query,
+*, source_type, max_results) -> list[RawSource]`), `SearchSourceType = docs | technical |
+academic | general`, `SearchBackendError(backend, message, *, retryable=True)`. A backend returns
+`RawSource` — S4's existing model, never a new result type — and **raises** rather than returning
+a `ToolResult`, so an empty list stays distinguishable from a broken backend.
 
-**Decisions:** **provenance is file-level, never per result** — `RawSource` is `extra="forbid"`,
-so `recorded_from` (`handwritten` | `serpapi` | `academic`) lives on the recording and
-`source_backend` stays `"fixture"`, which is where *this run's* source came from · everything
-committed today is `handwritten`: right shape, not knowledge — **no report may cite one**, and
-they are replaced file-by-file at the live-acceptance step · **no committed binaries** — a PDF or
-DOCX is neither human-readable nor diff-stable, and both suites already build them in memory
-(`make_pdf` in `conftest.py`, `build_docx` in `test_read_document.py`); generate into a temp
-directory instead · one file per `(query, source_type)`, no payload repeated in a second format ·
-`explain-plans` is recorded under `general` **only**, so asking for it as `docs` exercises
-`web_search`'s fallback rung offline at no extra file · `no-results.json` records the one outcome
-nothing else can show offline — a query that found nothing, replayed as an empty **success** ·
-`explain-plans` is ordered worst-authority-first on purpose, so S4's re-ranking has work to do ·
-`html/article.html` is the page S6's *"revisit `extract_html` when S8's fixtures show the output
-is too noisy"* note was waiting for.
-
-**Tests (3, all extending existing suites, no new file):** the committed search set is
-parameterized over every file in `test_search_backends.py` (the index is built either way, so a
-duplicate or unreadable recording fails there whichever file is being replayed), plus one test
-that the default `general` type still answers · `test_read_document.py` opens both committed
-attachments under the default directory and checks the outline is present for the Markdown and
-absent for the text · `test_fetch_url.py` gains the first **direct** `extract_html` test, against
-`article.html`. Not re-tested, because `tmp_path` already covers them: missing/malformed/duplicate
-failure contracts, key normalisation, `max_results` truncation, backend stamping.
-
-**Must not change:** the self-describing format or the `(query, source_type)` key —
-`search/fixture.py` owns both · never hand-edit a recording to make a test pass · a live capture
-is written into `fixtures/search/` in the **same session** as the call.
-
-#### Tools CLI · **complete**
-
-**Provides:** `src/evergrove_agent/tools/cli.py` — `python -m evergrove_agent.tools.cli` with
-four subcommands, one per registered tool, no model anywhere:
-
-```
-search  QUERY  [--type docs|technical|academic|general] [--max-results N] [--backend NAME]
-fetch   URL    [--excerpt-for QUESTION] [--max-chars N]
-read    PATH   [--mode full|outline|section] [--section HINT]
-normalize URL [URL ...]                                        every command also takes --json
-```
-
-Public shape: `build_parser()`, `async run(args, *, settings=None) -> int`, `main(argv=None)`.
-Private: `_build_call` (the only place the commands exist), `_report`, `_RENDERERS`. No new
-dependency, no config value, no `[project.scripts]` entry, and `main.py` untouched.
-
-Flow: parse → `_build_call` → `build_tool_registry(settings)` → `registry.call(name, args,
-RunContext())` → format. Given no `connection`, each tool opens its own per call — one command
-is one call.
-
-**Decisions:** every flag maps 1:1 onto a field that already exists on a tool's input model, and
-**the CLI re-checks none of their bounds** — the args dict goes to the registry, which validates
-and answers `BAD_ARGUMENTS`; a copy of the limits in argparse is a second place for them to
-drift · an option left unset is **dropped, not passed as `None`**, so every default stays on the
-input model (and `--help` reads the defaults off `model_fields`, so the help text cannot drift
-either) · `choices` come from `get_args` on the existing literals (`SearchSourceType`,
-`SearchBackendName`, `ReadMode`), so a new enum value is not also a CLI edit · **`--backend` is
-the one flag that is not a tool argument**: it is `settings.model_copy(update={"search_backend":
-…})` passed to the factory — config injection, not routing, and the process-wide settings object
-is left unchanged. `ddgs` stays in `choices`; the factory refuses it and the registry converts
-that raise into a structured failure · **`normalize` was added as a fourth command** so every
-registered tool has a direct CLI path · human-readable output by default (labelled header lines,
-then the raw body text under a `---` rule; listings show authority, domain, title, URL, snippet),
-`--json` prints `ToolResult.model_dump_json` — one renderer per tool in `_RENDERERS`, so a new
-tool is a table entry rather than another branch.
-
-**Exit codes — supersedes this section's earlier note:** `0` the tool succeeded · `1` the tool
-returned a `ToolError` (its code and message on stderr, never a traceback — `ToolRegistry.call`
-does not raise) · `2` unusable arguments, argparse's own. The earlier line here said a failure
-"exits 0"; that was changed on the user's call so a shell can tell a refusal from an answer, and
-because `main.py` already means 0/1/2.
-
-**Tests (4, extending `test_tool_wiring.py` — the CLI is nothing but wiring):** flag-to-field
-mapping parameterized over all four commands, each dict also `model_validate`d against the tool's
-own input model (catches a `dest` that drifted from its field, which breaks nothing at import
-time) · `search --backend fixture` end to end against the committed recordings with settings that
-say `serpapi` and `respx` holding no routes, so an override that silently did nothing would fail
-rather than bill · a missing file prints `NOT_FOUND` and exits 1 with no traceback in either
-stream · `--json` output parses back as a real `ToolResult`. `fetch` is covered by the mapping
-test only — `test_fetch_url.py` already owns its behaviour and an end-to-end case would need
-`respx` for nothing new.
-
-**Must not use or change:** the CLI stays argument parsing + one registry call + formatting —
-no tool logic, no backend/cache/quota/normalisation decision, no agent, no model · never
-construct a tool directly; always `build_tool_registry` · do not touch `main.py`'s existing flags
-or the report path.
+**`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
+updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
+Day 6 MCP return type and every Day 7 evaluation.
 
 ---
 
-### S10 — Offline integration and acceptance · **complete**
+## LLM architecture
 
-*Inspect first:* `tests/integration/test_day2_acceptance.py`
-*Only if needed:* `search/normalize.py` (`_canonical_host`), `tools/wiring.py`
+`llm/base.py` holds the contract; nothing outside `llm/` talks to a model directly. Three
+implementations:
 
-**Provides:** `tests/integration/` — the first suite that is not about one unit. Seven tests
-(15 cases) over the assembled stack: `build_tool_registry`, one SQLite file, the committed
-`fixtures/` tree, and **no injected connection**, so every call opens and closes its own the
-way the CLI leaves it. No source file changed except the one fix below; no dependency, no
-config value, no fixture added.
+- **`OllamaProvider`** (`name="ollama"`) — the local, mandatory, $0 path. POSTs `/api/chat`.
+  Structured output is `format=<JSON Schema>`, i.e. constrained decoding: the model physically
+  cannot emit JSON violating the schema. Sends `keep_alive` on every call so the model does not
+  unload between calls. Timeout is `TOTAL_RUN_TIMEOUT_S`.
+- **`HostedProvider`** (`name="hosted"`) — Google AI Studio (Gemini), opt-in. Also carries
+  `to_gemini_schema()`, which translates a Pydantic JSON Schema into Gemini's OpenAPI-3.0 subset:
+  inlines `$ref`/`$defs`, collapses `T | None` into `nullable`, drops keywords Gemini rejects.
+  Nothing is lost that matters because Pydantic re-validates the reply. **Reuse this function —
+  do not write a second translator.**
+- **`FakeProvider`** (`name="fake"`) — replays a scripted list and records every call
+  (`RecordedCall{messages, schema_name, tool_names, temperature}`), raising `ExhaustedScript` if
+  asked for one more than scripted. This is why the whole suite runs offline. **Day 3's loop
+  tests are built on it.**
 
-What each test protects, in the order it would cost most to have wrong:
+`build_provider(role, settings=None, *, override=None)` is the only construction path;
+`role ∈ {supervisor, researcher, appraiser}` resolves through `Settings.provider_for`. Adding a
+provider is a branch here plus a class — never a change at a call site.
 
-- **the whole pass** — search → normalize → fetch → read through one registry, with one
-  `respx` route standing in for the top result's server. Catches tools that no longer fit
-  together (a `web_search` result `fetch_url` cannot be handed), the fixture tree moving out
-  from under the committed defaults, and ranking that stops putting official docs first once
-  a *real recording* rather than a stub goes through it.
-- **both caches, across per-call connections** — miss → work → hit for the source cache and
-  the search cache. The unit suites seed one side and read the other on a connection held
-  open for the test; only this can catch a write that never reaches the file, or a read keyed
-  differently from the write.
-- **the metered repeat** — `serpapi` with a mocked server: the first search moves the ledger
-  to 1, the repeat is a cache hit and leaves it at 1. `fixture` can never move the counter,
-  so this is the only place "a cache hit costs no quota" is actually proven.
-- **every committed recording, through the registry, with no routes registered** — all four
-  source types plus the empty one, each ending with `get_search_usage == 0`.
-- **an unrecorded query** — the only path where a fall-through could happen, since a recorded
-  one answers from disk whatever the code does. Must be `SEARCH_UNAVAILABLE`, `retryable=False`.
-- **four failure layers through the CLI** — registry validation, a tool guard, the attachment
-  containment check, an HTTP status: each is its code on stderr, exit 1, no traceback.
-- **argparse's exit 2**, kept distinct from a tool's exit 1.
+**`LLMError` is an exception, `ToolError` is a value.** Deliberate: an unreachable model is a
+broken run, not something the agent can reason around. Preserve the asymmetry.
 
-**Fixed here (one production defect):** `canonicalize_url` accepted a phrase. The scheme-less
-branch turned `not a url` into `https://not a url/` — a host no resolver can answer for — so
-`fetch_url` spent two attempts on it and reported `FETCH_FAILED  retryable=true` instead of
-`BAD_ARGUMENTS`, and `normalize_sources` kept it as a source instead of counting it in
-`dropped`. `_canonical_host` now returns `None` for a host containing whitespace; anything
-else non-ASCII is still accepted, because an IDN host is legitimate. Covered by one added case
-in `test_canonicalize_url`'s existing table, not a new test.
+## Tool and registry architecture
 
-**Observed, not changed:** on a fresh fetch, `FetchUrlOutput.retrieved_at` is taken a beat
-*after* the cache row's `fetched_at`, so a hit reports a timestamp ~1 ms earlier than the call
-that filled it. Harmless — the contract is only that a hit reports the fetch, never the serve
-— so the test asserts `<=` rather than equality. Passing the stored `fetched_at` back through
-`_success` would be a change to a finished S6 contract for a cosmetic gain.
+- **One path to every tool.** Nothing calls a tool directly; everything goes through
+  `ToolRegistry.call`. Day 3 must dispatch model tool calls through it too.
+- **Few tools, enum-routed.** One `web_search` with a `source_type`, one `read_document` with a
+  `mode` — a small local model's tool selection degrades as the menu grows. The routing behind
+  each enum is deterministic Python.
+- **Hook points now, hooks later.** The pre/post lists exist and stay **empty** until Day 4. Do
+  not install a hook before then, and do not install one from `wiring.py`.
+- **`build_tool_registry` builds a fresh registry per call** — no module-level singleton, because
+  duplicate names raise by design. It is deliberately **not** re-exported from `tools/__init__.py`
+  (which imports only `base` and `registry`), so importing `RunContext` does not drag in `httpx`,
+  `sqlite3`, `pypdf` and the search backends.
+- **`TOOL_NAMES` is declared, not derived**, so a finished-but-unwired tool is a failing assertion
+  rather than a silently lost capability.
+- **Registered ≠ advertised.** `normalize_sources` is a pipeline step registered so a trace shows
+  what normalisation discarded. **Which subset is advertised to a model is Day 3 Subtask 2's
+  decision**, and `wiring.py` explicitly defers it.
+- No DI container, no plugin discovery, no auto-import scanning: the menu is explicit and
+  reviewable.
 
-**Decisions:** integration tests live in `tests/integration/`, separate from `tests/unit/` —
-same offline rules, same default run, but a failure there means the *composition* broke, not a
-unit · they use the **committed** `fixtures/` tree and default settings, because a fresh clone
-answering with no configuration is part of what is accepted; only `DB_PATH` is redirected to
-`tmp_path`, never the real cache or ledger · `read_document` still needs
-`documents.reader.get_settings` patched (the S9 limitation) · nothing here re-proves a unit:
-each test names the composition failure it catches.
+## Search architecture
 
-**Must not change:** no test in this directory may reach the network, spend quota, or need a
-model — `@respx.mock` with no routes is the default posture, and a route is registered only to
-stand in for a specific server · a live acceptance run (one real SerpAPI query, recorded into
-`fixtures/search/` in the same session) is still **outstanding** and belongs behind
-`@pytest.mark.live`, alongside the other S7 live work.
+`_select_backend(source_type, configured)` is a **pure function** in `tools/web_search.py`; the
+factory `build_search_backend(name=None, settings=None)` in `search/__init__.py` is the one place
+a `SEARCH_BACKEND` value becomes a class.
 
----
+- **`fixture` resolves to `fixture` for every source type** — an offline run must be provably
+  offline, and a routing rule with an exception is not provable.
+- Otherwise `academic` intent goes to the free `academic` backend; everything else uses the
+  configured backend untouched. **A query is never redirected onto a metered backend the user did
+  not choose.**
+- The backend name is resolved **before** the cache read, because it is part of the cache key — a
+  recording must never answer a `serpapi` query.
+- **Failure ladder:** cache → one retry with 2 s backoff (only for `retryable=True`, only on the
+  first rung) → fall back to `source_type="general"` (one further attempt) → `ToolError(
+  SEARCH_UNAVAILABLE)`. Never an exception. The error reported is the **first** failure, because
+  it describes the search actually asked for.
+- Fallback results are cached **under the source type that answered**, never the one requested.
+- Backends: `FixtureSearchBackend` (self-describing recordings; a corrupt/missing/duplicated
+  fixture is a loud `SearchBackendError`, never an empty list), `SerpApiSearchBackend`
+  (401/403/429 → `retryable=False`; 5xx/network → retryable; `"Fully empty"` is an empty list,
+  not a failure), `AcademicSearchBackend` (**one** backend trying OpenAlex → Crossref → arXiv in
+  order, first answer wins, so a normal search is one HTTP call; OpenAlex abstracts are rebuilt
+  from `abstract_inverted_index`).
+- No retry, backoff or fallback **inside** a backend; that ladder belongs to the tool.
+- **Ranking** is `search/normalize.py` + `search/domains.py`/`domains.json`: canonicalise → drop
+  unusable → dedupe → classify → stable authority sort, so official docs re-rank above blogs.
+  `domains.py` is the **only** loader and classifier (longest domain suffix wins) — never copy the
+  map. Canonicalisation is deliberately conservative: lowercase scheme/host, drop fragment, default
+  port, trailing slash, `utm_*` and named tracking params, nothing else; query order is preserved
+  and `www.` is **not** stripped from the URL, only during authority lookup.
 
-## Decisions already made (do not relitigate)
+## Fetching and document processing
 
-1. **One path to every tool.** Nothing calls a tool directly; everything goes through
-   `ToolRegistry.call`.
-2. **Tools never raise.** A failure is a `ToolResult` carrying a `ToolError` with a specific
-   `ErrorCode`.
-3. **Few tools, enum-routed.** One `web_search` with `source_type`, one `read_document` with
-   `mode` — a small local model's tool selection degrades as the menu grows. The routing behind
-   the enum is deterministic Python.
-4. **Hook points now, hooks later.** The lists stay empty in this capability.
-5. **`schemas/` imports nothing** from the package; everything imports it. Keep it that way.
-6. **Deterministic first.** No model, embeddings or vector store anywhere in this capability.
-7. **Storage is one SQLite file, stdlib `sqlite3`, no ORM.**
-8. **`fixture` is the default search backend**, which is what makes the rest of the build free.
-9. **Config is one file.** New budgets, TTLs and paths go in `config.py` and `.env.example` —
-   never inline.
+`fetch_url` flow: `canonicalize_url` → `get_cached_source` → (miss) streamed `httpx` GET →
+content-type routing → `store_cached_source` → `select_passages`. **A cache hit and a fresh fetch
+end in the same shaping function**, so one URL and one question give one answer either way.
 
-## Testing and resource rules for this capability
+- One URL per call; redirects followed; `final_url` reports where it landed while the cache stays
+  keyed on the **requested** canonical URL. No crawling, no link-following.
+- Exactly one retry, only when the failure is `retryable` (timeout, network, 5xx, 429). A 4xx is
+  never asked twice. Nothing that failed is cached.
+- A `sqlite3.Error` on either cache path is **non-fatal but logged** at WARNING — the page is still
+  returned.
+- **No headless browser, no JS rendering**: a client-side-rendered page returns `EMPTY_FILE`, by
+  design.
+- `MAX_FETCH_CALLS` is **not** enforced here — that is Day 4's registry pre-hook (and Day 3's
+  in-memory counter).
 
-- Offline by default: `FakeProvider`, `respx` for HTTP, the fixture backend, recorded fixtures,
-  and `Settings(_env_file=None)` (the `settings` fixture in `tests/conftest.py`).
-- Focused runs during implementation: `uv run pytest tests/unit/test_x.py::test_y`. The full
-  offline suite (`uv run pytest`, ~1.2 s) at a subtask boundary, or after touching a shared
-  contract (`config.py`, `schemas/`, `tools/base.py`, `tools/registry.py`).
-- Stop at the cheapest level that proves the behaviour: inspection → focused unit test → mocks and
-  fixtures → offline integration → live call. Reaching a live call without the levels below it
-  passing is a rule violation.
-- Before any live SerpAPI, Gemini, Ollama or HTTP call, state the specific uncertainty it resolves
-  and why offline cannot resolve it. **Every successful live search response is recorded into
-  `fixtures/search/` in the same session** — an uncaptured live search burns quota twice.
-- SerpAPI: 250/month total, `MONTHLY_SEARCH_BUDGET=200`. Never repeat an identical live query;
-  check the cache and `fixtures/search/` first.
-- A live failure is debugged offline (`respx`), then retried **once**.
+`documents/`:
+
+- `read_document_file(path, *, settings=None)` — path guard → size guard → suffix routing over
+  `.txt`/`.md`/`.pdf`/`.docx`. `path` resolves inside `ALLOWED_ATTACHMENT_DIR`; **containment is
+  checked before existence**, so a probe outside cannot learn what is there. Readers raise
+  `DocumentReadError`; the tool converts it once.
+- **The outline is never guessed** — Markdown ATX/setext headings, Word heading styles, PDF
+  bookmarks. A `.txt`, a style-less `.docx` and a bookmark-less PDF all get an empty outline, and
+  `section` then falls back to keyword selection over the whole text rather than slicing at an
+  invented boundary.
+- `select_passages(text, question, *, max_chars=None)` (`documents/excerpt.py`) — the deterministic
+  passage selector: keyword overlap only, no model, embeddings, network or database, so the same
+  page and question always give the same excerpt. **Both readers and `fetch_url` end in this
+  function**; do not add a second selection path.
+- `extract_html(markup) -> (title, text)` (`documents/html.py`) — stdlib `html.parser`. Drops
+  `script`/`style`/`nav`/`header`/`footer`/`aside`/`form` subtrees and emits blank-line-separated
+  paragraphs with Markdown `#` headings and four-space-indented `<pre>`, which is exactly the shape
+  `select_passages` splits and scores.
+- PDF bytes from the network reach `read_pdf` through a file in a `TemporaryDirectory`;
+  `read_document_file` cannot be used because its guard would answer `PATH_NOT_ALLOWED` for
+  downloaded bytes. **Do not add a second PDF path or a second HTML extractor.**
+
+## SQLite, caches and the quota guard
+
+One file, stdlib `sqlite3`, no ORM, no Redis, no second database. `memory/db.py` owns **all DDL**
+in `SCHEMA_STATEMENTS` (`schema_meta`, `source_cache`, `search_cache`, `search_budget`);
+`SCHEMA_VERSION` is 1 and is only a marker for whoever first changes an existing table's shape.
+`connect()` sets `row_factory = sqlite3.Row` and the pragmas `foreign_keys=ON`,
+`journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. `initialize_schema` is idempotent;
+`open_database()` runs it on every open. Multi-statement writes go through `transaction(conn)`.
+Feature modules own only their queries — `db.py` stays free of tools, models, HTTP and backends.
+
+- **Source cache** (`memory/cache.py`) — keyed on `canonicalize_url(url)` on both get and store.
+  **Reads never write**: an expired row is left in place and overwritten by the next store, so
+  there is no purge sweep. `INSERT OR REPLACE`, so refreshing and first-caching are one call.
+  Expiry is compared in Python against an injected `now`, the only test seam. A missing row, an
+  expired row and an uncanonicalizable URL are all one answer: `None`.
+- **The cache stores the whole extracted source text**, bounded only by `MAX_SOURCE_TEXT_CHARS` —
+  never raw HTML, never an excerpt, never a reading budget. Neither `SOURCE_EXCERPT_CHARS` nor the
+  caller's `max_chars` may bound it: both describe *one answer*, and trimming to either would make
+  a later, differently-worded question re-read the previous question's paragraphs from a page that
+  is never re-fetched to correct it.
+- **Search cache** (`memory/search_cache.py`) — key is `sha256` over
+  `normalized_query \x1f backend \x1f source_type \x1f max_results`, the only four inputs that
+  change what a backend returns; `max_results` stays *in* the key. Payload is JSON `RawSource`. An
+  **empty result list is cached like any other**, and a row from an older build degrades to a miss
+  rather than taking a tool down.
+- **Quota guard** (`memory/budget.py`) — check and increment are **one atomic SQLite statement**
+  (`INSERT … ON CONFLICT(month) DO UPDATE SET used = used + 1 WHERE used < ? RETURNING used`), so
+  two callers cannot both spend the last call; a returned row *is* the grant. Month is UTC
+  `YYYY-MM`. **Reserve before the call; there is no refund path** — a search that times out may
+  still have counted at the provider, so over-counting is the safe direction.
+  `QUOTA_CONSUMING_BACKENDS = {"serpapi"}` only.
+- **The search-cache read happens before the quota check**, so a cached query costs neither network
+  nor quota. A budget ledger that cannot be read **refuses** the live call as `SEARCH_UNAVAILABLE`
+  (never `MONTHLY_BUDGET_EXCEEDED`, which would claim to know something unreadable) — the one place
+  a `sqlite3.Error` is not degraded to "carry on".
+
+## Configuration
+
+One file (`config.py`) plus `.env.example`. **New budgets, TTLs and paths go there — never
+inline.** An empty `.env` is a valid, fully local, $0 configuration.
+
+**Consumed today:** `OLLAMA_HOST`, `LOCAL_MODEL`, `LOCAL_KEEP_ALIVE`, `NUM_CTX`, `HOSTED_MODEL`,
+`HOSTED_API_BASE`, `GOOGLE_API_KEY`, `*_PROVIDER`, `TEMPERATURE`, `SEARCH_BACKEND`,
+`SERPAPI_API_KEY`, `MONTHLY_SEARCH_BUDGET`, `SEARCH_TIMEOUT_S`, `SOURCE_EXCERPT_CHARS`,
+`MAX_SOURCE_TEXT_CHARS`, `MAX_DOCUMENT_BYTES`, `MAX_FETCH_BYTES`, `FETCH_TIMEOUT_S`,
+`TOTAL_RUN_TIMEOUT_S` (as the Ollama client timeout), `CACHE_TTL_DAYS`, `SEARCH_CACHE_TTL_DAYS`,
+`DB_PATH`, `ALLOWED_ATTACHMENT_DIR`, `SEARCH_FIXTURE_DIR`.
+
+**Declared but not yet consumed — these are Day 3's and Day 4's budgets, already sized:**
+`MAX_HOPS=2`, `MAX_SEARCH_CALLS=3`, `MAX_FETCH_CALLS=4`, `MAX_SOURCES_KEPT=3`,
+`MAX_MODEL_CALLS=10`, `MAX_OUTPUT_RETRIES=3`, `MEMORY_RECALL_MAX_AGE_DAYS=30` (Day 4).
+**Day 3 must consume these, not invent new ones.**
+
+`SEARCH_BACKEND=fixture` stays the committed default in `Settings` and `.env.example`. Never
+change it to make a test pass.
+
+## Testing and offline strategy
+
+**289 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
+— a failure there means the *composition* broke, not a unit.
+
+- Offline by default: `FakeProvider`, `respx` for HTTP, the fixture search backend, recorded
+  fixtures, and `Settings(_env_file=None)` (the `settings` fixture). Tests point `DB_PATH` at a
+  temporary path — never the real cache or ledger.
+- **Prove behaviour at the cheapest level that can prove it:** code inspection → focused unit test
+  → mocks and fixtures → offline integration → live call. Reaching a live call without the levels
+  below it passing is a rule violation.
 - Anything needing a real model, key or network carries `@pytest.mark.live`, which keeps it out of
-  the default run and out of the pre-push gate.
-- `.githooks/pre-push` runs `ruff check` then `pytest -q`. Never add a check to it that needs a
-  model, a key or the network, and never add a marker override.
-- Test value over count: each new test names the bug or regression it catches; parameterize
-  variations instead of copying them.
+  the default run (`addopts = "-m 'not live' --strict-markers"`) and out of the pre-push gate.
+- **`.githooks/pre-push` runs `ruff check .` then `pytest -q`.** Never add a check needing a model,
+  a key or the network, and never add a marker override — the exclusion lives once, in
+  `pyproject.toml`.
+- **Test value over count.** Each new test names the bug or regression it catches; parameterize
+  variations instead of copying them. No test for trivia, framework behaviour, or coverage.
+- SerpAPI: 250/month total, `MONTHLY_SEARCH_BUDGET=200`. Never repeat an identical live query;
+  check the cache and `fixtures/search/` first. **Every successful live search response is recorded
+  into `fixtures/search/` in the same session** — an uncaptured live search burns quota twice.
+- Fixture provenance is **file-level, never per result**: `recorded_from` lives on the recording
+  and `source_backend` stays `"fixture"`. Never hand-edit a recording to make a test pass.
 
-## Keeping this file current
+## Engineering decisions (do not relitigate)
 
-After finishing a subtask, update **its section only**: flip the status, and add the files
-changed, the public interface it now provides, and any decision that constrains later subtasks.
-Do not paste implementation detail that already lives in the code, and do not let a section grow
-past a screen.
+1. **One path to every tool** — `ToolRegistry.call`, always.
+2. **Tools never raise**; a failure is a `ToolResult` with a specific `ErrorCode`. Providers *do*
+   raise (`LLMError`, `SearchBackendError`) — the failure ladder is the caller's control flow.
+3. **Few tools, enum-routed**, because small-model tool selection degrades as the menu grows.
+4. **Hook points now, hooks later** — the lists stay empty until Day 4.
+5. **`schemas/` imports nothing** from the package; everything imports it.
+6. **Deterministic first** — no model, embeddings or vector store anywhere in the tool layer.
+7. **Storage is one SQLite file**, stdlib `sqlite3`, no ORM, no migration runner.
+8. **`fixture` is the default search backend**, which is what makes development free.
+9. **Config is one file.**
+10. **Injection seams over globals** — tools take `(settings=None, *, client/backend=None,
+    connection=None)`; given none they resolve their own. `now` is injected for anything
+    time-dependent.
+11. **Composition roots stay logic-free** — `wiring.py` and `cli.py` build and dispatch, they never
+    decide behaviour.
+
+## Verified deviations from the 7-day plan
+
+The repository is authoritative. **Do not "restore" the plan's version of any of these.**
+
+| Plan | Repository | Why |
+| --- | --- | --- |
+| `trafilatura` for HTML extraction | stdlib `html.parser` in `documents/html.py` | Recorded departure on the user's call. Revisit only if fixtures show the output is too noisy; the swap is `extract_html`'s body and no caller's business |
+| `domains.yaml` allow-list | `search/domains.json` | PyYAML is not worth adding for a static file |
+| `read_document` handles `.txt`/`.md`/`.pdf` | **`.docx` too**, via stdlib `zipfile` + `ElementTree` reading `word/document.xml` | Added to scope on request. No `python-docx`, no `lxml` |
+| `fetch_url` empty extraction → `NO_CONTENT` | `EMPTY_FILE` | Reuses an existing code rather than adding a near-duplicate |
+| `ddgs` as the keyless fallback rung | **Deliberately not implemented**; `build_search_backend` refuses it and `web_search`'s ladder has no such rung. It remains in the `SearchBackendName` literal and in CLI `--choices` | A backend that merely looks right is worse than one that refuses |
+| Four *agent-callable* tools: `web_search`, `fetch_url`, `read_document`, `recall_previous_preparation` | The four *registered* tools are `web_search`, `fetch_url`, `read_document`, **`normalize_sources`** | `recall_previous_preparation` is **Day 4** (memory). `normalize_sources` is a pipeline tool, registered for traceability, and is **not** intended for the model's menu |
+| Day 3 demo CLI `evergrove-agent prepare --task …` (a subcommand) | `main.py` uses flat flags with no subcommand; the tools CLI is a separate module | **Open decision for Day 3 Subtask 12** — adopt the subcommand or keep flat flags, but decide deliberately |
+| `validate_report` listed under Day 2 in `README.md` | Not implemented; plan §23 feature 5 places it in the **Day 3** loop | The plan wins over the README here |
+
+## Reuse and dependency guidance
+
+**Before creating anything, check this table.** Duplicating one of these is the most likely way a
+future session damages the project.
+
+| Need | Already exists — reuse it |
+| --- | --- |
+| Talk to a model | `llm.build_provider(role)` → `LLMProvider.generate` |
+| Advertise a tool to a model | `llm.base.ToolSpec`; parse the reply as `llm.base.ToolCall` |
+| Run a tool | `tools.wiring.build_tool_registry()` → `registry.call(name, args, ctx)` |
+| Pydantic → model-facing JSON Schema | `Model.model_json_schema()`; for Gemini, `hosted_provider.to_gemini_schema` |
+| Search the web | the `web_search` tool (never a backend directly, never a new backend for a new source type) |
+| Read a page or PDF by URL | the `fetch_url` tool |
+| Read a local attachment | the `read_document` tool |
+| Rank/dedupe/classify URLs | `search.normalize_sources` / `canonicalize_url` / `classify_domain` |
+| Trim text to what a model should see | `documents.select_passages` |
+| Cache a page or a search | `memory.cache` / `memory.search_cache` |
+| Spend or check live-search quota | `memory.budget.reserve_search_call` |
+| A prompt | `llm.prompts.render_prompt(name, **values)` + a new `.md` file |
+| A tunable value | `config.Settings` + `.env.example` |
+| A test without a model | `FakeProvider`; with HTTP, `respx`; with search, `SEARCH_BACKEND=fixture` |
+
+**What later days depend on:**
+
+- **Day 4** (memory, hooks, tracing) fills the registry's existing hook lists, extends `RunContext`
+  with the span stack, moves budget enforcement out of the Day 3 loop into pre-hooks, and adds
+  `recall_previous_preparation` + `save_preparation` and the `runs`/`spans` tables. **Day 3 should
+  therefore keep budget enforcement in one place, so moving it is a lift and not a rewrite.**
+- **Day 5** splits Day 3's four functions into `agents/supervisor.py`, `agents/researcher.py`,
+  `agents/appraiser.py`. **This is why Day 3 must be written as four separately-prompted functions
+  exchanging Pydantic models** — Day 5 then becomes a file move, not a rewrite. Workers reuse the
+  Day 2 tools unchanged; a tool is never re-implemented inside a worker.
+- **Day 6** (MCP) wraps `service.py`. The MCP tool's return type is `FocusPreparationReport` and its
+  input mirrors `TaskContext`.
+- **Day 7** runs five evaluations over all of the above.
+
+## Known limitations and not yet implemented
+
+**Missing (Day 3 builds these):** `schemas/agents.py` · `agents/single_agent.py` · `service.py` ·
+`validate_report` · the model-facing **`Tool` → `ToolSpec` advertisement/wiring** · **`RunContext`
+budget counters** · the Day 3 prompts (`plan`, `research_step`, `sufficiency`) and orchestration ·
+the multi-hop research loop.
+
+**Missing (later days):** hooks, tracing, `runs`/`spans` tables, `recall_previous_preparation`,
+`save_preparation`, memory-aware prompting (Day 4) · the supervisor/worker split (Day 5) · the MCP
+server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo
+(Day 7).
+
+**Outstanding Day 1/Day 2 validation — not Day 3 work, and not yet done:**
+
+- **The Ollama model bake-off has never been run** (`qwen3:4b` vs `qwen3:1.7b`, five structured
+  calls each, valid-JSON rate / tokens-per-second / time-to-first-token / wall clock). Ollama is not
+  installed on the development machine, **no local run has ever been performed, and no
+  tokens-per-second figure has been measured**. `qwen3:4b` is the plan's recommendation, not this
+  machine's measurement. Day 3's first live run is where this bites.
+- **No live SerpAPI call has ever been made.** All five recordings in `fixtures/search/` are
+  `handwritten` — right shape, not knowledge. **No report may cite one.** The live acceptance run
+  (one real query, recorded in the same session, behind `@pytest.mark.live`) is still outstanding.
+- **No live Gemini/hosted call has been verified** either; `HOSTED_MODEL` defaults to
+  `gemini-3.6-flash` and free-tier model ids change — confirm against the AI Studio console before
+  relying on it.
+
+**Known defects and rough edges:**
+
+- `read_document` takes no `settings`, so `build_tool_registry(settings=…)` does not reach it; it
+  resolves `ALLOWED_ATTACHMENT_DIR` through `get_settings()` when it reads. Tests must patch
+  `documents.reader.get_settings`. Widen its constructor only if a real caller needs a per-run
+  attachment directory.
+- URL dedup is exact canonical-string match, so `www`/non-`www` and `http`/`https` variants of one
+  page survive as two entries and can cost two fetches. One-line fix if it proves wasteful.
+- On a fresh fetch, `FetchUrlOutput.retrieved_at` is taken a beat after the cache row's
+  `fetched_at`, so a cache hit reports a timestamp ~1 ms earlier than the call that filled it.
+  Harmless; the contract is only that a hit reports the fetch, never the serve.
+- **`README.md` is stale** — it still says "Day 1 complete, Day 2 in progress", "100 unit tests",
+  that search is unimplemented, and lists `validate_report` and attachments as Day 2 TODOs. All of
+  that is wrong. **Known documentation issue; correcting it is not yet approved work.**
+- `fixtures/documents/Sample.txt` is an untracked lorem-ipsum scratch file, deliberately not
+  committed and not part of the documented fixture set.
+
+---
+
+## Current milestone — Day 3: single research agent (the core loop)
+
+**Goal:** one agent that plans, searches, reads, decides whether it has enough, performs a second
+hop when needed, and produces a validated `FocusPreparationReport`. No Supervisor, no workers yet.
+
+**Why it is the highest-risk day:** if a small local model cannot drive this loop, that must be
+discovered now, with four days left to adapt, not on Day 5.
+
+**Features (plan §23):** the loop (plan → act → observe → decide → stop) · task understanding and
+narrowing with `session_minutes` as a hard scoping input · tool-calling integration · the
+sufficiency check and second hop, capped at `MAX_HOPS=2` · structured finalisation +
+`validate_report` + retry, including source-URL grounding · in-memory budget enforcement in
+`RunContext`.
+
+**Structure it for Day 5 now.** Write the loop as four separate, separately-prompted functions,
+each taking and returning a Pydantic model from `schemas/agents.py`, even though one agent runs
+them all today:
+
+| Day 3 function | Becomes on Day 5 |
+| --- | --- |
+| `decide_next_step()` | `supervisor.decide()` |
+| `run_research_step()` | `researcher.run()` |
+| `judge_sufficiency()` | `appraiser.judge()` |
+| `finalise()` | `supervisor.finalise()` |
+
+**Acceptance criteria (end of day):** an end-to-end live run produces a valid report on ≥4 of 5
+attempts · at least one run visibly performs a second hop with a query derived from hop 1's content
+· every cited URL was actually fetched in that run · the offline `FakeProvider` test runs in under
+2 s · no budget can be exceeded.
+
+**Contingency — decide during Day 3, not after.** If the model cannot reliably drive tool calls,
+act the same day, in this order: (1) reduce the tool menu offered per turn (`web_search` and
+`fetch_url` only during the research step); (2) replace free-form tool calling with a structured
+decision step — the model returns `{"action": …, "arguments": {…}}` under a constrained schema and
+our code dispatches, which is far more reliable on small models; (3) drop to `MAX_HOPS=1` and make
+the second hop deterministic, triggered by non-empty `missing_information` rather than by free
+choice. All three preserve every Phase 2 requirement. **Record whichever is chosen in
+`prompts.md` and here.**
+
+## Day 3 subtask breakdown — none started
+
+Each subtask is planned, approved, implemented and tested independently.
+
+| # | Subtask | Primary targets | Depends on | Status |
+| --- | --- | --- | --- | --- |
+| **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses Day 1/2 schemas (`TaskContext`, `FocusPreparationReport`, `NormalizedSource`, `ToolResult`). **No loop, no prompts, no model calls** | `schemas/agents.py` | — | **Next** |
+| **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; decide which tools are advertised at each reasoning stage; validate model-supplied arguments; dispatch through `ToolRegistry`. Never bypass or duplicate a tool implementation | a new tool-spec module | S1 | Not started |
+| **S3** | **Agent prompts and assembly** — the prompt files plus the helper that renders findings and sources into them under `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the assembly contract is not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md` revision | S1 | Not started |
+| **S4** | **In-memory budget counters on `RunContext`** — `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS`, `MAX_SOURCES_KEPT`, `TOTAL_RUN_TIMEOUT_S`. Keep enforcement in one place so Day 4 can lift it into hooks | `tools/base.py` | — | Not started |
+| **S5** | **Task understanding and narrowing** — `decide_next_step()`: a broad task becomes one session-sized research question, with `session_minutes` as a hard scoping input | `agents/single_agent.py` | S1–S4 | Not started |
+| **S6** | **Research step** — `run_research_step()`: the search → fetch → collect turn; tool-call parsing; "unknown tool" and "malformed arguments" handled as ordinary recoverable states; in-run `seen_urls` / `seen_queries` | `agents/single_agent.py` | S5 | Not started |
+| **S7** | **Sufficiency judgement** — `judge_sufficiency()`: do these sources support a useful session, or is a prerequisite missing? Becomes the Appraiser on Day 5 | `agents/single_agent.py` | S6 | Not started |
+| **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=2` never exceeded even if the model keeps asking to research | `agents/single_agent.py` | S5–S7 | Not started |
+| **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | Not started |
+| **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider, then fail loudly. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py` | S9 | Not started |
+| **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin | `service.py` | S8, S10 | Not started |
+| **S12** | **CLI integration** — research mode replaces the current refusal; `--attachment` wired to `read_document`. **Resolves the open subcommand-vs-flat-flags decision** | `main.py` | S11 | Not started |
+| **S13** | **Offline integration tests** — full loop on `FakeProvider` + fixture search, valid report, **under 2 s** · a scripted "insufficient" verdict triggers exactly one second hop · the hop cap holds · a `SEARCH_UNAVAILABLE` degrades the report rather than crashing · three invalid outputs raise `PreparationFailed` · grounding rejects a report citing an unfetched URL | `tests/integration/test_single_loop.py` | S12 | Not started |
+| **S14** | **Live end-to-end verification** — Ollama + SerpAPI: a valid report on ≥4 of 5 attempts, one visible second hop, every cited URL actually fetched. **Every live search response recorded into `fixtures/search/` in the same session.** Also clears the outstanding Day 1/2 live gaps | `fixtures/search/`, `prompts.md` | S13 | Not started |
+
+```
+S1 ─┬─► S2 ─┐
+    ├─► S3 ─┼─► S5 ─► S6 ─► S7 ─► S8 ─► S11 ─► S12 ─► S13 ─► S14
+S4 ─┘       │                      ▲
+            └─► S9 ─► S10 ─────────┘
+```
+
+---
+
+## Maintaining this document
+
+After each completed subtask, update **only** the sections it affects:
+
+- flip that subtask's status and record what it now provides;
+- add any new contract, invariant or decision that constrains later work;
+- note new or changed files, dependencies and tests;
+- update the status block when the milestone or next task changes.
+
+Do **not** turn it back into an implementation diary. Do not paste detail that the code already
+states clearly. Do not remove an older contract, invariant, deviation or dependency that later
+work still relies on. If something here turns out to be wrong, verify against the code and correct
+it — the repository is the evidence.
