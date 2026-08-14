@@ -39,8 +39,8 @@ branch).
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
 | `src/evergrove_agent/schemas/tools.py` | `ToolResult`, `ToolError`, `ErrorCode` — the envelope every tool returns |
 | `src/evergrove_agent/config.py` | every budget, path, TTL and backend switch |
-| `tests/unit/`, `tests/conftest.py` | offline suites; `settings` fixture is `Settings(_env_file=None)` |
-| `fixtures/` | *not created yet* — recorded search JSON, HTML, PDFs, text |
+| `tests/unit/`, `tests/integration/`, `tests/conftest.py` | offline suites — units, then the assembled stack (S10); `settings` fixture is `Settings(_env_file=None)` |
+| `fixtures/` | offline replay data: `search/` recordings, `documents/` attachments, `html/` markup, and `README.md` (the provenance rules) |
 | `.env.example` | the documented setting set; committed defaults must stay offline |
 
 ## Do not inspect by default
@@ -61,14 +61,15 @@ Order and dependencies:
 ```
 S1 registry ──┬─► S3 read_document ──┐
 S2 excerpt ───┘                      │
-S1 ──► S4 normalize_sources ──┬──────┼─► S8 tools CLI + fixtures
+S1 ──► S4 normalize_sources ──┬──────┼─► S8 tools CLI + fixtures ──► S10 acceptance
 config ─► S5 sqlite cache ────┴─► S6 fetch_url ─┤
                               └─► S7 web_search ┘
 ```
 
 `S3`–`S5` are independent of each other and may be done in any order. `S6` needs `S3`'s PDF
 reader, `S4` and `S5`. `S7` needs `S4` and `S5`. `S9` assembles the finished tools into one
-registry and comes before `S8`, which is a thin surface over it. `S8` is last.
+registry and comes before `S8`, which is a thin surface over it. `S10` is the offline
+acceptance pass over everything above it and is last.
 
 ---
 
@@ -431,11 +432,12 @@ returned what it did not, at the cost of re-running the ladder on a repeat · re
 trimmed to `max_results` **after** normalisation, since dedup can only shrink the list ·
 `WebSearchOutput.results` is S4's `NormalizedSource`, not a second result model.
 
-**Still to do (S8, not S7):** the optional `ddgs` backend · real recorded responses in
-`fixtures/search/` (the committed one is hand-written) · a `@pytest.mark.live` acceptance
-suite: one real SerpAPI query, recorded into `fixtures/search/` in the same session. The
-design already supports it — the tool takes real `Settings` and a real connection, and the
-marker keeps it out of the default run and `.githooks/pre-push`.
+**Still to do (S8, not S7):** the optional `ddgs` backend · **real** recorded responses in
+`fixtures/search/` — the seed set is complete but every file is still `handwritten` · a
+`@pytest.mark.live` acceptance suite: one real SerpAPI query, recorded into
+`fixtures/search/` in the same session. The design already supports it — the tool takes real
+`Settings` and a real connection, and the marker keeps it out of the default run and
+`.githooks/pre-push`.
 
 **Contract decisions (settled):** a backend returns **`RawSource`** — S4's existing model, not a
 new `SearchResult` — because `normalize_sources` takes exactly that, so ranking, dedup and
@@ -501,18 +503,177 @@ parsing logic in the factory · the factory does not install hooks · S8's CLI c
 
 ---
 
-### S8 — Tools CLI and recorded fixtures · **pending**
+### S8 — Tools CLI and recorded fixtures · **complete**
 
-*Inspect first:* `main.py` (the existing CLI conventions only), the finished tools
-*Only if needed:* `README.md` (the command table to update)
+*Inspect first:* `tools/cli.py`, `fixtures/README.md`
+*Only if needed:* `main.py` (the CLI conventions it mirrors), `search/fixture.py`,
+`tests/unit/test_tool_wiring.py`, `README.md` (the command table to update)
 
-**Expected output:** `python -m evergrove_agent.tools.cli` with `search` / `fetch` / `read`
-subcommands, exercising all four agent-callable tools with no model involved; a failure prints its
-error code and exits 0. Fixtures recorded for HTML, PDF, text and search.
+#### Fixtures and offline replay data · **complete**
 
-**Contracts:** the CLI is a thin surface over the registry — no tool logic in it.
+**Provides:** the `fixtures/` tree — no source file changed, no dependency, no config value.
 
-**Must not use or change:** do not touch `main.py`'s existing flags or the report path.
+```
+fixtures/
+├── README.md      layout, provenance policy, the format, how to add a recording
+├── search/        5 recordings: postgresql-indexing (docs), explain-plans (general),
+│                  learned-indexes (academic), asyncio-cancellation (technical),
+│                  no-results (general, empty)
+├── documents/     indexing-brief.md (headings + fenced code), session-notes.txt (no headings)
+└── html/          article.html — a page with nav, header, aside, form, footer and <pre><code>
+```
+
+All four `source_type` values are covered, so `SEARCH_BACKEND=fixture` answers each of them out
+of the box; `ALLOWED_ATTACHMENT_DIR` already defaults to `fixtures/`, so `read_document` opens
+`documents/…` with no configuration.
+
+**Decisions:** **provenance is file-level, never per result** — `RawSource` is `extra="forbid"`,
+so `recorded_from` (`handwritten` | `serpapi` | `academic`) lives on the recording and
+`source_backend` stays `"fixture"`, which is where *this run's* source came from · everything
+committed today is `handwritten`: right shape, not knowledge — **no report may cite one**, and
+they are replaced file-by-file at the live-acceptance step · **no committed binaries** — a PDF or
+DOCX is neither human-readable nor diff-stable, and both suites already build them in memory
+(`make_pdf` in `conftest.py`, `build_docx` in `test_read_document.py`); generate into a temp
+directory instead · one file per `(query, source_type)`, no payload repeated in a second format ·
+`explain-plans` is recorded under `general` **only**, so asking for it as `docs` exercises
+`web_search`'s fallback rung offline at no extra file · `no-results.json` records the one outcome
+nothing else can show offline — a query that found nothing, replayed as an empty **success** ·
+`explain-plans` is ordered worst-authority-first on purpose, so S4's re-ranking has work to do ·
+`html/article.html` is the page S6's *"revisit `extract_html` when S8's fixtures show the output
+is too noisy"* note was waiting for.
+
+**Tests (3, all extending existing suites, no new file):** the committed search set is
+parameterized over every file in `test_search_backends.py` (the index is built either way, so a
+duplicate or unreadable recording fails there whichever file is being replayed), plus one test
+that the default `general` type still answers · `test_read_document.py` opens both committed
+attachments under the default directory and checks the outline is present for the Markdown and
+absent for the text · `test_fetch_url.py` gains the first **direct** `extract_html` test, against
+`article.html`. Not re-tested, because `tmp_path` already covers them: missing/malformed/duplicate
+failure contracts, key normalisation, `max_results` truncation, backend stamping.
+
+**Must not change:** the self-describing format or the `(query, source_type)` key —
+`search/fixture.py` owns both · never hand-edit a recording to make a test pass · a live capture
+is written into `fixtures/search/` in the **same session** as the call.
+
+#### Tools CLI · **complete**
+
+**Provides:** `src/evergrove_agent/tools/cli.py` — `python -m evergrove_agent.tools.cli` with
+four subcommands, one per registered tool, no model anywhere:
+
+```
+search  QUERY  [--type docs|technical|academic|general] [--max-results N] [--backend NAME]
+fetch   URL    [--excerpt-for QUESTION] [--max-chars N]
+read    PATH   [--mode full|outline|section] [--section HINT]
+normalize URL [URL ...]                                        every command also takes --json
+```
+
+Public shape: `build_parser()`, `async run(args, *, settings=None) -> int`, `main(argv=None)`.
+Private: `_build_call` (the only place the commands exist), `_report`, `_RENDERERS`. No new
+dependency, no config value, no `[project.scripts]` entry, and `main.py` untouched.
+
+Flow: parse → `_build_call` → `build_tool_registry(settings)` → `registry.call(name, args,
+RunContext())` → format. Given no `connection`, each tool opens its own per call — one command
+is one call.
+
+**Decisions:** every flag maps 1:1 onto a field that already exists on a tool's input model, and
+**the CLI re-checks none of their bounds** — the args dict goes to the registry, which validates
+and answers `BAD_ARGUMENTS`; a copy of the limits in argparse is a second place for them to
+drift · an option left unset is **dropped, not passed as `None`**, so every default stays on the
+input model (and `--help` reads the defaults off `model_fields`, so the help text cannot drift
+either) · `choices` come from `get_args` on the existing literals (`SearchSourceType`,
+`SearchBackendName`, `ReadMode`), so a new enum value is not also a CLI edit · **`--backend` is
+the one flag that is not a tool argument**: it is `settings.model_copy(update={"search_backend":
+…})` passed to the factory — config injection, not routing, and the process-wide settings object
+is left unchanged. `ddgs` stays in `choices`; the factory refuses it and the registry converts
+that raise into a structured failure · **`normalize` was added as a fourth command** so every
+registered tool has a direct CLI path · human-readable output by default (labelled header lines,
+then the raw body text under a `---` rule; listings show authority, domain, title, URL, snippet),
+`--json` prints `ToolResult.model_dump_json` — one renderer per tool in `_RENDERERS`, so a new
+tool is a table entry rather than another branch.
+
+**Exit codes — supersedes this section's earlier note:** `0` the tool succeeded · `1` the tool
+returned a `ToolError` (its code and message on stderr, never a traceback — `ToolRegistry.call`
+does not raise) · `2` unusable arguments, argparse's own. The earlier line here said a failure
+"exits 0"; that was changed on the user's call so a shell can tell a refusal from an answer, and
+because `main.py` already means 0/1/2.
+
+**Tests (4, extending `test_tool_wiring.py` — the CLI is nothing but wiring):** flag-to-field
+mapping parameterized over all four commands, each dict also `model_validate`d against the tool's
+own input model (catches a `dest` that drifted from its field, which breaks nothing at import
+time) · `search --backend fixture` end to end against the committed recordings with settings that
+say `serpapi` and `respx` holding no routes, so an override that silently did nothing would fail
+rather than bill · a missing file prints `NOT_FOUND` and exits 1 with no traceback in either
+stream · `--json` output parses back as a real `ToolResult`. `fetch` is covered by the mapping
+test only — `test_fetch_url.py` already owns its behaviour and an end-to-end case would need
+`respx` for nothing new.
+
+**Must not use or change:** the CLI stays argument parsing + one registry call + formatting —
+no tool logic, no backend/cache/quota/normalisation decision, no agent, no model · never
+construct a tool directly; always `build_tool_registry` · do not touch `main.py`'s existing flags
+or the report path.
+
+---
+
+### S10 — Offline integration and acceptance · **complete**
+
+*Inspect first:* `tests/integration/test_day2_acceptance.py`
+*Only if needed:* `search/normalize.py` (`_canonical_host`), `tools/wiring.py`
+
+**Provides:** `tests/integration/` — the first suite that is not about one unit. Seven tests
+(15 cases) over the assembled stack: `build_tool_registry`, one SQLite file, the committed
+`fixtures/` tree, and **no injected connection**, so every call opens and closes its own the
+way the CLI leaves it. No source file changed except the one fix below; no dependency, no
+config value, no fixture added.
+
+What each test protects, in the order it would cost most to have wrong:
+
+- **the whole pass** — search → normalize → fetch → read through one registry, with one
+  `respx` route standing in for the top result's server. Catches tools that no longer fit
+  together (a `web_search` result `fetch_url` cannot be handed), the fixture tree moving out
+  from under the committed defaults, and ranking that stops putting official docs first once
+  a *real recording* rather than a stub goes through it.
+- **both caches, across per-call connections** — miss → work → hit for the source cache and
+  the search cache. The unit suites seed one side and read the other on a connection held
+  open for the test; only this can catch a write that never reaches the file, or a read keyed
+  differently from the write.
+- **the metered repeat** — `serpapi` with a mocked server: the first search moves the ledger
+  to 1, the repeat is a cache hit and leaves it at 1. `fixture` can never move the counter,
+  so this is the only place "a cache hit costs no quota" is actually proven.
+- **every committed recording, through the registry, with no routes registered** — all four
+  source types plus the empty one, each ending with `get_search_usage == 0`.
+- **an unrecorded query** — the only path where a fall-through could happen, since a recorded
+  one answers from disk whatever the code does. Must be `SEARCH_UNAVAILABLE`, `retryable=False`.
+- **four failure layers through the CLI** — registry validation, a tool guard, the attachment
+  containment check, an HTTP status: each is its code on stderr, exit 1, no traceback.
+- **argparse's exit 2**, kept distinct from a tool's exit 1.
+
+**Fixed here (one production defect):** `canonicalize_url` accepted a phrase. The scheme-less
+branch turned `not a url` into `https://not a url/` — a host no resolver can answer for — so
+`fetch_url` spent two attempts on it and reported `FETCH_FAILED  retryable=true` instead of
+`BAD_ARGUMENTS`, and `normalize_sources` kept it as a source instead of counting it in
+`dropped`. `_canonical_host` now returns `None` for a host containing whitespace; anything
+else non-ASCII is still accepted, because an IDN host is legitimate. Covered by one added case
+in `test_canonicalize_url`'s existing table, not a new test.
+
+**Observed, not changed:** on a fresh fetch, `FetchUrlOutput.retrieved_at` is taken a beat
+*after* the cache row's `fetched_at`, so a hit reports a timestamp ~1 ms earlier than the call
+that filled it. Harmless — the contract is only that a hit reports the fetch, never the serve
+— so the test asserts `<=` rather than equality. Passing the stored `fetched_at` back through
+`_success` would be a change to a finished S6 contract for a cosmetic gain.
+
+**Decisions:** integration tests live in `tests/integration/`, separate from `tests/unit/` —
+same offline rules, same default run, but a failure there means the *composition* broke, not a
+unit · they use the **committed** `fixtures/` tree and default settings, because a fresh clone
+answering with no configuration is part of what is accepted; only `DB_PATH` is redirected to
+`tmp_path`, never the real cache or ledger · `read_document` still needs
+`documents.reader.get_settings` patched (the S9 limitation) · nothing here re-proves a unit:
+each test names the composition failure it catches.
+
+**Must not change:** no test in this directory may reach the network, spend quota, or need a
+model — `@respx.mock` with no routes is the default posture, and a route is registered only to
+stand in for a specific server · a live acceptance run (one real SerpAPI query, recorded into
+`fixtures/search/` in the same session) is still **outstanding** and belongs behind
+`@pytest.mark.live`, alongside the other S7 live work.
 
 ---
 

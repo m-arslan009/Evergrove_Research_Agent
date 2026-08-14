@@ -570,3 +570,79 @@ docs/research-tools-context.md.
 `User prompt`: [Decision on two options offered during planning] Register all four completed
 tools including normalize_sources, and place the factory in a new tools/wiring.py rather than in
 tools/__init__.py.
+
+`Title`: Fixtures and offline replay data
+
+`User prompt`: Implement the next Research Tools subtask: Fixtures and Offline Replay Data. First
+read docs/research-tools-context.md and inspect only the existing fixture backend, search
+backends, document fixtures, fetch/search tests, and fixture directory structure. Do not scan the
+whole repo. Before coding, briefly explain in non-technical + technical form what fixtures are for
+and the minimal fixture strategy you propose. Required behavior: create a small, representative
+set of deterministic fixtures for offline development/testing; reuse the existing self-describing
+search-fixture format and FixtureBackend lookup rules; include only fixtures that support real
+current behavior, and do not create large amounts of fake data; cover representative cases for
+search results, HTML content, and PDF/TXT/DOCX only where existing tests/tools need them; clearly
+mark fixture provenance such as handwritten, serpapi, or academic provider where supported;
+handwritten fixtures are acceptable as seed data, but must not be treated as production knowledge;
+do not duplicate the same data across multiple fixture formats unnecessarily; keep fixtures stable
+and human-readable. For search fixtures, ensure the metadata needed for deterministic lookup is
+present, e.g. query, source type, provider/provenance, and normalized results. Do not make live
+API calls in this subtask. Real SerpAPI/OpenAlex/Crossref/arXiv responses will be recorded later
+during the explicit live-acceptance step. Add only minimal tests necessary to prove fixture
+loading/replay works and missing/malformed fixtures fail through existing structured contracts.
+Avoid duplicate tests already covering the same behavior. Update the fixtures section in
+docs/research-tools-context.md.
+
+`Title`: Tools CLI
+
+`User prompt`: Implement the next Research Tools subtask: Tools CLI. First read
+docs/research-tools-context.md and inspect only the existing tool registry, completed tools,
+schemas/contracts, and current CLI/main entry points. Do not scan the whole repo. Before coding,
+briefly explain in non-technical + technical form what the CLI should expose and the minimal
+command structure you propose. Build a thin CLI that lets a person run the completed tools
+directly, with no agent or LLM involved. Required commands: search, fetch, read. They should call
+the existing Tool Registry / tool contracts, not duplicate tool logic. Required behavior: search
+runs web_search with query, source type, result limit, and optional backend override if already
+supported; fetch runs fetch_url for a known URL, with optional excerpt/question input if the
+existing schema supports it; read runs read_document with path and supported mode such as full,
+outline, or section. Use existing schemas, enums, validation, registry calls, and structured
+errors. Print useful structured output that is easy to inspect manually. Tool failures should
+print their error code/message cleanly rather than crash with a traceback. Keep the CLI thin:
+argument parsing + registry call + output formatting only. Do not add agent reasoning,
+search/provider logic, cache logic, memory, tracing, MCP, or LLM behavior. Reuse the project's
+existing CLI approach/library if one already exists; otherwise choose the smallest stdlib/simple
+solution that fits the repo. The CLI should support the Day 2-style flows, for example: `uv run
+python -m evergrove_agent.tools.cli search "postgresql indexing" --type docs --backend fixture`,
+`uv run python -m evergrove_agent.tools.cli fetch https://example.com/page`, `uv run python -m
+evergrove_agent.tools.cli read path/to/file.pdf --mode outline`. Testing must be offline only.
+Add only high-value tests proving argument parsing/wiring, successful tool execution through the
+registry, and clean structured failure output. Use fixtures/mocks; do not call live websites,
+SerpAPI, academic APIs, Gemini, or Ollama. Update the CLI section in
+docs/research-tools-context.md.
+
+`Title`: Tools CLI output, exit codes and a fourth command
+
+`User prompt`: (decisions taken during planning) Print a human-readable summary by default, with
+--json for the full ToolResult envelope. A tool failure exits 1 (0 success, 2 bad arguments),
+superseding the earlier "a failure exits 0" note in docs/research-tools-context.md. Add a
+`normalize` command as well as search/fetch/read, so every registered tool has a direct CLI path.
+
+`Title`: Offline integration / acceptance verification of the Day 2 stack
+
+`User prompt`: Implement the next Research Tools subtask: Offline Integration / Acceptance
+Verification. Verify the Day 2 stack offline only: read_document works through CLI/registry;
+fetch_url works with mocked/local fixture data and Source Cache; web_search works with
+FixtureBackend and Search Cache; normalize_sources works through the registry; cache miss → work
+→ cache hit behavior is correct; search cache hits do not consume budget; fixture mode never
+falls through to live APIs; important failures return structured error codes instead of
+tracebacks; CLI commands return usable output and correct exit codes. Prefer a small number of
+high-value integration tests. Do not duplicate unit tests that already prove isolated behavior.
+Run only offline tests. Do not call SerpAPI, OpenAlex, Crossref, arXiv, real websites, Gemini, or
+Ollama. If failures are found, fix only issues required for Day 2 acceptance. Do not redesign
+completed components unnecessarily.
+
+`Title`: Close the Research Tools capability and merge it into the main line
+
+`User prompt`: Moving towards our next major deliverable, make sure the research tool is complete
+and works correctly if already tested and confirmed. Then merge the research-tool branch into
+main, but keep the research branch as it is to work with it in future if required.
