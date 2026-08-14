@@ -1,0 +1,17 @@
+Session notes - handwritten fixture, not researched material.
+
+Plain text on purpose: there are no headings anywhere in this file, so read_document
+returns an empty outline for it and `section` mode falls back to keyword selection over
+the whole text instead of slicing at a boundary that was never there.
+
+Yesterday I ran EXPLAIN ANALYZE on the articles query and the planner chose a sequential
+scan even though there is an index on author_id. The estimate said forty thousand rows and
+the executor returned eleven, which is the gap worth chasing first.
+
+Next time: check whether the statistics are stale, then check whether the filter is
+sargable at all. A function wrapped around the indexed column stops the index being usable
+no matter how healthy the statistics are.
+
+Open question: does the ORDER BY published_at DESC LIMIT 10 change which index the planner
+would rather have, and would a composite index on (author_id, published_at) serve both the
+filter and the sort in one pass.

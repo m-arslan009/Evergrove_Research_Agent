@@ -1,0 +1,75 @@
+#!/usr/bin/env sh
+#
+# Pre-push quality gate for the Evergrove Research Agent.
+#
+# Runs the project's fast, free, deterministic checks before any commit leaves the
+# machine. Every check here is offline by design: no Ollama, no Gemini/GOOGLE_API_KEY,
+# no SerpAPI, no live HTTP. See .claude/rules/offline-first-development.md — expensive
+# calls are spent to prove something deliberately, never on an automatic trigger that
+# fires on every push.
+#
+# Enable (once per clone):
+#   git config core.hooksPath .githooks
+#
+# Bypass in an emergency:
+#   git push --no-verify
+
+set -u
+
+# Hooks run from the top level of the working tree, but a stale cwd would silently
+# check the wrong project. Anchor explicitly.
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+cd "$repo_root" || exit 1
+
+RED=''
+GREEN=''
+BOLD=''
+RESET=''
+if [ -t 2 ]; then
+	RED=$(printf '\033[31m')
+	GREEN=$(printf '\033[32m')
+	BOLD=$(printf '\033[1m')
+	RESET=$(printf '\033[0m')
+fi
+
+# Deleting a remote branch pushes no code, so there is nothing to validate.
+# git feeds us "<local ref> <local sha> <remote ref> <remote sha>" per ref; an
+# all-zero local sha means a delete. If every line is a delete, skip the gate.
+has_content=0
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+	case "$local_sha" in
+		''|*[!0]*) has_content=1 ;;
+	esac
+done
+if [ "$has_content" -eq 0 ]; then
+	printf '%spre-push:%s branch deletion only, no checks needed.\n' "$BOLD" "$RESET" >&2
+	exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+	printf '%spre-push blocked:%s `uv` is not on PATH.\n' "$RED$BOLD" "$RESET" >&2
+	printf '  Install it from https://docs.astral.sh/uv/ then retry.\n' >&2
+	exit 1
+fi
+
+# Run one check; on failure, name it and abort the push immediately.
+run_check() {
+	label=$1
+	shift
+	printf '%spre-push:%s %s\n' "$BOLD" "$RESET" "$label" >&2
+	if ! "$@"; then
+		printf '\n%spre-push blocked: %s failed.%s\n' "$RED$BOLD" "$label" "$RESET" >&2
+		printf '  Command: %s\n' "$*" >&2
+		printf '  Fix it and push again, or bypass with `git push --no-verify`.\n' >&2
+		exit 1
+	fi
+}
+
+run_check "ruff lint" uv run ruff check .
+
+# Bare `pytest` on purpose: pyproject.toml already sets
+# addopts = "-m 'not live' --strict-markers", so the live exclusion comes from that
+# single source of truth. Passing -m here would duplicate it and let the two drift.
+run_check "pytest (offline suite)" uv run pytest -q
+
+printf '%spre-push: all checks passed.%s\n' "$GREEN$BOLD" "$RESET" >&2

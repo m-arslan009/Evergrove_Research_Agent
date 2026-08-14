@@ -12,6 +12,8 @@ dependencies = [
     "pydantic>=2.11,<3",       # schemas + structured-output JSON Schema (plan 6, 17)
     "pydantic-settings>=2.8,<3", # config.py reads .env (plan 21, feature 1)
     "httpx>=0.28,<1",          # the only HTTP client: Ollama + Google AI Studio (plan 6)
+    "pypdf>=5.1,<7",           # read_document's PDF reader (plan 6). DOCX needs no
+                               # dependency: stdlib zipfile + ElementTree read its XML.
 ]
 
 [project.scripts]
@@ -22,6 +24,7 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.25,<2",
     "respx>=0.22,<1",          # mocks httpx so provider tests run with no model (plan 29)
+    "ruff>=0.14,<1",           # lint + format; the pre-push gate runs both
 ]
 
 [build-system]
@@ -37,5 +40,13 @@ asyncio_mode = "auto"
 # The default run is offline and model-free (plan 29). `-m live` opts in.
 addopts = "-m 'not live' --strict-markers"
 markers = [
-    "live: requires a running Ollama instance or a hosted API key; excluded by default",
+    "live: requires a running Ollama instance, a hosted API key, a metered search backend or network access; excluded by default",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88   # matches how the codebase is already written; ruff's default
+
+[tool.ruff.lint]
+# Ruff's defaults: pycodestyle errors, Pyflakes. Real mistakes, not style opinions.
+select = ["E4", "E7", "E9", "F"]

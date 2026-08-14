@@ -1,0 +1,23 @@
+{
+  "query": "learned index structures",
+  "source_type": "academic",
+  "recorded_from": "handwritten",
+  "note": "Seed fixture shaped like AcademicSearchBackend's output: DOI-first URLs, abstract-as-snippet. Lets the academic source type replay offline. Replace with a real OpenAlex/Crossref/arXiv recording at the live-acceptance step.",
+  "results": [
+    {
+      "url": "https://doi.org/10.1145/3183713.3196909",
+      "title": "The Case for Learned Index Structures",
+      "snippet": "Indexes are models: a B-tree maps a key to a position within a sorted array, and a learned model can approximate that same mapping with far less space."
+    },
+    {
+      "url": "https://arxiv.org/abs/1712.01208",
+      "title": "The Case for Learned Index Structures (preprint)",
+      "snippet": "We show that learned indexes can outperform cache-optimized B-trees by up to 70% in speed while saving an order of magnitude in memory on several real-world datasets."
+    },
+    {
+      "url": "https://doi.org/10.14778/3389133.3389135",
+      "title": "RadixSpline: A Single-Pass Learned Index",
+      "snippet": "A learned index that is built in a single pass over sorted data, with no hyperparameter tuning, while matching the lookup performance of existing learned structures."
+    }
+  ]
+}

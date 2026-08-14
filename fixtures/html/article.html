@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Understanding B-tree indexes</title>
+  <style>body { font-family: sans-serif; }</style>
+  <script>window.analytics = { track: function () { return false; } };</script>
+</head>
+<body>
+  <header>
+    <a href="/">Example Docs</a>
+    <p>Version 17 &middot; last reviewed August 2026</p>
+  </header>
+
+  <nav>
+    <ul>
+      <li><a href="/indexes">Indexes</a></li>
+      <li><a href="/planner">Planner</a></li>
+      <li><a href="/tuning">Tuning</a></li>
+      <li><a href="/glossary">Glossary</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <article>
+      <h1>Understanding B-tree indexes</h1>
+
+      <p>An index is a structure that stores keys in sorted order together with a pointer
+      back to the row they belong to. A lookup becomes a walk down a tree instead of a scan
+      of the whole table, and the advantage grows with the size of the table.</p>
+
+      <h2>Why the tree stays shallow</h2>
+
+      <p>A B-tree is balanced, so every leaf sits at the same depth and a lookup costs a
+      predictable number of steps. Entries are also held in order, which is what lets one
+      index satisfy a sort as well as a filter.</p>
+
+      <blockquote>An index nothing queries is pure overhead: it still has to be maintained
+      on every insert, update and delete.</blockquote>
+
+      <h2>Checking what the planner did</h2>
+
+      <p>Run the statement through <code>EXPLAIN ANALYZE</code> and compare the estimated
+      row counts with the actual ones.</p>
+
+      <pre><code>EXPLAIN ANALYZE
+SELECT id, title
+FROM articles
+WHERE author_id = 42;</code></pre>
+
+      <p>A large gap between the estimate and the result usually means the statistics are
+      stale rather than that the index is wrong.</p>
+    </article>
+
+    <aside>
+      <h3>Related reading</h3>
+      <ul>
+        <li><a href="/gin">GIN indexes</a></li>
+        <li><a href="/brin">BRIN indexes</a></li>
+      </ul>
+    </aside>
+
+    <form action="/subscribe" method="post">
+      <label for="email">Get the newsletter</label>
+      <input id="email" name="email" type="email">
+      <button type="submit">Subscribe</button>
+    </form>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 Example Docs. All rights reserved. Privacy policy. Cookie settings.</p>
+  </footer>
+</body>
+</html>

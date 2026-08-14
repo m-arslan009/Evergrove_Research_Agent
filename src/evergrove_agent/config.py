@@ -69,10 +69,12 @@ class Settings(BaseSettings):
 
     # --- Hosted model runtime (Google AI Studio, free tier, opt-in) --------------------
     hosted_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.6-flash",
         description=(
             "Google AI Studio model id. Confirm the exact id against your own AI Studio "
-            "console before relying on it — free-tier model ids change."
+            "console before relying on it — free-tier model ids change. The previous "
+            "default, gemini-2.5-flash, now 404s for newly issued keys: ListModels still "
+            "advertises it, but generateContent answers 'no longer available to new users'."
         ),
     )
     hosted_api_base: str = Field(
@@ -105,6 +107,12 @@ class Settings(BaseSettings):
         description="Live searches allowed per calendar month. 200 of SerpAPI's 250, "
         "leaving 50 in reserve (plan 10).",
     )
+    search_timeout_s: int = Field(
+        default=15,
+        ge=1,
+        description="Per-request timeout for a live search backend. Shared by serpapi "
+        "and academic so the two cannot drift apart.",
+    )
 
     # --- Per-run budgets (plan 14.4, revised for this hardware) ------------------------
     max_hops: int = Field(default=2, ge=1, le=3)
@@ -117,6 +125,33 @@ class Settings(BaseSettings):
         ge=200,
         description="How much of a source the model ever sees. Separate from how much "
         "we extract and cache (plan 11).",
+    )
+    max_source_text_chars: int = Field(
+        default=200_000,
+        ge=1000,
+        description="Ceiling on the extracted text kept and cached per source. A safety "
+        "bound, not a reading budget: what the cache holds must stay large enough for a "
+        "later, differently-worded question to find different passages in it, so this is "
+        "deliberately far above SOURCE_EXCERPT_CHARS.",
+    )
+    max_document_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Largest attachment `read_document` will open. A refusal is cheaper "
+        "than parsing a 500 MB file on a 16 GB machine.",
+    )
+    max_fetch_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        description="Largest response body `fetch_url` will download. Deliberately not "
+        "MAX_DOCUMENT_BYTES: a page a stranger's server hands us is not an attachment "
+        "the user chose, and 5 MB is already far larger than any article.",
+    )
+    fetch_timeout_s: int = Field(
+        default=15,
+        ge=1,
+        description="Per-request timeout for `fetch_url`. Separate from SEARCH_TIMEOUT_S "
+        "so a slow page and a slow search backend can be tuned apart.",
     )
     total_run_timeout_s: int = Field(
         default=900,
@@ -132,6 +167,13 @@ class Settings(BaseSettings):
 
     # --- Expiry (plan 12) ---------------------------------------------------------------
     cache_ttl_days: int = Field(default=7, ge=1)
+    search_cache_ttl_days: int = Field(
+        default=7,
+        ge=1,
+        description="How long a cached result list keeps answering a repeated query. "
+        "Separate from CACHE_TTL_DAYS so search freshness can be tuned without "
+        "expiring fetched page text — this is the cache that protects the quota.",
+    )
     memory_recall_max_age_days: int = Field(default=30, ge=1)
 
     # --- Paths ---------------------------------------------------------------------------
@@ -146,8 +188,12 @@ class Settings(BaseSettings):
             "matters the moment the tool is exposed over MCP (plan 30)."
         ),
     )
+    search_fixture_dir: Path = Field(
+        default=PROJECT_ROOT / "fixtures" / "search",
+        description="Recorded search responses the `fixture` backend replays (plan 10).",
+    )
 
-    @field_validator("db_path", "allowed_attachment_dir")
+    @field_validator("db_path", "allowed_attachment_dir", "search_fixture_dir")
     @classmethod
     def _absolute(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()
