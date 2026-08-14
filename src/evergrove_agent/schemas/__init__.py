@@ -4,6 +4,17 @@ That rule is what makes a circular import impossible: everything depends on sche
 and schemas depends on nothing (plan section 19).
 """
 
+from evergrove_agent.schemas.agents import (
+    AgentAction,
+    AppraisalRequest,
+    AppraisalVerdict,
+    GatheredSource,
+    ResearchAssignment,
+    ResearchFindings,
+    RunState,
+    SupervisorDecision,
+    ToolFailure,
+)
 from evergrove_agent.schemas.report import (
     FocusPreparationReport,
     PracticeExercise,
@@ -11,15 +22,30 @@ from evergrove_agent.schemas.report import (
     SourceAuthority,
 )
 from evergrove_agent.schemas.task import TaskContext
-from evergrove_agent.schemas.tools import ErrorCode, ToolError, ToolResult
+from evergrove_agent.schemas.tools import (
+    ErrorCode,
+    SearchSourceType,
+    ToolError,
+    ToolResult,
+)
 
 __all__ = [
+    "AgentAction",
+    "AppraisalRequest",
+    "AppraisalVerdict",
     "ErrorCode",
     "FocusPreparationReport",
+    "GatheredSource",
     "PracticeExercise",
+    "ResearchAssignment",
+    "ResearchFindings",
     "Resource",
+    "RunState",
+    "SearchSourceType",
     "SourceAuthority",
+    "SupervisorDecision",
     "TaskContext",
     "ToolError",
+    "ToolFailure",
     "ToolResult",
 ]

@@ -23,11 +23,12 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **None. Day 3 has not started.** |
-| **Next task** | **Day 3 Subtask 1 — Agent schemas** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** |
+| **Next task** | **Day 3 Subtask 2 — Model-facing tool integration** |
 
+`schemas/agents.py` exists and is the contract every later Day 3 subtask builds against.
 Nothing in `agents/`, no research loop, no `service.py`, no `validate_report` exists yet. Do
-not describe or assume any Day 3 capability as present.
+not describe or assume any other Day 3 capability as present.
 
 | Day | Area | Status |
 | --- | --- | --- |
@@ -96,7 +97,7 @@ is organised, not how many services are deployed.
 
 | Path | Contents |
 | --- | --- |
-| `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py` — Pydantic only, imports nothing from the package |
+| `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py`, `agents.py` — Pydantic only, imports nothing from the package |
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `finalise.md`) |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
@@ -111,8 +112,7 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `agents/`, `schemas/agents.py`, `service.py`, `evals/`,
-`scripts/`, `.mcp.json`.
+**Not present, do not assume:** `agents/`, `service.py`, `evals/`, `scripts/`, `.mcp.json`.
 
 ---
 
@@ -256,6 +256,42 @@ exist — Day 3 must reuse them, not define new model-facing types.**
 academic | general`, `SearchBackendError(backend, message, *, retryable=True)`. A backend returns
 `RawSource` — S4's existing model, never a new result type — and **raises** rather than returning
 a `ToolResult`, so an empty list stays distinguishable from a broken backend.
+
+**The agent contracts** (`schemas/agents.py`, Day 3 S1) — the typed messages the four
+reasoning stages exchange. Two families, and the split is the contract:
+
+| Family | Models | Constraint |
+| --- | --- | --- |
+| **Model output** — handed to `generate(schema=…)` | `SupervisorDecision`, `AppraisalVerdict` | Small and flat, because a 4B model's adherence degrades as the target grows; must survive `to_gemini_schema` for the hosted retry; `extra="forbid"` so drift becomes a retry |
+| **Code assembled** — a model never sees the schema | `GatheredSource`, `ToolFailure`, `ResearchAssignment`, `ResearchFindings`, `AppraisalRequest`, `RunState` | As rich as the loop needs |
+
+Invariants later work must preserve:
+
+- **`GatheredSource` is not `NormalizedSource`.** It cannot be: `search/normalize.py` imports
+  `schemas`, so the reverse is a cycle. It also should not be — `NormalizedSource` is a search
+  hit, `GatheredSource` is the agent's evidence, carrying the text actually read. S6 builds one
+  from a `NormalizedSource` plus, when the page was opened, a `FetchUrlOutput`.
+- **`retrieved_at is None` means discovered but never opened.** `ResearchFindings.sources` holds
+  everything a hop *discovered*, not only what it read. That is what makes the grounding rule
+  expressible: a cited URL must be in `RunState.evidence_urls`, and one outside
+  `RunState.fetched_urls` may only claim `authority="unknown"`.
+- **`RunState`'s four derived properties (`all_sources`, `evidence_urls`, `fetched_urls`,
+  `used_queries`) are the single definition of what a run has seen.** S6 dedupes against them,
+  S9 grounds against them, S3 renders them. Never recompute one locally.
+- **No validator forces a `requested_followup` when `sufficient` is false.** "Not enough, and
+  nothing specific would help" is a real verdict; the loop answers it by finalising with
+  populated `unknowns`. Adding that validator would create a retry loop and invite an invented
+  question.
+- **`ResearchAssignment.max_searches` / `max_fetches` are an allowance, not a ledger.** The live
+  counters are `RunContext`'s (S4), in one place, so Day 4 can lift enforcement into hooks.
+- **`AppraisalVerdict` is lean by design.** Day 5 adds `accepted[]`, `rejected[]` and
+  `disagreements[]` as optional fields — additive, not a rewrite.
+
+**`SearchSourceType` now lives in `schemas/tools.py`**, re-exported from `search/base.py` so every
+existing importer is unchanged. It moved because the Supervisor's `source_preference` is handed to
+`web_search` as `source_type` with no translation, and `schemas/` is the only layer both the search
+package and `schemas/agents.py` can import. **Never re-declare it** — a second copy drifts into a
+runtime bug, and a test pins the identity.
 
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
@@ -430,7 +466,9 @@ inline.** An empty `.env` is a valid, fully local, $0 configuration.
 `DB_PATH`, `ALLOWED_ATTACHMENT_DIR`, `SEARCH_FIXTURE_DIR`.
 
 **Declared but not yet consumed — these are Day 3's and Day 4's budgets, already sized:**
-`MAX_HOPS=2`, `MAX_SEARCH_CALLS=3`, `MAX_FETCH_CALLS=4`, `MAX_SOURCES_KEPT=3`,
+`MAX_HOPS=3` (**raised from the plan's 2 on request, Day 3**; 3 is also the ceiling
+`FocusPreparationReport.hops_used` allows, so any further raise means changing the most expensive
+schema in the project), `MAX_SEARCH_CALLS=3`, `MAX_FETCH_CALLS=4`, `MAX_SOURCES_KEPT=3`,
 `MAX_MODEL_CALLS=10`, `MAX_OUTPUT_RETRIES=3`, `MEMORY_RECALL_MAX_AGE_DAYS=30` (Day 4).
 **Day 3 must consume these, not invent new ones.**
 
@@ -439,8 +477,8 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**289 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
+**304 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`). The newest are the 15 in `tests/unit/test_agent_schemas.py` (S1). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
 — a failure there means the *composition* broke, not a unit.
 
 - Offline by default: `FakeProvider`, `respx` for HTTP, the fixture search backend, recorded
@@ -494,6 +532,9 @@ The repository is authoritative. **Do not "restore" the plan's version of any of
 | Four *agent-callable* tools: `web_search`, `fetch_url`, `read_document`, `recall_previous_preparation` | The four *registered* tools are `web_search`, `fetch_url`, `read_document`, **`normalize_sources`** | `recall_previous_preparation` is **Day 4** (memory). `normalize_sources` is a pipeline tool, registered for traceability, and is **not** intended for the model's menu |
 | Day 3 demo CLI `evergrove-agent prepare --task …` (a subcommand) | `main.py` uses flat flags with no subcommand; the tools CLI is a separate module | **Open decision for Day 3 Subtask 12** — adopt the subcommand or keep flat flags, but decide deliberately |
 | `validate_report` listed under Day 2 in `README.md` | Not implemented; plan §23 feature 5 places it in the **Day 3** loop | The plan wins over the README here |
+| `MAX_HOPS = 2` | **`MAX_HOPS = 3`** in `config.py` and `.env.example` | Raised on the user's explicit instruction during Day 3 S1. It is the ceiling: `FocusPreparationReport.hops_used` is `le=3`. Costs one more possible hop's worth of searches and fetches per run |
+| `SearchSourceType` defined in `search/base.py` | Defined in **`schemas/tools.py`**, re-exported unchanged from `search/base.py` | The Supervisor's `source_preference` is the same enum, and `schemas/` may import nothing from the package — so the definition had to move to the layer both sides can see. Every existing importer is unchanged |
+| `schemas/agents.py` reuses `NormalizedSource` for the agent's sources | A distinct `GatheredSource` | Reuse is impossible (`search/normalize.py` imports `schemas`) and wrong: a search hit is not the same thing as a source that was opened and read |
 
 ## Reuse and dependency guidance
 
@@ -516,6 +557,10 @@ future session damages the project.
 | A prompt | `llm.prompts.render_prompt(name, **values)` + a new `.md` file |
 | A tunable value | `config.Settings` + `.env.example` |
 | A test without a model | `FakeProvider`; with HTTP, `respx`; with search, `SEARCH_BACKEND=fixture` |
+| A message between reasoning stages | `schemas/agents.py` — never a dict, never a new parallel model |
+| A source the agent gathered | `schemas.GatheredSource` (not `NormalizedSource`, which is a search hit) |
+| "What has this run seen?" | `RunState.evidence_urls` / `fetched_urls` / `used_queries` / `all_sources` |
+| The source-type enum | `schemas.SearchSourceType` — one definition, re-exported by `search/base.py` |
 
 **What later days depend on:**
 
@@ -533,10 +578,21 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 builds these):** `schemas/agents.py` · `agents/single_agent.py` · `service.py` ·
-`validate_report` · the model-facing **`Tool` → `ToolSpec` advertisement/wiring** · **`RunContext`
-budget counters** · the Day 3 prompts (`plan`, `research_step`, `sufficiency`) and orchestration ·
-the multi-hop research loop.
+**Missing (Day 3 builds these):** `agents/single_agent.py` · `service.py` · `validate_report` ·
+the model-facing **`Tool` → `ToolSpec` advertisement/wiring** · **`RunContext` budget counters** ·
+the Day 3 prompts (`plan`, `research_step`, `sufficiency`) and orchestration · the multi-hop
+research loop.
+
+**Discovered during S1, still owed by later subtasks:**
+
+- **S6** owns building `GatheredSource` from `NormalizedSource` + `FetchUrlOutput`, and bounding
+  `excerpt` by `SOURCE_EXCERPT_CHARS`. `schemas/` cannot do it — the import rule forbids it.
+- **S10** must decide whether `sources_examined` counts sources *discovered* or *read*
+  (recommendation: read, i.e. `len(RunState.fetched_urls)`), and owns `PreparationFailed`, which
+  is an **exception**, not a Pydantic model, so it belongs beside the loop rather than in
+  `schemas/` — the precedent is `LLMError`.
+- **S2** maps `SupervisorDecision.source_preference` onto `WebSearchInput.source_type` with no
+  translation; they are now literally the same `Literal`.
 
 **Missing (later days):** hooks, tracing, `runs`/`spans` tables, `recall_previous_preparation`,
 `save_preparation`, memory-aware prompting (Day 4) · the supervisor/worker split (Day 5) · the MCP
@@ -586,7 +642,7 @@ discovered now, with four days left to adapt, not on Day 5.
 
 **Features (plan §23):** the loop (plan → act → observe → decide → stop) · task understanding and
 narrowing with `session_minutes` as a hard scoping input · tool-calling integration · the
-sufficiency check and second hop, capped at `MAX_HOPS=2` · structured finalisation +
+sufficiency check and further hops, capped at `MAX_HOPS=3` · structured finalisation +
 `validate_report` + retry, including source-URL grounding · in-memory budget enforcement in
 `RunContext`.
 
@@ -621,14 +677,14 @@ Each subtask is planned, approved, implemented and tested independently.
 
 | # | Subtask | Primary targets | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses Day 1/2 schemas (`TaskContext`, `FocusPreparationReport`, `NormalizedSource`, `ToolResult`). **No loop, no prompts, no model calls** | `schemas/agents.py` | — | **Next** |
-| **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; decide which tools are advertised at each reasoning stage; validate model-supplied arguments; dispatch through `ToolRegistry`. Never bypass or duplicate a tool implementation | a new tool-spec module | S1 | Not started |
+| **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses `TaskContext`, `SourceAuthority`, `ToolError`; `SearchSourceType` moved into `schemas/tools.py`. `GatheredSource` replaces the planned reuse of `NormalizedSource` (import rule) | `schemas/agents.py`, `schemas/tools.py`, `schemas/__init__.py`, `search/base.py` | — | **Done** |
+| **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; decide which tools are advertised at each reasoning stage; validate model-supplied arguments; dispatch through `ToolRegistry`. Never bypass or duplicate a tool implementation | a new tool-spec module | S1 | **Next** |
 | **S3** | **Agent prompts and assembly** — the prompt files plus the helper that renders findings and sources into them under `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the assembly contract is not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md` revision | S1 | Not started |
 | **S4** | **In-memory budget counters on `RunContext`** — `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS`, `MAX_SOURCES_KEPT`, `TOTAL_RUN_TIMEOUT_S`. Keep enforcement in one place so Day 4 can lift it into hooks | `tools/base.py` | — | Not started |
 | **S5** | **Task understanding and narrowing** — `decide_next_step()`: a broad task becomes one session-sized research question, with `session_minutes` as a hard scoping input | `agents/single_agent.py` | S1–S4 | Not started |
 | **S6** | **Research step** — `run_research_step()`: the search → fetch → collect turn; tool-call parsing; "unknown tool" and "malformed arguments" handled as ordinary recoverable states; in-run `seen_urls` / `seen_queries` | `agents/single_agent.py` | S5 | Not started |
 | **S7** | **Sufficiency judgement** — `judge_sufficiency()`: do these sources support a useful session, or is a prerequisite missing? Becomes the Appraiser on Day 5 | `agents/single_agent.py` | S6 | Not started |
-| **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=2` never exceeded even if the model keeps asking to research | `agents/single_agent.py` | S5–S7 | Not started |
+| **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=3` never exceeded even if the model keeps asking to research. **The acceptance criterion is still one *visible* second hop** — a third is now permitted, not required | `agents/single_agent.py` | S5–S7 | Not started |
 | **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | Not started |
 | **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider, then fail loudly. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py` | S9 | Not started |
 | **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin | `service.py` | S8, S10 | Not started |

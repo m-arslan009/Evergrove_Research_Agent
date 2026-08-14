@@ -689,3 +689,39 @@ MAX_HOPS, in-memory Day 3 budgets, validate_report and grounding, structured fin
 retries, service.py, CLI integration, integration tests, and live end-to-end verification. Keep
 the subtasks small enough that each can be planned, approved, implemented and tested
 independently.
+
+`Title`: Day 3 Subtask 1 — agent schema design principles
+
+`User prompt`: Design and implement the typed contracts/schemas needed by the Day 3 single-agent
+reasoning flow, primarily in schemas/agents.py, supporting the logical boundaries around
+decide_next_step(), run_research_step(), judge_sufficiency() and finalise(). Do not assume the
+exact schemas, fields, enums, or number of models in advance — analyze the existing architecture
+and decide the minimum clean design that best fits this project. Reuse existing Day 1/2 schemas
+and contracts wherever possible; do not duplicate models that already represent the required data.
+Prefer the minimum necessary schemas. Use Pydantic v2 and existing project conventions. Keep these
+schemas independent from Ollama, Gemini, SerpAPI, CLI, or any provider-specific implementation.
+Keep schemas focused on data contracts; do not put orchestration/business logic inside them. Avoid
+loosely typed dictionaries when a meaningful typed contract is justified. Use constrained
+values/enums only where they genuinely improve correctness. Think about Day 5 compatibility so
+today's contracts do not require a rewrite later. Do not redesign stable Day 1/2 contracts unless
+there is a strong project-specific reason — flag such a need in the plan instead. Scope is only
+the agent schemas/contracts and their focused tests: no loop, prompts, LLM calls, tool
+integration, tool dispatch, validate_report, multi-hop execution, budget enforcement, service.py,
+CLI changes, or Day 4/5 work. If something required for a later subtask is discovered, record it
+as a dependency or follow-up rather than implementing it now. After implementation, update
+docs/research-agent-context.md — only the relevant sections, keeping it concise rather than an
+implementation diary.
+
+`Title`: SearchSourceType gets one definition, in schemas/
+
+`User prompt`: [Decision on a design question raised during Day 3 S1] Move SearchSourceType into
+schemas/ rather than duplicating the literal in schemas/agents.py, and have search/base.py import
+it. One definition, even though it edits a stable Day 2 contract.
+
+`Title`: Raise the hop cap from 2 to 3
+
+`User prompt`: Increase the hops from 2 to 3 and continue implementation.
+
+`Title`: Never run the test suite
+
+`User prompt`: Create tests only. I already configured the pre-push hook.
