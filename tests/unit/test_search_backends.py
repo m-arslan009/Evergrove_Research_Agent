@@ -1,8 +1,9 @@
 """Backend tests. Nothing here reaches SerpAPI, OpenAlex, Crossref or arXiv.
 
-The live backends go through `respx`, which intercepts httpx; the fixture backend reads
-files written into `tmp_path`, so a test never depends on what is committed under
-`fixtures/search/`.
+The live backends go through `respx`, which intercepts httpx; the fixture backend's
+behaviour is proved against files written into `tmp_path`. Two tests deliberately read the
+committed `fixtures/search/` instead — the recordings are hand-edited, and a broken one
+should fail here rather than halfway through an offline run.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ OPENALEX = "https://api.openalex.org/works"
 CROSSREF = "https://api.crossref.org/works"
 ARXIV = "https://export.arxiv.org/api/query"
 SERPAPI = "https://serpapi.com/search.json"
+
+COMMITTED_FIXTURES = Settings(_env_file=None).search_fixture_dir
+"""The real `fixtures/search/`. Only the committed-set tests read it; everything else here
+writes into `tmp_path`."""
 
 ARXIV_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -155,17 +160,42 @@ class TestFixtureBackend:
                 "indexes", source_type="docs", max_results=6
             )
 
-    async def test_the_committed_fixture_answers_the_default_configuration(
+    @pytest.mark.parametrize(
+        "path", sorted(COMMITTED_FIXTURES.glob("*.json")), ids=lambda path: path.stem
+    )
+    async def test_every_committed_recording_replays(
+        self, settings: Settings, path: Path
+    ) -> None:
+        """The committed set is hand-edited, and one bad file breaks every offline run.
+
+        Building the backend indexes the whole directory, so a duplicate key or an
+        unreadable file fails here whichever recording is being replayed. Each one is then
+        looked up under its own key, which catches a `query`/`source_type` that no longer
+        matches what the file is filed as. `no-results.json` proves the same path serves an
+        empty recording as a success rather than raising.
+        """
+        payload = json.loads(path.read_text(encoding="utf-8"))
+
+        results = await FixtureSearchBackend(settings).search(
+            payload["query"], source_type=payload["source_type"], max_results=10
+        )
+
+        assert len(results) == len(payload["results"])
+        assert all(source.url.startswith("https://") for source in results)
+        assert payload["recorded_from"] in {"handwritten", "serpapi", "academic"}
+
+    async def test_the_default_source_type_is_answerable_out_of_the_box(
         self, settings: Settings
     ) -> None:
-        """SEARCH_BACKEND=fixture is the committed default, so an out-of-the-box clone
-        must be able to answer at least one query without recording anything first."""
+        """`WebSearchInput` defaults to source_type="general" and SEARCH_BACKEND=fixture is
+        the committed default, so a clone's very first search must return something. If the
+        only `general` recording is ever deleted, that first search fails and the obvious
+        fix looks like switching to the metered backend."""
         results = await FixtureSearchBackend(settings).search(
-            "postgresql b-tree index", source_type="docs", max_results=6
+            "how to read a postgresql explain plan", source_type="general", max_results=6
         )
 
         assert results
-        assert results[0].url.startswith("https://")
 
 
 class TestSerpApiBackend:

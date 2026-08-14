@@ -1,0 +1,7 @@
+{
+  "query": "qwyzzx nonexistent research topic",
+  "source_type": "general",
+  "recorded_from": "handwritten",
+  "note": "Records the one search outcome nothing else here can demonstrate offline: a query that legitimately found nothing. This must replay as an empty success, never as a SearchBackendError - a search that returned no hits has been answered, and web_search must not send it down the retry ladder.",
+  "results": []
+}

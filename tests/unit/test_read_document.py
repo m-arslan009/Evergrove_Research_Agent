@@ -168,6 +168,37 @@ async def test_unmatched_section_reports_the_headings_that_exist(
     assert "EXPLAIN" in result.error.message
 
 
+# --- the committed attachments ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "file_type", "has_outline"),
+    [
+        ("documents/indexing-brief.md", "md", True),
+        ("documents/session-notes.txt", "txt", False),
+    ],
+)
+async def test_the_committed_attachments_open_under_the_default_directory(
+    monkeypatch: pytest.MonkeyPatch, name: str, file_type: str, has_outline: bool
+) -> None:
+    """`ALLOWED_ATTACHMENT_DIR` defaults to `fixtures/`, so these two open with no
+    configuration at all — that is what makes a fresh clone able to read something.
+
+    Catches the fixtures being moved out from under the default directory, which would
+    answer `PATH_NOT_ALLOWED` only when a person tried the CLI. The pair also keeps both
+    outline paths exercised by real committed data: the Markdown file has headings, the
+    text file deliberately has none.
+    """
+    _use(Settings(_env_file=None).allowed_attachment_dir, monkeypatch)
+
+    result = await _read(path=name, mode="full")
+
+    assert result.ok, result.error
+    assert result.data.file_type == file_type
+    assert "index" in result.data.text.lower()
+    assert bool(result.data.outline) is has_outline
+
+
 # --- budget, encoding, arguments -------------------------------------------------------
 
 

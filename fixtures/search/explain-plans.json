@@ -1,0 +1,23 @@
+{
+  "query": "how to read a postgresql explain plan",
+  "source_type": "general",
+  "recorded_from": "handwritten",
+  "note": "Seed fixture. `general` is WebSearchInput's default source type, so this is what an out-of-the-box clone hits first. Results are ordered worst-authority-first on purpose: normalize_sources must re-rank the official page above the Q&A thread. Replace with a real SerpAPI recording at the live-acceptance step.",
+  "results": [
+    {
+      "url": "https://stackoverflow.com/questions/9612271/how-to-interpret-postgresql-explain-analyze-output",
+      "title": "How to interpret PostgreSQL EXPLAIN ANALYZE output",
+      "snippet": "Read the plan from the innermost node outwards. cost=0.00..35.50 is the estimated startup and total cost, rows is the estimated row count, and actual time= is what the executor really spent."
+    },
+    {
+      "url": "https://www.postgresql.org/docs/current/sql-explain.html",
+      "title": "PostgreSQL: Documentation: EXPLAIN",
+      "snippet": "EXPLAIN displays the execution plan the planner generates for a statement. With ANALYZE the statement is actually executed and real run times are shown alongside the estimates."
+    },
+    {
+      "url": "https://www.pgmustard.com/blog/explaining-explain",
+      "title": "Explaining EXPLAIN: a guide to Postgres query plans",
+      "snippet": "A plan is a tree of nodes. Each node reports the rows it expected and the rows it returned; a large gap between the two is usually where a slow query goes wrong."
+    }
+  ]
+}

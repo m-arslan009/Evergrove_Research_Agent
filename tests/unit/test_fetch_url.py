@@ -20,6 +20,7 @@ import pytest
 import respx
 
 from evergrove_agent.config import Settings
+from evergrove_agent.documents import extract_html
 from evergrove_agent.memory import db, get_cached_source, store_cached_source
 from evergrove_agent.schemas import ErrorCode, ToolResult
 from evergrove_agent.tools import RunContext, ToolRegistry
@@ -409,6 +410,37 @@ async def test_an_oversized_body_is_refused(connection: sqlite3.Connection) -> N
     assert result.ok is False
     assert result.error.code is ErrorCode.BUDGET_EXCEEDED
     assert get_cached_source(connection, URL) is None
+
+
+def test_the_committed_html_fixture_extracts_to_prose_only() -> None:
+    """`extract_html` against a page shaped like a real one, which is why
+    `fixtures/html/article.html` exists.
+
+    Every other page in this file is tidy inline markup written to make one assertion pass,
+    so nothing else proves the chrome rules survive contact with a real layout — nested
+    `<main>`, a sidebar, a subscribe form, a `<pre><code>` listing. A regression here is
+    silent and expensive: the model still gets text, it is just navigation and cookie
+    notices eating the prefill budget.
+    """
+    markup = (
+        Settings(_env_file=None).allowed_attachment_dir / "html" / "article.html"
+    ).read_text(encoding="utf-8")
+
+    title, text = extract_html(markup)
+
+    assert title == "Understanding B-tree indexes"
+    assert "# Understanding B-tree indexes" in text
+    assert "## Why the tree stays shallow" in text
+    assert "    SELECT id, title" in text
+    for furniture in (
+        "window.analytics",  # script
+        "last reviewed",  # header
+        "Glossary",  # nav
+        "Related reading",  # aside
+        "Get the newsletter",  # form
+        "Cookie settings",  # footer
+    ):
+        assert furniture not in text
 
 
 async def test_an_unusable_url_is_rejected_before_anything_is_opened(

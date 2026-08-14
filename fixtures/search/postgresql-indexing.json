@@ -2,7 +2,7 @@
   "query": "postgresql b-tree index",
   "source_type": "docs",
   "recorded_from": "handwritten",
-  "note": "Seed fixture so SEARCH_BACKEND=fixture answers out of the box. Real recorded SerpAPI responses land here from S8.",
+  "note": "Seed fixture so SEARCH_BACKEND=fixture answers out of the box. Replace with a real SerpAPI recording at the live-acceptance step.",
   "results": [
     {
       "url": "https://www.postgresql.org/docs/current/indexes-types.html",

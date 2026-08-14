@@ -1,0 +1,23 @@
+{
+  "query": "python asyncio task cancellation",
+  "source_type": "technical",
+  "recorded_from": "handwritten",
+  "note": "Seed fixture for the `technical` source type. Three different authority classes (official, unknown, secondary) so the ranking step has something to order. Replace with a real SerpAPI recording at the live-acceptance step.",
+  "results": [
+    {
+      "url": "https://docs.python.org/3/library/asyncio-task.html",
+      "title": "Coroutines and Tasks — Python documentation",
+      "snippet": "Task.cancel() arranges for a CancelledError to be thrown into the wrapped coroutine at the next opportunity. It does not guarantee that the task will be cancelled: the coroutine may suppress the exception."
+    },
+    {
+      "url": "https://superfastpython.com/asyncio-task-cancellation/",
+      "title": "How to Cancel an Asyncio Task",
+      "snippet": "Cancellation is cooperative. A task that never awaits cannot be cancelled, and a shield created with asyncio.shield() protects its inner awaitable from the request."
+    },
+    {
+      "url": "https://github.com/python/cpython/issues/102780",
+      "title": "asyncio: CancelledError swallowed by a bare except in a finally block",
+      "snippet": "Catching Exception in a coroutine's cleanup path will not catch CancelledError, which inherits from BaseException since Python 3.8 precisely so that cancellation is not swallowed by accident."
+    }
+  ]
+}
