@@ -23,12 +23,13 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** |
-| **Next task** | **Day 3 Subtask 2 — Model-facing tool integration** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** |
+| **Next task** | **Day 3 Subtask 3 — Agent prompts and assembly** |
 
-`schemas/agents.py` exists and is the contract every later Day 3 subtask builds against.
-Nothing in `agents/`, no research loop, no `service.py`, no `validate_report` exists yet. Do
-not describe or assume any other Day 3 capability as present.
+`schemas/agents.py` is the contract every later Day 3 subtask builds against, and
+`agents/tool_calling.py` is the only bridge between a model and the tool registry. Nothing
+else in `agents/` exists: no `single_agent.py`, no research loop, no `service.py`, no
+`validate_report`. Do not describe or assume any other Day 3 capability as present.
 
 | Day | Area | Status |
 | --- | --- | --- |
@@ -69,6 +70,8 @@ is organised, not how many services are deployed.
                           │
        Supervisor ──► Researcher ──► Appraiser     ← NOT BUILT (Day 3 as four functions,
                           │                          split into three agents on Day 5)
+              agents/tool_calling.py               ← BUILT (S2). Advertise → dispatch;
+                          │                          the only way a model reaches a tool
                    tool registry                  ← BUILT. The only path to a tool.
                           │                          Hook lists exist but are empty (Day 4)
         ┌─────────────────┼─────────────────┐
@@ -100,6 +103,7 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py`, `agents.py` — Pydantic only, imports nothing from the package |
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `finalise.md`) |
+| `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2). `single_agent.py` arrives in S5 |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
@@ -112,7 +116,8 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `agents/`, `service.py`, `evals/`, `scripts/`, `.mcp.json`.
+**Not present, do not assume:** `agents/single_agent.py`, `service.py`, `evals/`, `scripts/`,
+`.mcp.json`.
 
 ---
 
@@ -292,6 +297,48 @@ existing importer is unchanged. It moved because the Supervisor's `source_prefer
 `web_search` as `source_type` with no translation, and `schemas/` is the only layer both the search
 package and `schemas/agents.py` can import. **Never re-declare it** — a second copy drifts into a
 runtime bug, and a test pins the identity.
+
+**The model-facing tool contract** (`agents/tool_calling.py`, Day 3 S2) — the only bridge
+between a model and the registry. Five pieces, no new model-facing types: `ToolSpec` and
+`ToolCall` are Day 1's and are reused unchanged.
+
+```python
+advertised_tool_names(role, *, has_attachment=False) -> tuple[str, ...]
+to_tool_spec(tool) -> ToolSpec                      # parameters = input_model.model_json_schema()
+advertise(registry, role, *, has_attachment=False) -> list[ToolSpec]
+async dispatch(call, *, registry, ctx, allowed) -> ToolResult
+async dispatch_all(calls, *, registry, ctx, allowed) -> list[ToolCallOutcome]
+```
+
+Invariants later work must preserve:
+
+- **The menu is keyed on `config.AgentRole`**, not a separate stage enum — the same three
+  values `build_provider(role)` routes on, so the stage that picks a provider and the stage
+  that picks a menu cannot drift. `supervisor` and `appraiser` get **no tools**: planning,
+  finalising and judging are constrained-decoding calls made with `schema=`, and a menu
+  handed to one of them is `format` and `tools` in a single Ollama payload. Only
+  `researcher` acts: `web_search` + `fetch_url`, plus `read_document` **only when the task
+  carries an attachment**. `normalize_sources` is never advertised to anyone.
+- **`advertised_tool_names` is both the advertisement and the allow-list.** `dispatch`
+  refuses any name outside `allowed` *before* the registry is reached, as
+  `ToolResult(UNKNOWN, retryable=False)` naming what was available — the same code and
+  sentence shape the registry uses for an unknown name. This is what stops "registered"
+  from meaning "reachable"; every other registered tool is one guessed name away otherwise.
+- **The bridge never builds a tool's input model.** Model arguments go to `registry.call`
+  as the raw mapping they arrived as, so `_parse_args` stays the single argument validator
+  and `BAD_ARGUMENTS` keeps one definition.
+- **`dispatch_all` is sequential, in call order** — never `asyncio.gather`. S4's counters
+  and the monthly search quota are claimed one call at a time, and a run whose tools fire
+  in a varying order cannot be read back off a trace.
+- **`ToolCallOutcome(call, result)`** is a frozen dataclass beside the dispatcher, not a
+  Pydantic model in `schemas/`: it is not a message between reasoning stages, and `schemas/`
+  may not import `llm.base.ToolCall`. The precedent is `ToolInvocation`.
+- **No provider is named anywhere in the module.** `OllamaProvider` passes
+  `ToolSpec.parameters` through and `HostedProvider` applies `to_gemini_schema` to it; both
+  already parse their own replies into `ToolCall`. Never add a provider branch here.
+- **`dispatch` takes a `ToolCall`, not an `LLMResponse`** — which is what makes the Day 3
+  contingency free: a structured `{"action", "arguments"}` decision under a constrained
+  schema constructs a `ToolCall` and reuses the same dispatcher, with no second tool path.
 
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
@@ -477,8 +524,9 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**304 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`). The newest are the 15 in `tests/unit/test_agent_schemas.py` (S1). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
+**322 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`). The newest are the 18 in `tests/unit/test_tool_calling.py` (S2),
+after the 15 in `tests/unit/test_agent_schemas.py` (S1). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
 — a failure there means the *composition* broke, not a unit.
 
 - Offline by default: `FakeProvider`, `respx` for HTTP, the fixture search backend, recorded
@@ -544,8 +592,9 @@ future session damages the project.
 | Need | Already exists — reuse it |
 | --- | --- |
 | Talk to a model | `llm.build_provider(role)` → `LLMProvider.generate` |
-| Advertise a tool to a model | `llm.base.ToolSpec`; parse the reply as `llm.base.ToolCall` |
-| Run a tool | `tools.wiring.build_tool_registry()` → `registry.call(name, args, ctx)` |
+| Advertise a tool to a model | `agents.advertise(registry, role, has_attachment=…)` — never build a `ToolSpec` at a call site |
+| Run the tool a model asked for | `agents.dispatch` / `agents.dispatch_all` — never `registry.call` straight from a `ToolCall` |
+| Run a tool (our own code, not a model's request) | `tools.wiring.build_tool_registry()` → `registry.call(name, args, ctx)` |
 | Pydantic → model-facing JSON Schema | `Model.model_json_schema()`; for Gemini, `hosted_provider.to_gemini_schema` |
 | Search the web | the `web_search` tool (never a backend directly, never a new backend for a new source type) |
 | Read a page or PDF by URL | the `fetch_url` tool |
@@ -579,9 +628,8 @@ future session damages the project.
 ## Known limitations and not yet implemented
 
 **Missing (Day 3 builds these):** `agents/single_agent.py` · `service.py` · `validate_report` ·
-the model-facing **`Tool` → `ToolSpec` advertisement/wiring** · **`RunContext` budget counters** ·
-the Day 3 prompts (`plan`, `research_step`, `sufficiency`) and orchestration · the multi-hop
-research loop.
+**`RunContext` budget counters** · the Day 3 prompts (`plan`, `research_step`, `sufficiency`)
+and orchestration · the multi-hop research loop.
 
 **Discovered during S1, still owed by later subtasks:**
 
@@ -591,8 +639,10 @@ research loop.
   (recommendation: read, i.e. `len(RunState.fetched_urls)`), and owns `PreparationFailed`, which
   is an **exception**, not a Pydantic model, so it belongs beside the loop rather than in
   `schemas/` — the precedent is `LLMError`.
-- **S2** maps `SupervisorDecision.source_preference` onto `WebSearchInput.source_type` with no
-  translation; they are now literally the same `Literal`.
+- `SupervisorDecision.source_preference` and `WebSearchInput.source_type` are literally the
+  same `Literal`, so no translation is ever needed. **S2 does not do this mapping** — the
+  bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
+  the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
 **Missing (later days):** hooks, tracing, `runs`/`spans` tables, `recall_previous_preparation`,
 `save_preparation`, memory-aware prompting (Day 4) · the supervisor/worker split (Day 5) · the MCP
@@ -671,14 +721,14 @@ the second hop deterministic, triggered by non-empty `missing_information` rathe
 choice. All three preserve every Phase 2 requirement. **Record whichever is chosen in
 `prompts.md` and here.**
 
-## Day 3 subtask breakdown — none started
+## Day 3 subtask breakdown — S1 and S2 done
 
 Each subtask is planned, approved, implemented and tested independently.
 
 | # | Subtask | Primary targets | Depends on | Status |
 | --- | --- | --- | --- | --- |
 | **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses `TaskContext`, `SourceAuthority`, `ToolError`; `SearchSourceType` moved into `schemas/tools.py`. `GatheredSource` replaces the planned reuse of `NormalizedSource` (import rule) | `schemas/agents.py`, `schemas/tools.py`, `schemas/__init__.py`, `search/base.py` | — | **Done** |
-| **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; decide which tools are advertised at each reasoning stage; validate model-supplied arguments; dispatch through `ToolRegistry`. Never bypass or duplicate a tool implementation | a new tool-spec module | S1 | **Next** |
+| **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; a per-`AgentRole` menu (`normalize_sources` never advertised, `read_document` only with an attachment); dispatch through `ToolRegistry`, which stays the only argument validator; an un-advertised name refused as a `ToolResult` before the registry. Provider-neutral | `agents/tool_calling.py`, `agents/__init__.py`, `tests/unit/test_tool_calling.py` | S1 | **Done** |
 | **S3** | **Agent prompts and assembly** — the prompt files plus the helper that renders findings and sources into them under `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the assembly contract is not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md` revision | S1 | Not started |
 | **S4** | **In-memory budget counters on `RunContext`** — `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS`, `MAX_SOURCES_KEPT`, `TOTAL_RUN_TIMEOUT_S`. Keep enforcement in one place so Day 4 can lift it into hooks | `tools/base.py` | — | Not started |
 | **S5** | **Task understanding and narrowing** — `decide_next_step()`: a broad task becomes one session-sized research question, with `session_minutes` as a hard scoping input | `agents/single_agent.py` | S1–S4 | Not started |

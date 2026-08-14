@@ -725,3 +725,27 @@ it. One definition, even though it edits a stable Day 2 contract.
 `Title`: Never run the test suite
 
 `User prompt`: Create tests only. I already configured the pre-push hook.
+
+`Title`: Day 3 Subtask 2 — the LLM ↔ tool-system bridge
+
+`User prompt`: Build the missing integration layer that allows the LLM/agent layer to use the
+existing tools safely. Conceptually, we need this flow: Existing registered Tool → model can
+understand the tool → model requests a tool call → arguments are validated → existing ToolRegistry
+executes it → ToolResult is returned for later agent reasoning. Explain the complete tool-calling
+flow. For each logical component you propose, explain what is it, why is it, what it produce, what
+is recieved, what conditions effect it, tech and its alternates. Reuse the existing ToolRegistry.
+Reuse existing input/output Pydantic models. Keep provider-specific details out of this
+integration where possible. Keep tool advertisement separate from actual tool implementation.
+Invalid model requests should be recoverable structured outcomes where appropriate, not
+uncontrolled crashes. Do not let the model bypass registry validation or execution. Preserve
+offline testability using existing test infrastructure. Keep the design small enough to remain
+understandable when Day 4 hooks/tracing wrap the registry and Day 5 splits the agent roles. Avoid
+unnecessary abstraction layers. This subtask is only the LLM ↔ tool-system bridge and its focused
+tests.
+
+`Title`: S2 design decisions — module home, bridge scope, conditional attachment tool
+
+`User prompt`: [Decisions taken on the S2 plan] Put the bridge in agents/tool_calling.py rather
+than in tools/. The bridge stops at returning the ToolResult — rendering a result back into a
+prompt or Message stays with S3/S6. Advertise read_document only when the task actually has an
+attachment.
