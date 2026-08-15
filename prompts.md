@@ -806,3 +806,30 @@ prematurely. Avoid introducing database persistence for session state in this su
 ledger and leaves schemas/agents.py untouched. When the budget has nothing left, claim() returns
 False rather than raising or building a ToolResult — the ledger stays free of the tool envelope, and
 Day 4's pre-hook turns the same False into ToolResult(BUDGET_EXCEEDED).
+
+`Title`: Day 3 S5–S8 — the single-agent orchestration loop
+
+`User prompt`: Implement the single-agent orchestration loop that connects the components
+already built. Conceptually, the agent should be able to: understand/narrow task → research →
+observe results → judge sufficiency → optionally research again → stop/finalise. Also give one
+practical example showing the state transitions for a task. Inspect the existing schemas/prompts
+and decide how these should be wired in the single-agent implementation. The loop must support
+early stopping: hop 1 → sufficiency check; if sufficient → finalise; if insufficient and a
+meaningful follow-up exists, and hop/budgets allow it → next narrower research hop; repeat only
+until sufficient or the configured maximum is reached. A later-hop question must be derived from
+previously gathered evidence/requested_followup, not from a pre-written fixed sequence. Use budget
+ledger. A failed budget.claim(...) is normal control flow. The loop should decide how to
+degrade/stop appropriately; RunBudget itself should remain unaware of prompts, tools, or error
+envelopes. Plan graceful behaviour for: unknown/malformed model tool request; tool argument
+validation failure; ToolResult containing a tool error; search/fetch failure; model/provider
+failure where recoverable; hop limit reached; budget exhausted; insufficient evidence after the
+final allowed hop. Expected limitations should lead toward an honest final result rather than
+uncontrolled looping or fabricated evidence.
+
+`Title`: S5–S8 design decisions — two reserves, and where the sizing rule lives
+
+`User prompt`: [Decisions taken on the S5–S8 plan] Scope is S5–S8 plus a single-attempt finalise();
+grounding (S9) and the retry ladder (S10) stay the next subtask. A research hop takes up to three
+model turns, so the model can open the pages search actually returned rather than guessing a URL.
+max_topics_for() moves from main.py into agents/prompt_context.py, where finalise.md's {max_topics}
+placeholder belongs, so one definition serves both the --no-research path and the loop.

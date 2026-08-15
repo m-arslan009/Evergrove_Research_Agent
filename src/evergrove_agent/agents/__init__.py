@@ -1,14 +1,16 @@
 """The reasoning layer: what decides, and how it reaches the tools.
 
-Thin on purpose. Today it holds the model-facing tool bridge (S2) and the renderers that
-fill the prompt files' placeholders (S3); `single_agent.py` and its four
-separately-prompted functions arrive in S5, and Day 5 splits those into `supervisor.py`,
-`researcher.py` and `appraiser.py` beside them.
+Three files. `tool_calling.py` is the model-facing tool bridge (S2), `prompt_context.py`
+fills the prompt files' placeholders (S3), and `single_agent.py` is the loop that drives
+both (S5-S8). Day 5 splits `single_agent.py`'s four stage functions into `supervisor.py`,
+`researcher.py` and `appraiser.py` beside them — a file move, because each already takes and
+returns a model from `schemas/agents.py`.
 """
 
 from __future__ import annotations
 
 from evergrove_agent.agents.prompt_context import (
+    max_topics_for,
     render_allowance,
     render_already_covered,
     render_attachment,
@@ -16,7 +18,18 @@ from evergrove_agent.agents.prompt_context import (
     render_progress,
     render_research_context,
     render_sources,
+    render_stop_reason,
     render_tool_outcome,
+)
+from evergrove_agent.agents.single_agent import (
+    AgentProviders,
+    PreparationFailed,
+    StopReason,
+    decide_next_step,
+    finalise,
+    judge_sufficiency,
+    run_agent,
+    run_research_step,
 )
 from evergrove_agent.agents.tool_calling import (
     ToolCallOutcome,
@@ -28,11 +41,18 @@ from evergrove_agent.agents.tool_calling import (
 )
 
 __all__ = [
+    "AgentProviders",
+    "PreparationFailed",
+    "StopReason",
     "ToolCallOutcome",
     "advertise",
     "advertised_tool_names",
+    "decide_next_step",
     "dispatch",
     "dispatch_all",
+    "finalise",
+    "judge_sufficiency",
+    "max_topics_for",
     "render_allowance",
     "render_already_covered",
     "render_attachment",
@@ -40,6 +60,9 @@ __all__ = [
     "render_progress",
     "render_research_context",
     "render_sources",
+    "render_stop_reason",
     "render_tool_outcome",
+    "run_agent",
+    "run_research_step",
     "to_tool_spec",
 ]

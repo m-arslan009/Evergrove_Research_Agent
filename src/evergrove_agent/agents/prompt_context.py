@@ -225,6 +225,19 @@ def render_sources(
 # --- finalise.md -----------------------------------------------------------------------
 
 
+def max_topics_for(minutes: int) -> int:
+    """`finalise.md`'s `max_topics` — the session-sizing rule from plan section 17.
+
+    `max(3, minutes // 5)`, capped at 8. An int rather than a block of text, but it is a
+    placeholder on the same prompt and it fills the same role as everything else here:
+    the one place a fact about the run becomes something the prompt carries. It lives
+    here rather than beside a caller because both `main.py`'s `--no-research` path and
+    the loop's `finalise()` render that prompt, and a second copy of a sizing rule drifts
+    into two different sessions from the same number of minutes.
+    """
+    return min(8, max(3, minutes // 5))
+
+
 def render_research_context(
     state: RunState, *, settings: Settings | None = None
 ) -> str:
@@ -280,6 +293,64 @@ def render_research_context(
     return "\n".join(lines)
 
 
+_STOP_CAUSES: dict[str, str] = {
+    "hop_cap": "the research hop limit was reached",
+    "budget_spent": "no search or page-read budget was left",
+    "no_followup": (
+        "the evidence was judged incomplete and no specific follow-up question "
+        "would have helped"
+    ),
+    "planner_unavailable": "the planning step could not produce a usable decision",
+    "appraiser_unavailable": "the sufficiency judgement could not be completed",
+}
+"""Why a run stopped, for the stops that mean the research was cut short.
+
+`sufficient` and `planner_finalised` are absent on purpose: those runs stopped because
+they were done, and announcing a reason for them would make a healthy run read like a
+degraded one.
+"""
+
+_LIMIT_NAMES: dict[str, str] = {
+    "search": "search calls",
+    "fetch": "page reads",
+    "model_call": "model calls",
+    "time": "time",
+}
+"""`RunBudget.exhausted_limits`' identifiers as a reader's words.
+
+The ledger returns identifiers precisely so that this translation lives here — S4's
+contract keeps prompt wording out of the budget, and this is the other half of it.
+"""
+
+
+def render_stop_reason(reason: str, *, exhausted: Sequence[str] = ()) -> str:
+    """Why the research ended, in one sentence — or nothing, when there is nothing to say.
+
+    Two callers, one wording. `finalise()` sends this as an extra `Message`, because
+    `finalise.md`'s five placeholders are frozen and a sixth would break the
+    `--no-research` path; it also appends the same sentence to the report's `unknowns`,
+    because a model may ignore the message and a degraded run must never read like a
+    confident one.
+
+    An empty string is the signal that neither is needed: the run stopped because it was
+    finished and spent no limit doing it. That is the same "nothing to say means say
+    nothing" shape `render_attachment` uses.
+    """
+    cause = _STOP_CAUSES.get(reason)
+    limits = [_LIMIT_NAMES.get(name, name) for name in exhausted]
+    if cause is None and not limits:
+        return ""
+
+    sentence = (
+        f"The research stopped before it was judged complete because {cause}"
+        if cause
+        else "The research finished"
+    )
+    if limits:
+        sentence += f", and this run ran out of {_join(limits)}"
+    return sentence + "."
+
+
 # --- shared shaping ---------------------------------------------------------------------
 
 
@@ -329,6 +400,13 @@ def _bullets(items: Sequence[str]) -> list[str]:
 
 def _count(value: int, singular: str, plural: str) -> str:
     return f"{value} {singular if value == 1 else plural}"
+
+
+def _join(items: Sequence[str]) -> str:
+    """`a`, `a and b`, `a, b and c` — a list read aloud rather than punctuated."""
+    if len(items) <= 1:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _clip(text: str, limit: int) -> str:
