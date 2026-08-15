@@ -23,11 +23,12 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** |
-| **Next task** | **Day 3 Subtask 3 — Agent prompts and assembly** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** |
+| **Next task** | **Day 3 Subtask 4 — In-memory budget counters on `RunContext`** |
 
-`schemas/agents.py` is the contract every later Day 3 subtask builds against, and
-`agents/tool_calling.py` is the only bridge between a model and the tool registry. Nothing
+`schemas/agents.py` is the contract every later Day 3 subtask builds against,
+`agents/tool_calling.py` is the only bridge between a model and the tool registry, and
+`agents/prompt_context.py` is the only place a run's state becomes prompt text. Nothing
 else in `agents/` exists: no `single_agent.py`, no research loop, no `service.py`, no
 `validate_report`. Do not describe or assume any other Day 3 capability as present.
 
@@ -102,8 +103,8 @@ is organised, not how many services are deployed.
 | --- | --- |
 | `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py`, `agents.py` — Pydantic only, imports nothing from the package |
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
-| `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `finalise.md`) |
-| `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2). `single_agent.py` arrives in S5 |
+| `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `plan.md`, `research_step.md`, `sufficiency.md`, `finalise.md`) |
+| `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3). `single_agent.py` arrives in S5 |
 | `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
@@ -147,7 +148,8 @@ is organised, not how many services are deployed.
 
 **Prompts** (`llm/prompts/`) — prompts are version-controlled `.md` files, one per agent turn,
 loaded by `load_prompt(name)` / `render_prompt(name, **values)` (`{placeholder}` substitution,
-`lru_cache`d, raises `PromptNotFound` listing what exists). Only `finalise.md` exists today.
+`lru_cache`d, raises `PromptNotFound` listing what exists). S3 added the other three stage
+prompts beside `finalise.md`.
 
 **CLI** (`main.py`) — one working path: `--no-research`, a single structured round trip
 producing a validated report from model knowledge alone. `max_topics_for(minutes)` =
@@ -340,6 +342,55 @@ Invariants later work must preserve:
   contingency free: a structured `{"action", "arguments"}` decision under a constrained
   schema constructs a `ToolCall` and reuses the same dispatcher, with no second tool path.
 
+**The prompt contract** (`llm/prompts/*.md` + `agents/prompt_context.py`, Day 3 S3) — four
+stage prompts and the renderers that fill them. **Wording is safe to change; the placeholder
+set and the rendering split are not.**
+
+| Prompt | Stage | Model output | Placeholders |
+| --- | --- | --- | --- |
+| `plan.md` | `decide_next_step()` | `SupervisorDecision` | `task_title`, `task_description`, `session_minutes`, `progress` |
+| `research_step.md` | `run_research_step()` | tool calls | `research_question`, `session_minutes`, `source_preference`, `available_tools`, `allowance`, `already_covered`, `attachment` |
+| `sufficiency.md` | `judge_sufficiency()` | `AppraisalVerdict` | `research_question`, `session_minutes`, `sources` |
+| `finalise.md` | `finalise()` | `FocusPreparationReport` | `task_title`, `task_description`, `session_minutes`, `max_topics`, `research_context` |
+
+Invariants later work must preserve:
+
+- **`finalise.md`'s five placeholders are frozen.** `main.py`'s `--no-research` path passes
+  exactly those; a sixth is a `KeyError` on the one shipped path. S10's retry therefore quotes
+  validation errors back as an **extra `Message`**, never as a new placeholder. S3's revision was
+  additive only: the not-opened → `authority="unknown"` rule, `unknowns` extended to carry the
+  research's own gaps, and `original_task`/`session_duration_minutes` folded into the bookkeeping
+  bullet.
+- **One file = one user message**, rendered by `render_prompt` and sent as
+  `Message(role="user", …)` — as `main.py` already does. No system-role preamble, no provider
+  named, no output syntax described beyond "answer with JSON matching the schema you were given":
+  constrained decoding supplies the schema.
+- **`render_prompt` is `str.format`.** A literal `{` in a prompt file is a runtime crash. The
+  prompts deliberately carry **no JSON examples** — an example is a second, drifting copy of the
+  schema.
+- **Prompts never restate a deterministic rule.** Field bounds are Pydantic's and the grounding
+  set-membership check is S9's. The prompts state intent once and own nothing a validator owns.
+- **`agents/prompt_context.py` is the only place a run's state becomes prompt text**, one
+  function per placeholder. It lives in `agents/` because it imports `schemas/` and `config`, and
+  `llm/` imports neither — keeping the loader independent of both. Nothing in it calls a model, a
+  tool, the network or the database.
+- **The evidence split is a context-window decision, not a style one.** `NUM_CTX` is 4096:
+  `render_sources` (→ `sufficiency.md`) carries **full excerpts** at `SOURCE_EXCERPT_CHARS`
+  because the appraiser is the one stage that must read the evidence; `render_research_context`
+  (→ `finalise.md`) carries a **compact block** — title, URL, authority, read/not-read and the
+  search snippet, plus each hop's `ResearchFindings.notes`, the verdict's `missing_information`
+  and every `ToolFailure`. No new tunable was introduced. Raising `NUM_CTX` to 8192 is the
+  alternative if S14 shows the compact block is too thin.
+- **Read and unread sources are spelled out in words** (`status: read` /
+  `status: found but not opened`), in one shared block shape used by both prompts. The authority
+  rule and S9's grounding check both depend on that distinction surviving into the text.
+- **`render_available_tools` takes the `ToolSpec`s `advertise()` produced**, not a role, and
+  renders **names only**. The descriptions and argument schemas already travel with the specs; a
+  prose copy would be the second tool-selection mechanism S2's allow-list exists to prevent.
+- **A failure is rendered with its code, its message and whether a retry could help.** That is
+  what makes `research_step.md`'s recovery instruction actionable — a model told only "that did
+  not work" invents a replacement.
+
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
 Day 6 MCP return type and every Day 7 evaluation.
@@ -524,9 +575,12 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**322 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`). The newest are the 18 in `tests/unit/test_tool_calling.py` (S2),
-after the 15 in `tests/unit/test_agent_schemas.py` (S1). Unit suites in `tests/unit/`, composition suites in `tests/integration/`
+**331 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`). The newest are the 9 in `tests/unit/test_prompt_context.py` (S3), after
+the 18 in `tests/unit/test_tool_calling.py` (S2) and the 15 in
+`tests/unit/test_agent_schemas.py` (S1). S3's suite asserts no prompt *wording* — wording is the
+part of a prompt that stays safe to change; what it pins is the placeholder set, the
+read/unread distinction, the excerpt bound and that a degraded run stays visibly degraded. Unit suites in `tests/unit/`, composition suites in `tests/integration/`
 — a failure there means the *composition* broke, not a unit.
 
 - Offline by default: `FakeProvider`, `respx` for HTTP, the fixture search backend, recorded
@@ -604,6 +658,9 @@ future session damages the project.
 | Cache a page or a search | `memory.cache` / `memory.search_cache` |
 | Spend or check live-search quota | `memory.budget.reserve_search_call` |
 | A prompt | `llm.prompts.render_prompt(name, **values)` + a new `.md` file |
+| A prompt's placeholder text | `agents/prompt_context.py` — one renderer per placeholder; never build a block at a call site |
+| Show a model the sources a run gathered | `agents.render_sources` (full, for judging) / `agents.render_research_context` (compact, for finalising) |
+| Show a model what a tool answered | `agents.render_tool_outcome` — code, message and retryability included |
 | A tunable value | `config.Settings` + `.env.example` |
 | A test without a model | `FakeProvider`; with HTTP, `respx`; with search, `SEARCH_BACKEND=fixture` |
 | A message between reasoning stages | `schemas/agents.py` — never a dict, never a new parallel model |
@@ -628,8 +685,25 @@ future session damages the project.
 ## Known limitations and not yet implemented
 
 **Missing (Day 3 builds these):** `agents/single_agent.py` · `service.py` · `validate_report` ·
-**`RunContext` budget counters** · the Day 3 prompts (`plan`, `research_step`, `sufficiency`)
-and orchestration · the multi-hop research loop.
+**`RunContext` budget counters** · the orchestration that calls the four prompts · the multi-hop
+research loop.
+
+**Discovered during S3, still owed by later subtasks:**
+
+- **`ResearchAssignment` carries no attachment path**, yet S2 advertises `read_document` only when
+  the task has one. `research_step.md` already takes an `{attachment}` placeholder and
+  `render_attachment` already renders it, so **S6 must supply the path** — passed alongside the
+  assignment today, or added to the model on Day 5 when the Researcher becomes a separate agent.
+- **S8: when no hop remains, skip `decide_next_step()` and finalise directly.** `plan.md` is not
+  written for a "you may not research" case, and skipping the call also saves one against
+  `MAX_MODEL_CALLS`.
+- **S6 composes the per-turn observation text** from `render_tool_outcome`; how many model turns
+  one hop takes is the loop's business, not the prompt's.
+- **S10 appends validation errors as an extra `Message`**, never as a new `finalise.md`
+  placeholder (see the prompt contract above).
+- **The contingency option (2)** — a structured `{"action", "arguments"}` decision instead of
+  free-form tool calling — stays free: it reuses `research_step.md`'s wording and S2's `dispatch`.
+  Choose it only on live evidence at S14, and record the choice.
 
 **Discovered during S1, still owed by later subtasks:**
 
@@ -729,7 +803,7 @@ Each subtask is planned, approved, implemented and tested independently.
 | --- | --- | --- | --- | --- |
 | **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses `TaskContext`, `SourceAuthority`, `ToolError`; `SearchSourceType` moved into `schemas/tools.py`. `GatheredSource` replaces the planned reuse of `NormalizedSource` (import rule) | `schemas/agents.py`, `schemas/tools.py`, `schemas/__init__.py`, `search/base.py` | — | **Done** |
 | **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; a per-`AgentRole` menu (`normalize_sources` never advertised, `read_document` only with an attachment); dispatch through `ToolRegistry`, which stays the only argument validator; an un-advertised name refused as a `ToolResult` before the registry. Provider-neutral | `agents/tool_calling.py`, `agents/__init__.py`, `tests/unit/test_tool_calling.py` | S1 | **Done** |
-| **S3** | **Agent prompts and assembly** — the prompt files plus the helper that renders findings and sources into them under `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the assembly contract is not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md` revision | S1 | Not started |
+| **S3** | **Agent prompts and assembly** — the four stage prompts plus `prompt_context.py`, one renderer per placeholder, bounding what a model sees at `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the placeholder set and the evidence split are not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md`, `agents/prompt_context.py`, `tests/unit/test_prompt_context.py` | S1 | **Done** |
 | **S4** | **In-memory budget counters on `RunContext`** — `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS`, `MAX_SOURCES_KEPT`, `TOTAL_RUN_TIMEOUT_S`. Keep enforcement in one place so Day 4 can lift it into hooks | `tools/base.py` | — | Not started |
 | **S5** | **Task understanding and narrowing** — `decide_next_step()`: a broad task becomes one session-sized research question, with `session_minutes` as a hard scoping input | `agents/single_agent.py` | S1–S4 | Not started |
 | **S6** | **Research step** — `run_research_step()`: the search → fetch → collect turn; tool-call parsing; "unknown tool" and "malformed arguments" handled as ordinary recoverable states; in-run `seen_urls` / `seen_queries` | `agents/single_agent.py` | S5 | Not started |

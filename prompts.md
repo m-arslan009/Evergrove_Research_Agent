@@ -749,3 +749,34 @@ tests.
 than in tools/. The bridge stops at returning the ToolResult — rendering a result back into a
 prompt or Message stays with S3/S6. Advertise read_document only when the task actually has an
 attachment.
+
+`Title`: Day 3 Subtask 3 — the four reasoning-stage prompts
+
+`User prompt`: Design the prompts required by single-agent reasoning stages. The expected logical
+stages are decide_next_step(), run_research_step(), judge_sufficiency(), finalise(). Likely prompt
+files belong under the existing llm/prompts/. Do not assume exact prompt contents or structure in
+advance. Analyze the schemas, tool bridge, existing finalise.md, and project requirements, then
+propose the smallest clean prompt design. Before implementation, explain each reasoning stage in
+simple non-technical. The prompts should: produce outputs compatible with the typed schemas;
+clearly separate the responsibilities of the four reasoning stages; keep task scope constrained by
+session_minutes; prevent the agent from turning one focus session into a large curriculum; tell the
+research stage how to use only the tools exposed; avoid inventing tools, URLs, evidence, or
+unsupported facts; make tool failures recoverable rather than encouraging hallucinated
+replacements; make the sufficiency stage explicitly identify missing information when evidence is
+incomplete; allow a follow-up research question to be derived from the evidence collected in the
+previous hop; keep the finalisation stage focused on producing the existing FocusPreparationReport;
+preserve assumptions and unknowns when information is incomplete; avoid duplicating deterministic
+validation rules that belong in later validate_report logic; stay provider-independent where
+possible. Do not over-engineer prompts with excessive instructions that small/local models may
+struggle to follow. Prefer concise, explicit constraints and structured outputs. Respect the
+tool-advertisement rules established. The prompt itself should not invent a second tool-selection
+mechanism. If prompt design reveals a requirement for one of those later subtasks, record it as a
+dependency instead of implementing it now.
+
+`Title`: S3 design decisions — compact finalise evidence, renderers in agents/
+
+`User prompt`: [Decisions taken on the S3 plan] With NUM_CTX at 4096, sufficiency.md carries the
+full excerpts and finalise.md carries a compact block instead (title, url, authority, read/unread,
+snippet, plus the researcher's notes, the judge's missing_information and any tool failures) — no
+new tunable and no config change. Put the placeholder renderers in agents/prompt_context.py rather
+than in llm/prompts/, so the prompt loader keeps its independence from schemas/ and config.
