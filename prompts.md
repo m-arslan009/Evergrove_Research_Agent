@@ -780,3 +780,29 @@ full excerpts and finalise.md carries a compact block instead (title, url, autho
 snippet, plus the researcher's notes, the judge's missing_information and any tool failures) — no
 new tunable and no config change. Put the placeholder renderers in agents/prompt_context.py rather
 than in llm/prompts/, so the prompt loader keeps its independence from schemas/ and config.
+
+`Title`: Day 3 Subtask 4 — minimum runtime state for the single-agent loop
+
+`User prompt`: Build the minimum runtime state needed for the single-agent loop to remember what has
+happened during one research run and enforce its limits in memory. This state will later allow the
+agent to: remember the narrowed goal, preserve findings between research hops, avoid repeating
+searches/fetches, retain gathered sources and tool failures, know the current hop and latest
+sufficiency result, track search/fetch/model usage, stop safely when a configured limit is reached.
+Do not assume the exact classes, fields, helper functions, or file locations in advance. Analyze the
+existing architecture and propose the smallest clean design. When a limit is reached, the future
+loop should be able to detect it and finalise honestly with the information already collected
+instead of continuing indefinitely or crashing. Reuse existing schemas and settings. Keep state
+strongly typed where useful. Avoid duplicating information already owned by another canonical
+object. Keep state separate from prompt rendering. Keep provider-specific details out of state. Do
+not put the entire agent orchestration inside state methods. Prefer simple state mutation/update
+helpers only when they reduce duplication or protect invariants. Preserve information needed for
+later grounding and multi-hop research. Keep Day 4 compatibility in mind, but do not implement Day 4
+prematurely. Avoid introducing database persistence for session state in this subtask.
+
+`Title`: S4 design decisions — ledger only, and a refusal is a boolean
+
+`User prompt`: [Decisions taken on the S4 plan] RunState already owns everything the run has seen
+(narrowed goal, findings, sources, failures, dedupe sets, hop, verdict), so S4 adds only the spend
+ledger and leaves schemas/agents.py untouched. When the budget has nothing left, claim() returns
+False rather than raising or building a ToolResult — the ledger stays free of the tool envelope, and
+Day 4's pre-hook turns the same False into ToolResult(BUDGET_EXCEEDED).

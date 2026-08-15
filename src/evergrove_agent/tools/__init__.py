@@ -7,8 +7,10 @@ over Day 2; the contract and the registry they plug into are here first.
 from __future__ import annotations
 
 from evergrove_agent.tools.base import (
+    BudgetKind,
     PostToolHook,
     PreToolHook,
+    RunBudget,
     RunContext,
     Tool,
     ToolInvocation,
@@ -16,8 +18,10 @@ from evergrove_agent.tools.base import (
 from evergrove_agent.tools.registry import ToolRegistry
 
 __all__ = [
+    "BudgetKind",
     "PostToolHook",
     "PreToolHook",
+    "RunBudget",
     "RunContext",
     "Tool",
     "ToolInvocation",

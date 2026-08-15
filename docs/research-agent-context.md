@@ -23,12 +23,13 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** |
-| **Next task** | **Day 3 Subtask 4 — In-memory budget counters on `RunContext`** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** |
+| **Next task** | **Day 3 Subtask 5 — Task understanding and narrowing (`decide_next_step()`)** |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
-`agents/tool_calling.py` is the only bridge between a model and the tool registry, and
-`agents/prompt_context.py` is the only place a run's state becomes prompt text. Nothing
+`agents/tool_calling.py` is the only bridge between a model and the tool registry,
+`agents/prompt_context.py` is the only place a run's state becomes prompt text, and
+`RunContext.budget` is the only ledger of what a run has spent. Nothing
 else in `agents/` exists: no `single_agent.py`, no research loop, no `service.py`, no
 `validate_report`. Do not describe or assume any other Day 3 capability as present.
 
@@ -105,7 +106,7 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `plan.md`, `research_step.md`, `sufficiency.md`, `finalise.md`) |
 | `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3). `single_agent.py` arrives in S5 |
-| `src/evergrove_agent/tools/` | `base.py` (contract), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
+| `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
@@ -235,8 +236,45 @@ class Tool(Protocol):
 `description` and `input_model` are **the half the model sees** — they are what Day 3 Subtask 2
 turns into a `ToolSpec`. `run` is the half only the registry calls.
 
-**`RunContext`** — currently `run_id` only. Day 3 adds in-memory budget counters, Day 4 the span
-stack. The registry, every hook and every agent read it, so its shape is expensive to change.
+**`RunContext`** — `run_id` and `budget: RunBudget` (S4). Day 4 adds the span stack. The registry,
+every hook and every agent read it, so its shape is expensive to change.
+
+**The run's spend ledger** (`tools/base.py`, Day 3 S4) — `RunBudget`, held by `RunContext`, built by
+`RunBudget.from_settings(settings=None, *, clock=time.monotonic)`.
+
+```python
+BudgetKind = Literal["search", "fetch", "model_call"]
+claim(kind) -> bool            # spend one, or refuse; the single enforcement point
+remaining(kind) -> int         # clamped at 0
+expired / remaining_seconds / elapsed_seconds
+hops_remaining(hops_used) / sources_remaining(sources_kept)   # count passed in, never stored
+exhausted_limits -> tuple[str, ...]                           # identifiers, not sentences
+```
+
+Invariants later work must preserve:
+
+- **`RunState` is what a run has *seen*; `RunBudget` is what it has *spent*.** Neither holds a copy
+  of the other's fields. That is why the counters are not on `RunState` (a Pydantic message Day 4
+  mirrors to `run_memory`, where a live clock does not belong) and why the sources are not here.
+- **`claim` is the only place a limit is enforced**, and it refuses when the kind is exhausted *or*
+  the deadline has passed. Claim **before** the call, never after — the same direction
+  `memory.budget.reserve_search_call` takes, because over-counting is the safe error.
+- **A refusal is `False`, never an exception and never a `ToolResult`.** The ledger knows nothing
+  about the tool envelope, `ErrorCode`, or prompt wording. Day 4's pre-hook maps a tool name onto a
+  `BudgetKind` and turns the same `False` into `ToolResult(BUDGET_EXCEEDED)` — a lift, not a rewrite.
+- **A refused claim increments nothing**, so `remaining` and `exhausted_limits` keep telling the
+  finalise step the truth however many times it asks.
+- **Limits are snapshotted at construction**, never re-read from `Settings` mid-run.
+- **`MAX_HOPS` and `MAX_SOURCES_KEPT` are limits here, not ledgers.** Their counts belong to
+  `RunState`, so `hops_remaining` / `sources_remaining` are pure functions over a count the caller
+  passes in. Both clamp at 0, because the answer feeds `ResearchAssignment`'s `ge=0` allowances.
+- **`exhausted_limits` covers only what this object counts** (the three kinds, plus `"time"`), and
+  returns identifiers so that turning them into prompt text stays `prompt_context.py`'s job.
+- **The clock is injected** (`clock=time.monotonic`) and monotonic, so a wall-clock adjustment
+  cannot hand a run extra budget and a test needs no real wait.
+- **`tools/base.py` now imports `config`**, which pulls only `pydantic-settings` — the rule that
+  importing `RunContext` must not drag in `httpx`, `sqlite3`, `pypdf` or the search backends still
+  holds.
 
 **`ToolRegistry`** — `register`, `get`, `names`, `add_pre_hook`, `add_post_hook`, and
 `async call(name, args, ctx) -> ToolResult`. `args` may be the tool's input model, a raw mapping
@@ -575,10 +613,11 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**331 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`). The newest are the 9 in `tests/unit/test_prompt_context.py` (S3), after
-the 18 in `tests/unit/test_tool_calling.py` (S2) and the 15 in
-`tests/unit/test_agent_schemas.py` (S1). S3's suite asserts no prompt *wording* — wording is the
+**344 offline test cases, ~4 s, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`). The newest are the 13 in `tests/unit/test_run_budget.py` (S4), after the
+9 in `tests/unit/test_prompt_context.py` (S3), the 18 in `tests/unit/test_tool_calling.py` (S2) and
+the 15 in `tests/unit/test_agent_schemas.py` (S1). S4's suite drives an injected `FakeClock`, so the
+900-second timeout is proven without waiting for it. S3's suite asserts no prompt *wording* — wording is the
 part of a prompt that stays safe to change; what it pins is the placeholder set, the
 read/unread distinction, the excerpt bound and that a degraded run stays visibly degraded. Unit suites in `tests/unit/`, composition suites in `tests/integration/`
 — a failure there means the *composition* broke, not a unit.
@@ -666,6 +705,7 @@ future session damages the project.
 | A message between reasoning stages | `schemas/agents.py` — never a dict, never a new parallel model |
 | A source the agent gathered | `schemas.GatheredSource` (not `NormalizedSource`, which is a search hit) |
 | "What has this run seen?" | `RunState.evidence_urls` / `fetched_urls` / `used_queries` / `all_sources` |
+| "What has this run spent?" / may it spend one more? | `RunContext.budget` — `claim(kind)` / `remaining(kind)` / `exhausted_limits`; never a counter of your own |
 | The source-type enum | `schemas.SearchSourceType` — one definition, re-exported by `search/base.py` |
 
 **What later days depend on:**
@@ -685,8 +725,19 @@ future session damages the project.
 ## Known limitations and not yet implemented
 
 **Missing (Day 3 builds these):** `agents/single_agent.py` · `service.py` · `validate_report` ·
-**`RunContext` budget counters** · the orchestration that calls the four prompts · the multi-hop
-research loop.
+the orchestration that calls the four prompts · the multi-hop research loop.
+
+**Discovered during S4, still owed by later subtasks:**
+
+- **S10 must reserve headroom for the finalise call.** `claim("model_call")` is indifferent to which
+  stage is asking; if the loop spends the last model call on a research turn, the run cannot produce
+  a report at all. The honest-degradation path depends on finalise being treated as mandatory rather
+  than as one more claim.
+- **S5–S8 size `ResearchAssignment.max_searches` / `max_fetches` from `remaining(...)`**, and call
+  `claim` before every `generate()` and before dispatching `web_search` / `fetch_url`. The
+  assignment stays an allowance; the ledger stays the only enforcement.
+- **S8/S10 read `exhausted_limits`** to say in `unknowns` why a run stopped early. Nothing renders
+  it yet — that block is `prompt_context.py`'s to add when the loop needs it.
 
 **Discovered during S3, still owed by later subtasks:**
 
@@ -804,7 +855,7 @@ Each subtask is planned, approved, implemented and tested independently.
 | **S1** | **Agent schemas** — the typed contracts for the four reasoning boundaries. Reuses `TaskContext`, `SourceAuthority`, `ToolError`; `SearchSourceType` moved into `schemas/tools.py`. `GatheredSource` replaces the planned reuse of `NormalizedSource` (import rule) | `schemas/agents.py`, `schemas/tools.py`, `schemas/__init__.py`, `search/base.py` | — | **Done** |
 | **S2** | **Model-facing tool integration** — registered `Tool` → existing `llm.base.ToolSpec`; a per-`AgentRole` menu (`normalize_sources` never advertised, `read_document` only with an attachment); dispatch through `ToolRegistry`, which stays the only argument validator; an un-advertised name refused as a `ToolResult` before the registry. Provider-neutral | `agents/tool_calling.py`, `agents/__init__.py`, `tests/unit/test_tool_calling.py` | S1 | **Done** |
 | **S3** | **Agent prompts and assembly** — the four stage prompts plus `prompt_context.py`, one renderer per placeholder, bounding what a model sees at `SOURCE_EXCERPT_CHARS`. Wording is safe to change later; the placeholder set and the evidence split are not | `llm/prompts/{plan,research_step,sufficiency}.md`, `finalise.md`, `agents/prompt_context.py`, `tests/unit/test_prompt_context.py` | S1 | **Done** |
-| **S4** | **In-memory budget counters on `RunContext`** — `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS`, `MAX_SOURCES_KEPT`, `TOTAL_RUN_TIMEOUT_S`. Keep enforcement in one place so Day 4 can lift it into hooks | `tools/base.py` | — | Not started |
+| **S4** | **In-memory budget counters on `RunContext`** — `RunBudget`: `claim(kind)` is the single enforcement point for `MAX_SEARCH_CALLS`, `MAX_FETCH_CALLS`, `MAX_MODEL_CALLS` and `TOTAL_RUN_TIMEOUT_S`; `MAX_SOURCES_KEPT` and `MAX_HOPS` are limits whose counts stay on `RunState`. A refusal is `False`, so Day 4 lifts it into a pre-hook unchanged. `RunState` was not touched — it already owns everything a run has *seen* | `tools/base.py`, `tools/__init__.py`, `tests/unit/test_run_budget.py` | — | **Done** |
 | **S5** | **Task understanding and narrowing** — `decide_next_step()`: a broad task becomes one session-sized research question, with `session_minutes` as a hard scoping input | `agents/single_agent.py` | S1–S4 | Not started |
 | **S6** | **Research step** — `run_research_step()`: the search → fetch → collect turn; tool-call parsing; "unknown tool" and "malformed arguments" handled as ordinary recoverable states; in-run `seen_urls` / `seen_queries` | `agents/single_agent.py` | S5 | Not started |
 | **S7** | **Sufficiency judgement** — `judge_sufficiency()`: do these sources support a useful session, or is a prerequisite missing? Becomes the Appraiser on Day 5 | `agents/single_agent.py` | S6 | Not started |
