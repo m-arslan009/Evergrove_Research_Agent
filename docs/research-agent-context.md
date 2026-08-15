@@ -23,23 +23,24 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** |
-| **Next task** | **Day 3 Subtask 9 — `validate_report` and grounding** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** |
+| **Next task** | **Day 3 Subtask 10 — structured finalisation and the retry ladder** |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
 `agents/prompt_context.py` is the only place a run's state becomes prompt text,
 `RunContext.budget` is the only ledger of what a run has spent, and
-`agents/single_agent.py` is the loop that drives all four. Nothing
-else in `agents/` exists: no `service.py`, no `validate_report`. `finalise()` exists but
-makes **one attempt** — the retry ladder is still S10's. Do not describe or assume any other
-Day 3 capability as present.
+`agents/single_agent.py` is the loop that drives all four, and
+`tools/validate_report.py` is the only place a finished report is checked against the evidence.
+Nothing else in `agents/` exists: no `service.py`. `finalise()` exists but makes **one attempt**
+and does not yet call `validate_report` — the retry ladder is still S10's. Do not describe or
+assume any other Day 3 capability as present.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **Current — S1–S8 done, S9–S14 remain** |
+| 3 | Single research agent — the core loop | **Current — S1–S9 done, S10–S14 remain** |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
@@ -513,6 +514,33 @@ means two different sessions from the same number of minutes. `main.py` imports 
 now pulls in `single_agent`, and with it `httpx` and `sqlite3`, which the `--no-research` path
 does not need.
 
+**The grounding contract** (`tools/validate_report.py`, S9) — the third validation of a report,
+after constrained decoding and `model_validate_json`, and the only one that can see what the run
+actually gathered. Pure: two sets and a report in, a `ReportValidation` out; no model, no network,
+no clock.
+
+- `validate_report(report, *, evidence_urls, fetched_urls, max_topics, research_performed)`
+  returns **`ReportValidation{ok, issues: list[ReportIssue]}`**, never a bare bool. Each
+  `ReportIssue` carries a stable `code`, a `field` path in the report's own vocabulary
+  (`resources[2].url`), and a one-line `message` written to be shown to a model unedited.
+  `as_lines()` is the single rendering of those issues — what S10 stores in
+  `RunState.validation_errors` *and* quotes into the retry message, so a failed run's report and
+  the model's instructions are one list.
+- **Every issue is returned, not the first.** A retry told about one problem at a time spends an
+  attempt learning what was already known.
+- **Both sides of every URL comparison go through `canonicalize_url`** — the same function
+  `GatheredSource.url` was built with. A citation differing only by a fragment, a tracking
+  parameter or a trailing slash is the same page; treating it as ungrounded would make the S10
+  ladder burn every attempt correcting nothing.
+- **`max_topics` is passed in, never computed here.** `max_topics_for` stays the one definition
+  of the sizing rule, and `tools/` never imports `agents/`.
+- Registered in `wiring.py` as `validate_report` and, like `normalize_sources`, **never
+  advertised** — whether a report passes is not the model's call. Internal callers compose with
+  the pure function. The wrapper's `ToolResult.ok` answers "did the validator run", so a rejected
+  report is `ok=True` carrying `ReportValidation.ok=False`.
+- The `cited is None` branch is a guard, not reachable behaviour: `Resource.url` is an `HttpUrl`,
+  so a non-http(s) citation is rejected by the schema first.
+
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
 Day 6 MCP return type and every Day 7 evaluation.
@@ -818,14 +846,14 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 still builds these):** `service.py` · `validate_report` and the grounding check ·
-the finalise retry ladder.
+**Missing (Day 3 still builds these):** `service.py` · the finalise retry ladder.
 
 **Discovered during S5–S8, still owed by later subtasks:**
 
-- **S9 owns grounding, alone.** `finalise()` deliberately does not touch `resources`, so until S9
-  lands **a report can cite a URL the run never saw.** That is the one Phase 2 requirement the
-  loop does not yet satisfy, and it is why S9 is next rather than S11.
+- **S9 owns grounding, alone, and now exists — but nothing calls it yet.** `finalise()`
+  deliberately does not touch `resources`, so until **S10** wires `validate_report` into the
+  finalise path, **a report can still cite a URL the run never saw.** The rule is written and
+  proven; it is not yet enforced on a live run.
 - **S10 wraps `finalise()` rather than replacing it.** The extra-`Message` mechanism the ladder
   needs is already in place (the stop reason travels that way); attempt 2 adds the validation
   errors as a second such message, attempt 3 switches provider. `PreparationFailed` already
@@ -953,7 +981,7 @@ Each subtask is planned, approved, implemented and tested independently.
 | **S6** | **Research step** — `run_research_step()`: the search → fetch → collect turn; tool-call parsing; "unknown tool" and "malformed arguments" handled as ordinary recoverable states; in-run `seen_urls` / `seen_queries` | `agents/single_agent.py` | S5 | **Done** |
 | **S7** | **Sufficiency judgement** — `judge_sufficiency()`: do these sources support a useful session, or is a prerequisite missing? Becomes the Appraiser on Day 5 | `agents/single_agent.py` | S6 | **Done** |
 | **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=3` never exceeded even if the model keeps asking to research. **The acceptance criterion is still one *visible* second hop** — a third is now permitted, not required | `agents/single_agent.py` | S5–S7 | **Done** |
-| **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | Not started |
+| **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | **Done** |
 | **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider, then fail loudly. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py` | S9 | Not started |
 | **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin | `service.py` | S8, S10 | Not started |
 | **S12** | **CLI integration** — research mode replaces the current refusal; `--attachment` wired to `read_document`. **Resolves the open subcommand-vs-flat-flags decision** | `main.py` | S11 | Not started |

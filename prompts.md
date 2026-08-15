@@ -833,3 +833,36 @@ grounding (S9) and the retry ladder (S10) stay the next subtask. A research hop 
 model turns, so the model can open the pages search actually returned rather than guessing a URL.
 max_topics_for() moves from main.py into agents/prompt_context.py, where finalise.md's {max_topics}
 placeholder belongs, so one definition serves both the --no-research path and the loop.
+
+`Title`: Reliable final report generation — deterministic validation and a bounded retry ladder
+
+`User prompt`: Make final report generation reliable when the LLM produces an invalid report. The
+intended high-level flow is: generate report → validate deterministically → return if valid →
+otherwise retry using validation feedback → fail clearly after the configured attempts are
+exhausted. The retry mechanism should correct the report, not restart the research run. Across
+retries keep stable: user task, interpreted/narrowed goal, gathered sources/evidence, research
+findings, sufficiency result, tool failures/limitations, and the grounding evidence set. Only the
+final report generation should be retried. Do not search or fetch additional evidence merely
+because final report validation failed — a validation failure means the report does not satisfy
+our deterministic contract, not that the research must be redone. Use the structured S9 validation
+result. Reuse the existing configuration such as max_output_retries; clarify during planning
+whether that value means total attempts or retries after the initial attempt, do not silently
+change its semantics, keep one canonical interpretation and test it explicitly. Every retry is
+another model call and must respect the S4 RunBudget — do not bypass the model-call budget because
+the retry mechanism wants another attempt; if no model-call capacity remains, stop retrying and
+fail according to the approved failure design, treating budget exhaustion as normal control flow
+rather than an uncontrolled exception from RunBudget. After all allowed attempts are exhausted the
+system must not return an invalid report as if it were valid, silently discard validation errors,
+loop indefinitely, or fabricate corrected evidence. Design a clear terminal failure, likely using
+an existing or new PreparationFailed domain error only if consistent with current conventions,
+preserving enough information for debugging such as the final validation errors and relevant run
+identity/context. Do not couple it prematurely to Day 4 tracing if tracing does not exist yet.
+
+`Title`: Scope and design decisions for the report-validation work
+
+`User prompt`: [Decisions taken on the plan] Cover S9 and S10 in one plan as two separately
+approved phases. max_output_retries means total attempts (3 = one initial attempt plus two
+retries); keep the existing setting name and document the mismatch in place. The last attempt
+switches provider only when an alternate is genuinely configured; otherwise it repeats on the
+primary with the accumulated errors, and any LLMError from the alternate is folded into
+PreparationFailed rather than propagating.
