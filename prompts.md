@@ -866,3 +866,14 @@ retries); keep the existing setting name and document the mismatch in place. The
 switches provider only when an alternate is genuinely configured; otherwise it repeats on the
 primary with the accumulated errors, and any LLMError from the alternate is folded into
 PreparationFailed rather than propagating.
+
+`Title`: S10 design decisions — one ladder, a structured failure, and citation-free loop scripts
+
+`User prompt`: [Decisions taken on the S10 plan] A reply that fails model_validate_json consumes a
+ladder attempt and is re-asked with the Pydantic errors quoted, exactly as a rule failure is
+re-asked with as_lines() — one ladder for "this report is not acceptable", whatever made it so,
+rather than raising on the first drift. PreparationFailed keeps its message and also carries
+run_id, attempts and issues, so service.py and the CLI can render the errors instead of parsing a
+sentence. The loop suite's scripted report drops its citation, because those tests prove how the
+loop stops and degrades rather than how citations are checked; grounding is proven separately
+against a URL the run actually fetched.

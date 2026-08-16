@@ -23,24 +23,25 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** |
-| **Next task** | **Day 3 Subtask 10 — structured finalisation and the retry ladder** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** |
+| **Next task** | **Day 3 Subtask 11 — `service.py`, the one entry point** |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
 `agents/prompt_context.py` is the only place a run's state becomes prompt text,
 `RunContext.budget` is the only ledger of what a run has spent, and
 `agents/single_agent.py` is the loop that drives all four, and
-`tools/validate_report.py` is the only place a finished report is checked against the evidence.
-Nothing else in `agents/` exists: no `service.py`. `finalise()` exists but makes **one attempt**
-and does not yet call `validate_report` — the retry ladder is still S10's. Do not describe or
-assume any other Day 3 capability as present.
+`tools/validate_report.py` is the only place a finished report is checked against the evidence,
+and `finalise()` is the only caller of it — up to `MAX_OUTPUT_RETRIES` **total attempts**, each
+one validated, the errors quoted back, the last attempt on the alternate provider when one is
+configured, then `PreparationFailed`. Nothing else in `agents/` exists: no `service.py`. Do not
+describe or assume any other Day 3 capability as present.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **Current — S1–S9 done, S10–S14 remain** |
+| 3 | Single research agent — the core loop | **Current — S1–S10 done, S11–S14 remain** |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
@@ -110,7 +111,7 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `plan.md`, `research_step.md`, `sufficiency.md`, `finalise.md`) |
 | `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3); `single_agent.py` — the four stage functions and the loop (S5–S8) |
-| `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the four tools |
+| `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the five tools — the four Day 2 ones plus `validate_report.py` (S9) |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
@@ -122,8 +123,7 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `service.py`, `tools/validate_report.py`, `evals/`, `scripts/`,
-`.mcp.json`.
+**Not present, do not assume:** `service.py`, `evals/`, `scripts/`, `.mcp.json`.
 
 ---
 
@@ -437,16 +437,17 @@ Invariants later work must preserve:
 functions and the loop that drives them. Public surface:
 
 ```python
-AgentProviders(supervisor, researcher, appraiser)      # .from_settings(settings)
+AgentProviders(supervisor, researcher, appraiser, fallback=None)  # .from_settings(settings)
 PreparationFailed(RuntimeError)                        # exception, not a schema
+    .run_id · .attempts · .issues                      # message-first, facts also attached
 StopReason = Literal["sufficient", "planner_finalised", "hop_cap", "budget_spent",
                      "no_followup", "planner_unavailable", "appraiser_unavailable"]
 async decide_next_step(state, *, provider, ctx, settings=None)  -> SupervisorDecision | None
 async run_research_step(assignment, *, provider, registry, ctx, settings=None,
                         attachment_path=None)                   -> ResearchFindings
 async judge_sufficiency(request, *, provider, ctx, settings=None) -> AppraisalVerdict | None
-async finalise(state, *, provider, ctx, stop_reason="sufficient", settings=None)
-                                                                -> FocusPreparationReport
+async finalise(state, *, provider, ctx, stop_reason="sufficient", settings=None,
+               fallback_provider=None)                          -> FocusPreparationReport
 async run_agent(task, *, registry, providers=None, ctx=None, settings=None)
                                                                 -> FocusPreparationReport
 ```
@@ -540,6 +541,46 @@ no clock.
   report is `ok=True` carrying `ReportValidation.ok=False`.
 - The `cited is None` branch is a guard, not reachable behaviour: `Resource.url` is an `HttpUrl`,
   so a non-http(s) citation is rejected by the schema first.
+
+**The retry ladder** (`finalise()` in `agents/single_agent.py`, S10) — the only caller of
+`validate_report`, and the reason a run cannot return a report its own evidence contradicts.
+
+- **`MAX_OUTPUT_RETRIES` means total attempts, not retries.** The shipped 3 is one initial call
+  plus two corrections. The setting name is the plan's and is kept; the mismatch is recorded in
+  `finalise`'s docstring, which is the one place it can be read next to the loop that consumes it.
+  Do not "fix" the name without re-approving what the number means.
+- **One ladder for two failure kinds.** A reply that fails `model_validate_json` and a report that
+  fails `validate_report` are the same event to the caller — *this report is not acceptable* — so
+  both spend an attempt and both are quoted back. Only the second kind produces `ReportIssue`s;
+  a shape failure quotes `_errors(exc)` and leaves `PreparationFailed.issues` empty, because there
+  was never a report to have a verdict about.
+- **Validation runs *after* `_apply_bookkeeping`, never before.** `original_task`,
+  `session_duration_minutes` and the appended `unknowns` note are set there and read by
+  `goal_not_narrowed`, `too_many_topics` and `unknowns_required`. Validating the raw reply would
+  reject reports for fields `finalise.md` explicitly tells the model not to fill in.
+- **The correction is an extra `Message`, and every attempt is rebuilt from the *opening* turns**
+  (`_with_correction`) rather than appended to the previous one. Attempt 3 argues with attempt 2's
+  answer alone; the evidence and the stop reason sit in the opening turns and travel unchanged,
+  which is what makes every attempt argue about the same run inside a 4096-token window.
+- **The retry corrects the report, never the research.** No search, no fetch, no new evidence
+  between attempts — the grounding set is frozen the moment finalisation starts. A ladder that
+  re-entered the loop would spend SerpAPI quota rewriting a paragraph.
+- **Every attempt claims `model_call`; a refusal ends the ladder.** No retry path goes around
+  `claim`. `_FINALISE_RESERVE` stays **1**: it guarantees the *first* attempt, and retries spend
+  whatever slack the loop left. Raising it to 3 would guarantee the ladder by taking three calls
+  away from research on a 10-call budget, which is the opposite of the agreed trade.
+  `PreparationFailed.attempts` is how a caller tells "the model cannot write a valid report" from
+  "the run ran out of room to ask again".
+- **Only the last attempt switches provider, and only when an alternate is genuinely configured.**
+  `_alternate_provider` requires `GOOGLE_API_KEY` for a hosted alternate — `HostedProvider`
+  constructs without one and raises only when called, so an assumed alternate would spend the
+  final attempt discovering there was none. `AgentProviders.fallback` is defaulted and resolved in
+  `from_settings`, so composition stays in one place and a test can inject a second provider.
+  With `MAX_OUTPUT_RETRIES=1` there is no switch: the first attempt always belongs to the primary.
+- **The alternate's `LLMError` folds into `PreparationFailed`; the primary's still propagates.**
+  An unreachable primary is a broken run, as everywhere else in the project. A fallback that was
+  reached for *because* the run was already failing must not replace the real reason with a
+  connection error.
 
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
@@ -846,19 +887,10 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 still builds these):** `service.py` · the finalise retry ladder.
+**Missing (Day 3 still builds these):** `service.py`.
 
 **Discovered during S5–S8, still owed by later subtasks:**
 
-- **S9 owns grounding, alone, and now exists — but nothing calls it yet.** `finalise()`
-  deliberately does not touch `resources`, so until **S10** wires `validate_report` into the
-  finalise path, **a report can still cite a URL the run never saw.** The rule is written and
-  proven; it is not yet enforced on a live run.
-- **S10 wraps `finalise()` rather than replacing it.** The extra-`Message` mechanism the ladder
-  needs is already in place (the stop reason travels that way); attempt 2 adds the validation
-  errors as a second such message, attempt 3 switches provider. `PreparationFailed` already
-  exists — S10 raises it after three attempts instead of one. `MAX_OUTPUT_RETRIES` is still
-  unconsumed and is the ladder's bound.
 - **S11's `service.py` calls `run_agent` and nothing else.** Building the registry, the providers
   and the `RunContext` is composition, so it belongs there rather than inside the loop — all
   three are already optional injected parameters for exactly that reason.
@@ -879,9 +911,10 @@ future session damages the project.
   free-form tool calling — is **still unspent**. The loop uses free-form tool calling, which is
   the design S14 is meant to test. If it fails there, `dispatch` already takes a `ToolCall`, so
   the swap remains a change inside `run_research_step` and no new tool path.
-- **S10 appends validation errors as an extra `Message`**, never as a new `finalise.md`
-  placeholder (see the prompt contract above). `finalise()` already sends the stop reason that
-  way, so the ladder extends a mechanism rather than introducing one.
+- **S10 appended validation errors as an extra `Message`**, never as a new `finalise.md`
+  placeholder (see the prompt contract above) — `finalise()` already sent the stop reason that
+  way, so the ladder extended a mechanism rather than introducing one. **Done**; the ladder's
+  own contract is under *The retry ladder* above.
 
 **Discovered during S1, still standing:**
 
@@ -967,7 +1000,7 @@ the second hop deterministic, triggered by non-empty `missing_information` rathe
 choice. All three preserve every Phase 2 requirement. **Record whichever is chosen in
 `prompts.md` and here.**
 
-## Day 3 subtask breakdown — S1 and S2 done
+## Day 3 subtask breakdown — S1–S10 done
 
 Each subtask is planned, approved, implemented and tested independently.
 
@@ -982,7 +1015,7 @@ Each subtask is planned, approved, implemented and tested independently.
 | **S7** | **Sufficiency judgement** — `judge_sufficiency()`: do these sources support a useful session, or is a prerequisite missing? Becomes the Appraiser on Day 5 | `agents/single_agent.py` | S6 | **Done** |
 | **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=3` never exceeded even if the model keeps asking to research. **The acceptance criterion is still one *visible* second hop** — a third is now permitted, not required | `agents/single_agent.py` | S5–S7 | **Done** |
 | **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | **Done** |
-| **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider, then fail loudly. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py` | S9 | Not started |
+| **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider *when one is genuinely configured*, then fail loudly. A drifted schema takes a rung of the same ladder. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py`, `tests/unit/test_single_agent.py` | S9 | **Done** |
 | **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin | `service.py` | S8, S10 | Not started |
 | **S12** | **CLI integration** — research mode replaces the current refusal; `--attachment` wired to `read_document`. **Resolves the open subcommand-vs-flat-flags decision** | `main.py` | S11 | Not started |
 | **S13** | **Offline integration tests** — full loop on `FakeProvider` + fixture search, valid report, **under 2 s** · a scripted "insufficient" verdict triggers exactly one second hop · the hop cap holds · a `SEARCH_UNAVAILABLE` degrades the report rather than crashing · three invalid outputs raise `PreparationFailed` · grounding rejects a report citing an unfetched URL | `tests/integration/test_single_loop.py` | S12 | Not started |
