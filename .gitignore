@@ -20,6 +20,10 @@ data/
 *.sqlite3
 *.sqlite3-journal
 
+# Local scratch. Named one by one, never a pattern: `fixtures/` is a documented set with a
+# provenance policy (fixtures/README.md), and a wildcard here would silently hide a real one.
+fixtures/documents/Sample.txt
+
 # OS
 Thumbs.db
 .DS_Store

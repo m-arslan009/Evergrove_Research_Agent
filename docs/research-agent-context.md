@@ -956,8 +956,10 @@ server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `
 - **`README.md` is stale** — it still says "Day 1 complete, Day 2 in progress", "100 unit tests",
   that search is unimplemented, and lists `validate_report` and attachments as Day 2 TODOs. All of
   that is wrong. **Known documentation issue; correcting it is not yet approved work.**
-- `fixtures/documents/Sample.txt` is an untracked lorem-ipsum scratch file, deliberately not
-  committed and not part of the documented fixture set.
+- `fixtures/documents/Sample.txt` is a lorem-ipsum scratch file, deliberately not committed and
+  not part of the documented fixture set. It is now named in `.gitignore` so it stops showing up
+  in every `git status` — named individually, never as a pattern, because `fixtures/` is a
+  documented set with a provenance policy and a wildcard there would hide a real recording.
 
 ---
 
