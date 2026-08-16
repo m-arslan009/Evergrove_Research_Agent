@@ -577,6 +577,17 @@ no clock.
   final attempt discovering there was none. `AgentProviders.fallback` is defaulted and resolved in
   `from_settings`, so composition stays in one place and a test can inject a second provider.
   With `MAX_OUTPUT_RETRIES=1` there is no switch: the first attempt always belongs to the primary.
+- **The failure that ends the ladder is the one reported.** A drift clears both `issues` and
+  `RunState.validation_errors` before retrying, and the terminal message names which kind of
+  failure ended the run. Without that, a rejection followed by two drifts reports the *first*
+  attempt's citation issues as the final verdict, and whoever reads it goes looking for a
+  citation problem in replies that never parsed.
+- **`RunState.validation_errors` is written by the ladder and read by nobody yet — kept
+  deliberately.** `PreparationFailed.issues` serves the failure path, but a run that was
+  *corrected* and then succeeded currently leaves no trace that it needed correcting.
+  **S11 owes surfacing it**, and Day 4 tracing is the other candidate. It is a live field, not
+  dead weight: keep its lifecycle correct (set on a rule failure, cleared on a drift) so
+  whatever surfaces it is not showing a stale verdict.
 - **The alternate's `LLMError` folds into `PreparationFailed`; the primary's still propagates.**
   An unreachable primary is a broken run, as everywhere else in the project. A fallback that was
   reached for *because* the run was already failing must not replace the real reason with a
@@ -891,6 +902,14 @@ future session damages the project.
 
 **Discovered during S5–S8, still owed by later subtasks:**
 
+- **S11 owes a home for `RunState.validation_errors`.** The ladder records why a report was
+  rejected; nothing reads it, so a run corrected on attempt 2 looks identical to one that was
+  right first time. Surface it from `service.py`, or hand it to Day 4 tracing — but decide,
+  rather than leaving a written-and-unread field.
+- **S12 must decide whether `--no-research` gets the ladder.** `main.py` builds its report and
+  applies its own bookkeeping without ever calling `validate_report`. It satisfies two of S9's
+  rules by construction (it forces `resources: []` and an unknowns entry), but `too_many_topics`,
+  `topic_overlap` and `goal_not_narrowed` go unchecked on **the only path a user can run today**.
 - **S11's `service.py` calls `run_agent` and nothing else.** Building the registry, the providers
   and the `RunContext` is composition, so it belongs there rather than inside the loop — all
   three are already optional injected parameters for exactly that reason.
@@ -940,7 +959,15 @@ server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `
   (one real query, recorded in the same session, behind `@pytest.mark.live`) is still outstanding.
 - **No live Gemini/hosted call has been verified** either; `HOSTED_MODEL` defaults to
   `gemini-3.6-flash` and free-tier model ids change — confirm against the AI Studio console before
-  relying on it.
+  relying on it. **S10 raised the stakes on this:** the retry ladder's final attempt is the hosted
+  provider, so a stale model id fails at exactly the moment the run was already in trouble.
+  Checking the id is a console lookup, not a live call, so it costs nothing — do it before S14.
+- **S14 must measure whether the ladder has room to run.** `_FINALISE_RESERVE` guarantees the
+  first attempt only, so a greedy three-hop run reaches finalise with roughly one model call left
+  and gets no retry at all. S14's criterion is a valid report on ≥4 of 5 attempts; if `qwen3:4b`
+  cites ungrounded URLs with any regularity, the ladder will be unavailable on precisely the runs
+  that need it. `MAX_MODEL_CALLS` is the dial to turn, not the reserve — raising the reserve takes
+  calls away from research to buy retries nobody may need.
 
 **Known defects and rough edges:**
 
@@ -953,11 +980,15 @@ server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `
 - On a fresh fetch, `FetchUrlOutput.retrieved_at` is taken a beat after the cache row's
   `fetched_at`, so a cache hit reports a timestamp ~1 ms earlier than the call that filled it.
   Harmless; the contract is only that a hit reports the fetch, never the serve.
-- **`README.md` is stale** — it still says "Day 1 complete, Day 2 in progress", "100 unit tests",
-  that search is unimplemented, and lists `validate_report` and attachments as Day 2 TODOs. All of
-  that is wrong. **Known documentation issue; correcting it is not yet approved work.**
-- `fixtures/documents/Sample.txt` is an untracked lorem-ipsum scratch file, deliberately not
-  committed and not part of the documented fixture set.
+- **`README.md`'s factual claims were corrected after S10** — status, the file tree, the test
+  count, search, `validate_report`, the retry ladder, attachments, and the `ddgs` backend (a
+  reserved name that raises, not a working fallback). Its *structure* is unchanged, so the
+  narrative sections still read as a Phase 2 plan rather than a description of what runs today.
+  Keep the factual claims in step with this document when a subtask lands.
+- `fixtures/documents/Sample.txt` is a lorem-ipsum scratch file, deliberately not committed and
+  not part of the documented fixture set. It is now named in `.gitignore` so it stops showing up
+  in every `git status` — named individually, never as a pattern, because `fixtures/` is a
+  documented set with a provenance policy and a wildcard there would hide a real recording.
 
 ---
 

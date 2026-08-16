@@ -36,12 +36,13 @@ import respx
 from evergrove_agent.agents.single_agent import (
     AgentProviders,
     PreparationFailed,
+    finalise,
     run_agent,
 )
 from evergrove_agent.config import Settings
 from evergrove_agent.llm import FakeProvider
 from evergrove_agent.llm.base import LLMResponse, ToolCall
-from evergrove_agent.schemas import TaskContext
+from evergrove_agent.schemas import RunState, TaskContext
 from evergrove_agent.tools import RunBudget, RunContext, ToolRegistry
 from evergrove_agent.tools.wiring import build_tool_registry
 
@@ -765,3 +766,46 @@ async def test_a_retry_rewrites_the_report_without_researching_again(
     assert seen == ["web_search", "fetch_url"]
     assert ctx.budget.remaining("search") == offline_settings.max_search_calls - 1
     assert ctx.budget.remaining("fetch") == offline_settings.max_fetch_calls - 1
+
+
+async def test_a_later_drift_does_not_report_the_earlier_verdict(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """The last attempt's failure is the one reported, not the most recent one that had a
+    verdict.
+
+    A rejection followed by two drifts used to end with the *first* attempt's issues
+    attached to the exception, which sends whoever reads it hunting for a citation problem
+    in replies that never parsed. Both records are cleared on a drift for that reason, and
+    `RunState.validation_errors` is cleared with them — S11 is going to surface that field,
+    and a stale one is worse than an empty one.
+
+    Driven through `finalise` rather than `run_agent` so the state is observable: the field
+    reaches no caller yet, which is exactly why nothing else would catch it going stale.
+    """
+    state = RunState(
+        task=TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25)
+    )
+    provider = FakeProvider(
+        [
+            # Rejected: no research was performed, so nothing may be cited.
+            scripted_report(resources=[resource(UNGROUNDED_URL)]),
+            json.dumps({"drifted": True}),
+            json.dumps({"drifted": "again"}),
+        ]
+    )
+
+    with pytest.raises(PreparationFailed) as raised:
+        await finalise(
+            state,
+            provider=provider,
+            ctx=RunContext(budget=RunBudget.from_settings(offline_settings)),
+            stop_reason="planner_finalised",
+            settings=offline_settings,
+        )
+
+    assert raised.value.issues == ()
+    assert state.validation_errors == []
+    assert "did not fit" in str(raised.value), (
+        "the message must name the failure that actually ended the ladder"
+    )

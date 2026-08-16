@@ -116,40 +116,59 @@ reasoning is organised, not how many services are deployed.
 
 ## Current status
 
-**Day 1 of 7 complete; Day 2 in progress.** A task description goes into a model and a
-validated `FocusPreparationReport` comes out; the tool registry — the single path every
-tool will be called through — exists with no tools registered in it yet; and the
-deterministic passage selector that decides how much of a source the model ever sees is
-in place, though nothing calls it until the readers land. There is no search, no file
-reading, no memory, no tracing, no MCP server, and no multi-agent loop yet.
+**Days 1 and 2 of 7 complete; Day 3 is in progress.** The deterministic half of the
+project is finished: five tools behind one registry, three search backends, PDF/DOCX/HTML/
+text readers, the SQLite caches and the monthly search-quota guard, all usable offline
+from a CLI. The agent loop itself now plans, searches, reads, judges whether it has
+enough, performs a genuine second hop, and writes a report that is checked against the
+run's own evidence and retried when it fails. What is still missing is the entry point
+that ties it together (`service.py`), the research mode on the main CLI, memory, tracing,
+the supervisor/worker split, and the MCP server.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
-| 2 | Deterministic tools: search backends, fetch, document readers, SQLite cache, registry | **In progress** — registry and passage selector |
-| 3 | Single research agent — the core loop (`--mode single`) | Not started |
+| 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
+| 3 | Single research agent — the core loop | **In progress** — S1–S10 done, S11–S14 remain |
 | 4 | Memory, hooks, tracing | Not started |
-| 5 | Supervisor + Researcher + Appraiser (`--mode multi`) | Not started |
+| 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server, MCP client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
+
+Day 3's remaining subtasks are `service.py` (S11), CLI research mode (S12), the offline
+integration suite (S13), and the live end-to-end verification (S14). **No live model or
+live search run has been performed yet** — see *Local model setup* below.
 
 What exists today:
 
 ```
 pyproject.toml · uv.lock · .env.example · .gitignore · README.md · prompts.md
 src/evergrove_agent/
-  config.py            every tunable value: models, budgets, timeouts, paths
+  config.py            every tunable value: models, budgets, TTLs, timeouts, paths
   main.py              CLI — only --no-research works today
-  schemas/             task.py · report.py · tools.py   (Pydantic only, imports nothing)
+  schemas/             task.py · report.py · tools.py · agents.py
+                       (Pydantic only, imports nothing from the package)
   llm/                 base.py · ollama_provider.py · hosted_provider.py ·
-                       fake_provider.py · prompts/finalise.md
-  tools/               base.py (Tool protocol · RunContext · hook signatures) ·
-                       registry.py (the only path to a tool; hook lists empty until Day 4)
-  documents/           excerpt.py (deterministic passage selector — keyword overlap only,
-                       no model and no embeddings; readers join it on Day 2)
-tests/unit/            test_schemas.py · test_llm_provider.py · test_config.py ·
-                       test_main.py · test_tool_registry.py · test_excerpt.py
+                       fake_provider.py · prompts/ (plan · research_step ·
+                       sufficiency · finalise)
+  agents/              tool_calling.py (the model ↔ tool bridge) ·
+                       prompt_context.py (one renderer per prompt placeholder) ·
+                       single_agent.py (the four stage functions, the loop and the
+                       report retry ladder)
+  tools/               base.py (Tool protocol · RunContext · RunBudget) ·
+                       registry.py (the only path to a tool) · wiring.py · cli.py ·
+                       web_search · fetch_url · read_document · normalize_sources ·
+                       validate_report
+  search/              base · normalize · domains · fixture · serpapi · academic
+  documents/           reader · excerpt · text · pdf · docx · html
+  memory/              db.py (all DDL) · cache · search_cache · budget
+tests/unit/            22 suites; tests/conftest.py holds the shared fixtures
+fixtures/              search/ recordings · documents/ · html/ · README.md (provenance)
+docs/                  research-agent-context.md — the implementation context
+.githooks/pre-push     ruff, then the offline suite
 ```
+
+Not present yet: `service.py`, `evals/`, `scripts/`, `.mcp.json`.
 
 ## Prerequisites
 
@@ -159,7 +178,7 @@ tests/unit/            test_schemas.py · test_llm_provider.py · test_config.py
 | **[uv](https://docs.astral.sh/uv/)** | Environment, lockfile and runner | `pip install uv`, or the installer on the uv site |
 | **[Ollama](https://ollama.com/download)** | The local `$0` model runtime | Only needed to run against a real model. Tests do not need it |
 | A Google AI Studio key | Optional second provider | Free, no credit card. Only if you set a role to `hosted` |
-| A SerpAPI key | Optional, from Day 2 | Free tier, 250 searches/month. `SEARCH_BACKEND=fixture` needs none |
+| A SerpAPI key | Optional | Free tier, 250 searches/month. The shipped `SEARCH_BACKEND=fixture` needs none |
 
 ## Install
 
@@ -183,7 +202,8 @@ configuration**. Edit it only to opt into something:
 - `GOOGLE_API_KEY=...` plus `SUPERVISOR_PROVIDER=hosted` (etc.) to use the free hosted
   tier. Be aware this sends the task text to Google; on the free tier that data may be
   used to improve Google's products.
-- `SERPAPI_API_KEY=...` and `SEARCH_BACKEND=serpapi` for live search — **from Day 2**.
+- `SERPAPI_API_KEY=...` and `SEARCH_BACKEND=serpapi` for live search. Leaving the default
+  `fixture` in place keeps every run free and offline.
 - Any of the budget values, all of which live in one place (`src/evergrove_agent/config.py`).
 
 `.env` is gitignored. `.env.example` contains no real keys.
@@ -257,7 +277,7 @@ On every push it runs, in order, stopping at the first failure:
 | Check | Command | Typical cost |
 | --- | --- | --- |
 | Lint | `uv run ruff check .` | < 1 s |
-| Offline tests | `uv run pytest -q` | ~2 s |
+| Offline tests | `uv run pytest -q` | ~12 s |
 
 **It never spends quota or tokens.** No Ollama, no Gemini/`GOOGLE_API_KEY`, no SerpAPI,
 no live HTTP. The live exclusion is not re-implemented in the hook: `pyproject.toml`
@@ -305,7 +325,7 @@ Flags that exist:
 | `--provider local\|hosted` | Override the configured provider for this run |
 | `--fully-local` | Refuse to start if any role resolves to `hosted` |
 | `--indent` | JSON indent; `0` for one line |
-| `--attachment` | Accepted but refused with a message — the reader is Day 2 |
+| `--attachment` | Accepted but refused with a message. The `read_document` tool exists and works (try it through the tools CLI below); wiring it into this CLI is Day 3 S12 |
 
 Running **without** `--no-research` exits with a message saying research mode is the
 Day 3 loop. It does not silently fall back.
@@ -347,9 +367,12 @@ quota; `read` resolves a relative path inside `ALLOWED_ATTACHMENT_DIR`, which de
 Today: a task title, a session length, and an optional free-text description
 (`TaskContext` in `src/evergrove_agent/schemas/task.py`).
 
-> **TODO (Day 2):** attachments — `.txt`, `.md`, and `.pdf` via `--attachment`, read with
-> `outline` / `full` / `section` modes, and constrained to a configured allowed
-> directory.
+Attachments are **read** today — `.txt`, `.md`, `.pdf` and `.docx`, in `outline` / `full`
+/ `section` modes, constrained to `ALLOWED_ATTACHMENT_DIR` — through the `read_document`
+tool and the tools CLI.
+
+> **TODO (Day 3 S12):** `--attachment` on the main CLI, so an attachment reaches the
+> research loop rather than only the tool.
 
 ## Outputs
 
@@ -361,14 +384,22 @@ practice exercise, success criteria, and two honesty fields — `assumptions` an
 `unknowns` — which are what stop the agent inventing.
 
 Validation runs in three layers: constrained decoding against the JSON Schema → Pydantic
-→ business rules. Layers one and two are live. Layer three is the `validate_report` tool
-and arrives on Day 2; its most important rule is that **every cited URL must appear in
-the set of URLs this run actually discovered or fetched**.
+→ business rules. **All three are live.** Layer three is the `validate_report` tool, and
+its most important rule is that **every cited URL must appear in the set of URLs this run
+actually discovered or fetched** — a model cannot talk its way past a set. A source that
+was found but never opened may only be cited as `authority="unknown"`.
 
-> **TODO (Day 2):** business-rule validation and the retry ladder — attempt 1 primary
-> model, attempt 2 primary with the validation errors quoted back, attempt 3 the second
-> provider, then fail loudly. A run that cannot produce a valid report never returns a
-> partial one.
+A report that fails any layer is not returned. It is quoted back to the model with the
+exact problems and rewritten, up to `MAX_OUTPUT_RETRIES` **total attempts** (default 3:
+one initial call plus two corrections), with the last attempt going to the second provider
+when one is configured. The retry corrects the report only — it never searches or fetches
+again, because a validation failure means the report broke the contract, not that the
+research was wrong. If no attempt produces a valid report the run raises
+`PreparationFailed` carrying the final errors. **A run that cannot produce a valid report
+never returns a partial one.**
+
+> **Note:** this applies to the research loop. The `--no-research` path builds its report
+> without layer three; wiring the two together is Day 3 S12.
 
 ## Search configuration
 
@@ -380,16 +411,19 @@ which one is in use.
 | `fixture` | Default. Replays recorded results; free, offline, repeatable | No |
 | `serpapi` | Primary live search | Yes (free tier) |
 | `academic` | OpenAlex / Crossref / arXiv, for scholarly tasks | No |
-| `ddgs` | Keyless fallback if the SerpAPI quota runs out | No |
+| `ddgs` | Reserved name for a keyless fallback. **Not implemented** — selecting it raises rather than silently returning nothing | — |
 
 The 250-searches/month free tier is the only genuinely finite resource in the project, so
 three deterministic guards protect it: a 7-day search cache, a persistent monthly counter
 that refuses live calls past `MONTHLY_SEARCH_BUDGET`, and `fixture` as the committed
 default.
 
-> **TODO (Day 2):** none of this is implemented yet — the settings exist, the backends do
-> not. Recording real SerpAPI responses into `fixtures/search/` is what makes the rest of
-> the week free and offline.
+All three guards are implemented and the backends work.
+
+> **TODO (Day 3 S14):** **no live SerpAPI call has ever been made.** Every recording in
+> `fixtures/search/` is handwritten — the right shape, but not real knowledge, so no
+> report may cite one. Recording genuine responses in the same session that spends them is
+> what makes the rest of the week free and offline.
 
 ## MCP
 
@@ -425,12 +459,14 @@ confused. Everything runs offline by default — `FakeProvider` replays scripted
 responses, and the fixture search backend replays recorded results — and the whole suite
 must finish in under 60 seconds at zero cost.
 
-Today: 100 unit tests, running in ~1.2 s, covering the report schema and each of its constraints, the tool
-result envelope, config defaults and budget overrides, all three providers (via `respx`,
-so no model runs), the Gemini schema translation, the Day 1 round trip, the tool
-registry (dispatch, unknown tools, invalid arguments, tool failures, hook ordering), and
-the passage selector (budget ceiling, relevance, document order, heading context, and the
-pages nothing matches).
+Today: **380 unit tests across 22 suites, running in ~12 s.** They cover the report and
+agent schemas and each of their constraints, the tool result envelope, config defaults and
+budget overrides, all three providers (via `respx`, so no model runs), the Gemini schema
+translation, the tool registry and its wiring, each of the five tools, the three search
+backends and URL normalisation, the document readers and the passage selector, the SQLite
+caches and the monthly quota guard, the run budget, the model ↔ tool bridge, the prompt
+renderers, and the agent loop — every way it stops, how it degrades when a tool or the
+budget refuses, report grounding, and the retry ladder.
 
 > **TODO (Day 7):** the five agent evaluations (`evals/`), integration tests across
 > search → fetch → read, and the Phase 2 requirement audit.
@@ -461,9 +497,10 @@ pages nothing matches).
 - Task text goes to the **local model**, and never leaves the machine unless you opt in.
 - With `--no-research`, the task text reaches no search provider at all. It is the only
   fully private mode.
-- From Day 2, search queries derived from the task title do reach SerpAPI. That is
-  unavoidable for anything with web search — but it is scoped: no account, no user
-  identifier, no attachment content, no session history.
+- With a live search backend selected, search queries derived from the task title do reach
+  SerpAPI. That is unavoidable for anything with web search — but it is scoped: no
+  account, no user identifier, no attachment content, no session history. The shipped
+  default (`fixture`) sends nothing anywhere.
 - If any `*_PROVIDER=hosted`, task text and source excerpts go to Google AI Studio. On
   the free tier that data may be used to improve Google's products.
 - Attachments never leave the machine. Fetched page text is cached locally in SQLite for
