@@ -953,9 +953,11 @@ server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `
 - On a fresh fetch, `FetchUrlOutput.retrieved_at` is taken a beat after the cache row's
   `fetched_at`, so a cache hit reports a timestamp ~1 ms earlier than the call that filled it.
   Harmless; the contract is only that a hit reports the fetch, never the serve.
-- **`README.md` is stale** — it still says "Day 1 complete, Day 2 in progress", "100 unit tests",
-  that search is unimplemented, and lists `validate_report` and attachments as Day 2 TODOs. All of
-  that is wrong. **Known documentation issue; correcting it is not yet approved work.**
+- **`README.md`'s factual claims were corrected after S10** — status, the file tree, the test
+  count, search, `validate_report`, the retry ladder, attachments, and the `ddgs` backend (a
+  reserved name that raises, not a working fallback). Its *structure* is unchanged, so the
+  narrative sections still read as a Phase 2 plan rather than a description of what runs today.
+  Keep the factual claims in step with this document when a subtask lands.
 - `fixtures/documents/Sample.txt` is a lorem-ipsum scratch file, deliberately not committed and
   not part of the documented fixture set. It is now named in `.gitignore` so it stops showing up
   in every `git status` — named individually, never as a pattern, because `fixtures/` is a
