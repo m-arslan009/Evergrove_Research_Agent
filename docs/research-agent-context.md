@@ -23,8 +23,8 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** |
-| **Next task** | **Day 3 Subtask 11 — `service.py`, the one entry point** |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** |
+| **Next task** | **Day 3 Subtask 13 — offline integration tests** |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -34,14 +34,15 @@ anything.
 `tools/validate_report.py` is the only place a finished report is checked against the evidence,
 and `finalise()` is the only caller of it — up to `MAX_OUTPUT_RETRIES` **total attempts**, each
 one validated, the errors quoted back, the last attempt on the alternate provider when one is
-configured, then `PreparationFailed`. Nothing else in `agents/` exists: no `service.py`. Do not
-describe or assume any other Day 3 capability as present.
+configured, then `PreparationFailed`. `service.py` is the only place a surface starts a run from,
+and `main.py` is now a surface rather than a second composition root. Nothing else in `agents/`
+exists. Do not describe or assume any other Day 3 capability as present.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **Current — S1–S10 done, S11–S14 remain** |
+| 3 | Single research agent — the core loop | **Current — S1–S12 done, S13–S14 remain** |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
@@ -70,10 +71,10 @@ One process, a modular monolith layered internally. "Multi-agent" describes how 
 is organised, not how many services are deployed.
 
 ```
-                    CLI  ·  MCP server            ← surfaces   (CLI: partial · MCP: Day 6)
+                    CLI  ·  MCP server            ← surfaces   (CLI: BUILT · MCP: Day 6)
                           │
-                     service.py                   ← NOT BUILT (Day 3 S11)
-                          │
+                     service.py                   ← BUILT (S11). Composition only:
+                          │                          registry + providers + RunContext
        Supervisor ──► Researcher ──► Appraiser     ← BUILT (S5-S8) as four functions in
                           │                          agents/single_agent.py; split into
                           │                          three agents on Day 5
@@ -115,7 +116,8 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
-| `src/evergrove_agent/main.py` | CLI entry point — `--no-research` is the only working mode |
+| `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
+| `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
 | `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
 | `fixtures/` | `search/` recordings, `documents/` attachments, `html/` markup, `README.md` (provenance policy) |
 | `.githooks/pre-push` | `ruff check` then `pytest -q`; enable per clone with `git config core.hooksPath .githooks` |
@@ -123,7 +125,7 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `service.py`, `evals/`, `scripts/`, `.mcp.json`.
+**Not present, do not assume:** `evals/`, `scripts/`, `.mcp.json`.
 
 ---
 
@@ -162,8 +164,8 @@ producing a validated report from model knowledge alone. `max_topics_for(minutes
 get to decide (`run_id`, `generated_at`, `model_used`, `original_task`,
 `session_duration_minutes`, `resources=[]`, `sources_examined=0`, `hops_used=0`, and the
 no-research assumption/unknown) — which is also what stops a model smuggling an invented URL
-into a no-research report. Research mode and `--attachment` **exit 2 with an explanatory
-message rather than faking a result**. Exit codes: 0 success, 1 run failure, 2 bad usage.
+into a no-research report. Exit codes: 0 success, 1 run failure, 2 bad usage. **S12 replaced the
+Day 1 refusals**: research mode and `--attachment` now run; see *The CLI* below.
 
 ## Day 2 — completed (summary)
 
@@ -511,9 +513,11 @@ model may ignore the message.
 `finalise.md` placeholder and that module owns one function per placeholder; both the
 `--no-research` path and `finalise()` render that prompt, and a second copy of a sizing rule
 means two different sessions from the same number of minutes. `main.py` imports it from
-`agents.prompt_context` **directly, not via `agents/__init__.py`** — the package `__init__`
-now pulls in `single_agent`, and with it `httpx` and `sqlite3`, which the `--no-research` path
-does not need.
+`agents.prompt_context` **directly, not via `agents/__init__.py`**. The original reason — keeping
+`httpx` and `sqlite3` off the `--no-research` path — **no longer holds since S12**: `main.py`
+imports `service.py` at module level, so the loop and the wired registry load either way. The
+direct import is kept because it is precise, not because it saves anything; do not cite the old
+rationale for a new decision.
 
 **The grounding contract** (`tools/validate_report.py`, S9) — the third validation of a report,
 after constrained decoding and `model_validate_json`, and the only one that can see what the run
@@ -592,6 +596,62 @@ no clock.
   An unreachable primary is a broken run, as everywhere else in the project. A fallback that was
   reached for *because* the run was already failing must not replace the real reason with a
   connection error.
+
+**The entry point** (`service.py`, S11) — the one function a surface starts a run from. The CLI
+calls it today and the Day 6 MCP server calls the same function; two surfaces each assembling
+their own registry, providers and budget would be two places for composition to drift.
+
+```python
+async def prepare_focus_session(task, *, settings=None, registry=None, providers=None,
+                                ctx=None) -> FocusPreparationReport
+```
+
+- **Composition only.** It resolves the four collaborators and calls `run_agent`. No prompt, no
+  budget arithmetic, no retry, no error translation — all of those are the loop's, and
+  `run_agent`'s optional parameters exist *for this module*. A change here that alters what a run
+  does rather than what it is built from belongs in `agents/single_agent.py`.
+- **`settings` is resolved once and threaded into all three defaults.** Letting each default reach
+  for `get_settings()` would ignore a caller's override in two places out of three — and
+  `--fully-local` and `--provider` are exactly such overrides.
+- **`PreparationFailed` and `LLMError` pass straight through.** A surface has to show a user why a
+  run failed, and a third exception type wrapping them would strand `PreparationFailed.issues`.
+- **`RunState.validation_errors` is *not* surfaced here** — the S11 question is settled: it goes to
+  **Day 4 tracing**. `run_agent` returns a report rather than the state, and widening that return
+  type to carry a diagnostic would change the contract Day 6's MCP tool is specified against. The
+  failure path is already served by `PreparationFailed.issues`; what is still missing is a trace of
+  a run that was *corrected and then succeeded*, which is a tracing concern rather than a result
+  one. Keep the field's lifecycle correct (set on a rule failure, cleared on a drift).
+
+**The CLI** (`main.py`, S12) — a surface, not a second composition root.
+
+- **Flat flags, no subcommand.** The open plan-vs-repository question is settled in the
+  repository's favour: `evergrove-agent --task "…"`. A second word buys nothing while there is one
+  thing to do; `tools/cli.py` keeps its subcommands because it genuinely has four tools to choose
+  between.
+- **Two paths.** `--no-research` is the single round trip against model knowledge alone — still the
+  only mode where the task text never reaches a search provider. Everything else goes to
+  `prepare_focus_session`.
+- **A failed research run is never downgraded to a no-research one.** The two modes make different
+  promises about what a report rests on; substituting one for the other after the fact would return
+  a sourceless plan under flags that asked for sources. `PreparationFailed` → exit 1.
+- **`--attachment` is wired**, and pre-flighted through `documents.resolve_attachment` before the
+  run starts. Combining it with `--no-research` is refused: reading it is a tool call and that path
+  makes none.
+- **The progress line reads the ledger, not a callback.** `main.py` builds the `RunContext`, hands
+  that same object to `service.py`, and a sibling `asyncio` task renders `RunBudget`'s counters on
+  **stderr** while the run holds it. This is why `run_agent`'s signature needed no `on_event`
+  parameter — and why the caller's `ctx` reaching the run unchanged is a tested invariant rather
+  than an incidental one. Terminal-only (`isatty`) and `--quiet`-suppressible, so redirected output
+  is byte-identical to a silent run; **stdout carries the report and nothing else**.
+- **`documents.resolve_attachment(path, *, settings=None)`** was promoted out of
+  `reader._resolve` for that pre-flight. The containment rule, the relative-path rule and the error
+  codes keep one definition — a pre-flight that disagreed with the tool would be worse than none.
+
+**Still open after S12:** `--no-research` does not go through S9's `validate_report`. It satisfies
+`resources_without_research` and `unknowns_required` by construction, but `too_many_topics`,
+`topic_overlap` and `goal_not_narrowed` go unchecked on that path. Extending the ladder to it is a
+change to a shipped mode's behaviour and was deliberately kept out of the wiring work — decide it
+on its own.
 
 **`FocusPreparationReport`** is the most expensive schema in the project. Changing it forces
 updates to the Day 3 finalise prompt, the Day 4 memory summary, the Day 5 Supervisor output, the
@@ -838,7 +898,7 @@ The repository is authoritative. **Do not "restore" the plan's version of any of
 | `fetch_url` empty extraction → `NO_CONTENT` | `EMPTY_FILE` | Reuses an existing code rather than adding a near-duplicate |
 | `ddgs` as the keyless fallback rung | **Deliberately not implemented**; `build_search_backend` refuses it and `web_search`'s ladder has no such rung. It remains in the `SearchBackendName` literal and in CLI `--choices` | A backend that merely looks right is worse than one that refuses |
 | Four *agent-callable* tools: `web_search`, `fetch_url`, `read_document`, `recall_previous_preparation` | The four *registered* tools are `web_search`, `fetch_url`, `read_document`, **`normalize_sources`** | `recall_previous_preparation` is **Day 4** (memory). `normalize_sources` is a pipeline tool, registered for traceability, and is **not** intended for the model's menu |
-| Day 3 demo CLI `evergrove-agent prepare --task …` (a subcommand) | `main.py` uses flat flags with no subcommand; the tools CLI is a separate module | **Open decision for Day 3 Subtask 12** — adopt the subcommand or keep flat flags, but decide deliberately |
+| Day 3 demo CLI `evergrove-agent prepare --task …` (a subcommand) | `main.py` uses flat flags with no subcommand; the tools CLI is a separate module | **Settled in S12: flat flags stay.** A subcommand buys nothing while there is one thing to do; `tools/cli.py` keeps its subcommands because it genuinely has four tools to choose between |
 | `validate_report` listed under Day 2 in `README.md` | Not implemented; plan §23 feature 5 places it in the **Day 3** loop | The plan wins over the README here |
 | `MAX_HOPS = 2` | **`MAX_HOPS = 3`** in `config.py` and `.env.example` | Raised on the user's explicit instruction during Day 3 S1. It is the ceiling: `FocusPreparationReport.hops_used` is `le=3`. Costs one more possible hop's worth of searches and fetches per run |
 | `SearchSourceType` defined in `search/base.py` | Defined in **`schemas/tools.py`**, re-exported unchanged from `search/base.py` | The Supervisor's `source_preference` is the same enum, and `schemas/` may import nothing from the package — so the definition had to move to the layer both sides can see. Every existing importer is unchanged |
@@ -867,7 +927,9 @@ future session damages the project.
 | A prompt's placeholder text | `agents/prompt_context.py` — one renderer per placeholder; never build a block at a call site |
 | Show a model the sources a run gathered | `agents.render_sources` (full, for judging) / `agents.render_research_context` (compact, for finalising) |
 | Show a model what a tool answered | `agents.render_tool_outcome` — code, message and retryability included |
+| Start a run from a surface (CLI, MCP) | `service.prepare_focus_session(task)` — never assemble a registry, providers and a budget at a surface |
 | Run the whole agent | `agents.run_agent(task, registry=…)` — never call the four stages in sequence yourself |
+| Check an attachment path before using it | `documents.resolve_attachment` — never a second existence or containment check |
 | One reasoning stage | `agents.decide_next_step` / `run_research_step` / `judge_sufficiency` / `finalise` |
 | A model for a role, in a test or a run | `agents.AgentProviders` — `.from_settings()` in production, the three-argument constructor in tests |
 | Spend a model call in a non-final stage | `single_agent._claim_reasoning_call(budget, reserve=…)` — never `budget.claim("model_call")` directly outside `finalise` |
@@ -898,24 +960,30 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 still builds these):** `service.py`.
+**Missing (Day 3 still builds these):** the S13 integration suite and the S14 live run.
 
-**Discovered during S5–S8, still owed by later subtasks:**
+**Still owed by later subtasks:**
 
-- **S11 owes a home for `RunState.validation_errors`.** The ladder records why a report was
-  rejected; nothing reads it, so a run corrected on attempt 2 looks identical to one that was
-  right first time. Surface it from `service.py`, or hand it to Day 4 tracing — but decide,
-  rather than leaving a written-and-unread field.
-- **S12 must decide whether `--no-research` gets the ladder.** `main.py` builds its report and
-  applies its own bookkeeping without ever calling `validate_report`. It satisfies two of S9's
-  rules by construction (it forces `resources: []` and an unknowns entry), but `too_many_topics`,
-  `topic_overlap` and `goal_not_narrowed` go unchecked on **the only path a user can run today**.
-- **S11's `service.py` calls `run_agent` and nothing else.** Building the registry, the providers
-  and the `RunContext` is composition, so it belongs there rather than inside the loop — all
-  three are already optional injected parameters for exactly that reason.
+- **`--no-research` still bypasses `validate_report`.** S12 left it deliberately (see *The CLI*
+  above): `too_many_topics`, `topic_overlap` and `goal_not_narrowed` go unchecked on that path.
+  It is now one of two modes rather than the only one a user can run, which lowers the urgency but
+  does not settle it.
 - **S13 replaces none of `tests/unit/test_single_agent.py`.** That suite proves the loop's own
   decisions with `FakeProvider`; S13's integration suite proves the composition end to end,
-  under 2 s, through `service.py`.
+  under 2 s, through `service.py`. It also does not replace `tests/unit/test_service.py`, which
+  covers only the three ways a thin composition layer can be wrong, or the CLI routing tests in
+  `tests/unit/test_main.py`, which substitute the flow rather than driving it.
+
+**Settled during S11–S12:**
+
+- **`RunState.validation_errors` goes to Day 4 tracing**, not to `service.py` — the reasoning is
+  under *The entry point* above.
+- **`service.py` calls `run_agent` and nothing else.** Building the registry, the providers and the
+  `RunContext` is composition, so it lives there rather than inside the loop; all three were
+  already optional injected parameters for exactly that reason.
+- **The progress line needed no change to `run_agent`.** The CLI owns the `RunContext` and reads
+  its ledger, so the loop kept its signature — which matters because Day 5 splits that loop and
+  Day 6 calls the same entry point.
 
 **Settled during S5–S8 (previously owed by S3/S4/S1):**
 
@@ -1031,7 +1099,7 @@ the second hop deterministic, triggered by non-empty `missing_information` rathe
 choice. All three preserve every Phase 2 requirement. **Record whichever is chosen in
 `prompts.md` and here.**
 
-## Day 3 subtask breakdown — S1–S10 done
+## Day 3 subtask breakdown — S1–S12 done
 
 Each subtask is planned, approved, implemented and tested independently.
 
@@ -1047,8 +1115,8 @@ Each subtask is planned, approved, implemented and tested independently.
 | **S8** | **Core loop and the genuine second hop** — plan → act → observe → decide → stop; hop 2's query derived from hop 1's content; `MAX_HOPS=3` never exceeded even if the model keeps asking to research. **The acceptance criterion is still one *visible* second hop** — a third is now permitted, not required | `agents/single_agent.py` | S5–S7 | **Done** |
 | **S9** | **`validate_report` and grounding** — Pydantic, then the business rules; **every cited URL must appear in the set this run discovered or fetched**. Registered as a pipeline tool | `tools/validate_report.py`, `wiring.py` | S1 | **Done** |
 | **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider *when one is genuinely configured*, then fail loudly. A drifted schema takes a rung of the same ladder. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py`, `tests/unit/test_single_agent.py` | S9 | **Done** |
-| **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin | `service.py` | S8, S10 | Not started |
-| **S12** | **CLI integration** — research mode replaces the current refusal; `--attachment` wired to `read_document`. **Resolves the open subcommand-vs-flat-flags decision** | `main.py` | S11 | Not started |
+| **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin: resolves settings once, defaults registry / providers / `RunContext` from it, calls `run_agent`. `PreparationFailed` and `LLMError` pass through unwrapped. `RunState.validation_errors` handed to Day 4 tracing | `service.py`, `tests/unit/test_service.py` | S8, S10 | **Done** |
+| **S12** | **CLI integration** — research mode replaces the Day 1 refusal; `--attachment` wired through `TaskContext` and pre-flighted with `documents.resolve_attachment`; a live progress line on stderr reading the run's own `RunBudget`; `--quiet`. **Flat flags kept** — the subcommand question is settled. A failed run is never downgraded to `--no-research` | `main.py`, `documents/reader.py`, `tests/unit/test_main.py` | S11 | **Done** |
 | **S13** | **Offline integration tests** — full loop on `FakeProvider` + fixture search, valid report, **under 2 s** · a scripted "insufficient" verdict triggers exactly one second hop · the hop cap holds · a `SEARCH_UNAVAILABLE` degrades the report rather than crashing · three invalid outputs raise `PreparationFailed` · grounding rejects a report citing an unfetched URL | `tests/integration/test_single_loop.py` | S12 | Not started |
 | **S14** | **Live end-to-end verification** — Ollama + SerpAPI: a valid report on ≥4 of 5 attempts, one visible second hop, every cited URL actually fetched. **Every live search response recorded into `fixtures/search/` in the same session.** Also clears the outstanding Day 1/2 live gaps | `fixtures/search/`, `prompts.md` | S13 | Not started |
 

@@ -877,3 +877,20 @@ run_id, attempts and issues, so service.py and the CLI can render the errors ins
 sentence. The loop suite's scripted report drops its citation, because those tests prove how the
 loop stops and degrades rather than how citations are checked; grounding is proven separately
 against a URL the run actually fetched.
+
+`Title`: Wire the research agent into the CLI
+
+`User prompt`: We have completed the Day 3 implementation subtasks, but running the command still
+returns "Research mode is not built yet — it is the Day 3 loop...". Verify whether the research
+agent is simply wired into the CLI or not. Make the existing CLI execute the research-agent flow
+when research mode is requested. First inspect then propose the smallest change required. The
+intended architecture should remain approximately: CLI → service/public agent entry point →
+single-agent loop → validated FocusPreparationReport → CLI prints JSON. Verify that --no-research
+or equivalent command still works. Normal research mode no longer prints the old "not built yet"
+message. Command returns a validated FocusPreparationReport. Provider override still works.
+--fully-local still enforces local-only provider selection. Attachment input is passed into the
+research flow correctly when provided. Research failures produce the project's intended graceful
+behaviour rather than falling back to the old placeholder. If the old placeholder/error branch is
+now obsolete, remove or replace it cleanly. Do not leave dead code that still claims research mode
+is unimplemented. When entering the command show some progress and do not halt the screen while
+doing background processing.
