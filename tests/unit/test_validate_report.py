@@ -277,7 +277,7 @@ async def test_the_tool_reports_a_rejected_report_as_a_successful_call(
     the trace, and would hand S10 an error envelope where it expects a verdict."""
     result = await ValidateReportTool().run(
         ValidateReportInput(
-            report=_report(valid_report_payload, resources=[]),
+            report=_report(valid_report_payload, resources=[], unknowns=[]),
             evidence_urls=[],
             fetched_urls=[],
             research_performed=False,
