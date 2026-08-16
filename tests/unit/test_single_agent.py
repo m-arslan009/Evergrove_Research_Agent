@@ -25,6 +25,7 @@ under `tmp_path`, and the timeout is driven by an injected clock rather than a r
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,36 @@ def tool_turn(*calls: tuple[str, dict[str, Any]]) -> LLMResponse:
     )
 
 
+@pytest.fixture
+def scripted_report(
+    valid_report_payload: dict[str, Any],
+) -> Callable[..., str]:
+    """A report a model could plausibly return, that grounding accepts: it cites nothing.
+
+    The shared payload cites a real PostgreSQL docs page, which is right for
+    `test_validate_report.py` and wrong here — most of these runs gather no evidence at all,
+    so since S10 enforces grounding inside `finalise`, that citation would fail every one of
+    them for a reason none of these tests is about. An empty `resources` is valid
+    (`min_length=0`) and grounds vacuously, which keeps each test failing only for the thing
+    it exists to catch. Citations are proven deliberately, further down.
+    """
+
+    def _report(**overrides: Any) -> str:
+        return json.dumps({**valid_report_payload, "resources": [], **overrides})
+
+    return _report
+
+
+def resource(url: str, *, authority: str = "official") -> dict[str, str]:
+    """One citation, for the tests that are about citations."""
+    return {
+        "title": "PostgreSQL: Index Types",
+        "url": url,
+        "why_this_source": "Official documentation for the exact version in use",
+        "authority": authority,
+    }
+
+
 async def drive(
     script: list[Any],
     settings: Settings,
@@ -186,7 +217,7 @@ def prompts_for(provider: FakeProvider, schema_name: str) -> list[str]:
 
 @respx.mock
 async def test_hop_cap_holds_against_a_model_that_always_wants_more(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """A model that answers RESEARCH forever must not research forever.
 
@@ -197,7 +228,7 @@ async def test_hop_cap_holds_against_a_model_that_always_wants_more(
     script: list[Any] = []
     for hop in range(3):
         script += [plan("RESEARCH", f"question {hop}"), "notes", verdict(False, "more")]
-    script.append(json.dumps(valid_report_payload))
+    script.append(scripted_report())
 
     report, provider, _ = await drive(script, offline_settings)
 
@@ -210,7 +241,7 @@ async def test_hop_cap_holds_against_a_model_that_always_wants_more(
 
 @respx.mock
 async def test_a_sufficient_verdict_stops_with_hops_to_spare(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """Early stopping is the feature, not an optimisation.
 
@@ -218,7 +249,7 @@ async def test_a_sufficient_verdict_stops_with_hops_to_spare(
     the goal; a run that keeps researching after the appraiser said "enough" burns SerpAPI
     quota and session time for nothing.
     """
-    script = [plan("RESEARCH", "q"), "notes", verdict(True), json.dumps(valid_report_payload)]
+    script = [plan("RESEARCH", "q"), "notes", verdict(True), scripted_report()]
 
     report, _, ctx = await drive(script, offline_settings)
 
@@ -228,7 +259,7 @@ async def test_a_sufficient_verdict_stops_with_hops_to_spare(
 
 @respx.mock
 async def test_a_later_hop_asks_the_appraisers_follow_up(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """The second hop must come from what hop 1 read, not from a scripted sequence.
 
@@ -244,7 +275,7 @@ async def test_a_later_hop_asks_the_appraisers_follow_up(
         plan("RESEARCH", followup),
         "notes from hop 2",
         verdict(True),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, provider, _ = await drive(script, offline_settings)
@@ -259,7 +290,7 @@ async def test_a_later_hop_asks_the_appraisers_follow_up(
 
 @respx.mock
 async def test_no_follow_up_ends_the_run_rather_than_inventing_one(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """"Not enough, and nothing specific would help" is a real verdict.
 
@@ -271,7 +302,7 @@ async def test_no_follow_up_ends_the_run_rather_than_inventing_one(
         plan("RESEARCH", "q"),
         "notes",
         verdict(False, None, ("something unobtainable",)),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, provider, _ = await drive(script, offline_settings)
@@ -285,7 +316,7 @@ async def test_no_follow_up_ends_the_run_rather_than_inventing_one(
 
 @respx.mock
 async def test_a_report_is_still_affordable_after_a_greedy_loop(
-    tmp_path: Path, valid_report_payload: dict[str, Any]
+    tmp_path: Path, scripted_report: Callable[..., str]
 ) -> None:
     """`claim("model_call")` does not know which stage is asking.
 
@@ -300,7 +331,7 @@ async def test_a_report_is_still_affordable_after_a_greedy_loop(
         search_fixture_dir=tmp_path / "search",
         max_model_calls=4,
     )
-    script = [plan("RESEARCH", "q"), "notes", verdict(False, "more"), json.dumps(valid_report_payload)]
+    script = [plan("RESEARCH", "q"), "notes", verdict(False, "more"), scripted_report()]
 
     report, provider, ctx = await drive(script, settings)
 
@@ -311,7 +342,7 @@ async def test_a_report_is_still_affordable_after_a_greedy_loop(
 
 @respx.mock
 async def test_a_refused_budget_stops_a_tool_before_the_registry(
-    tmp_path: Path, valid_report_payload: dict[str, Any]
+    tmp_path: Path, scripted_report: Callable[..., str]
 ) -> None:
     """A budget that is only reported is not a budget.
 
@@ -333,7 +364,7 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
         tool_turn(("web_search", {"query": "a second query", "source_type": "docs"})),
         "notes",
         verdict(True),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, _, ctx = await drive(script, settings, registry=registry)
@@ -344,7 +375,7 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
 
 
 async def test_an_expired_deadline_fails_loudly_rather_than_partially(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """A run out of time cannot write a report, and must not return half of one.
 
@@ -355,8 +386,13 @@ async def test_an_expired_deadline_fails_loudly_rather_than_partially(
     budget = RunBudget.from_settings(offline_settings, clock=clock)
     clock.now = float(offline_settings.total_run_timeout_s) + 1.0
 
-    with pytest.raises(PreparationFailed):
-        await drive([json.dumps(valid_report_payload)], offline_settings, budget=budget)
+    with pytest.raises(PreparationFailed) as raised:
+        await drive([scripted_report()], offline_settings, budget=budget)
+
+    assert raised.value.attempts == 0, (
+        "the deadline refused the first attempt, so the ladder never ran; a non-zero count "
+        "here would mean a retry was made after the budget said no"
+    )
 
 
 # --- mistakes stay recoverable ---------------------------------------------------------------
@@ -364,7 +400,7 @@ async def test_an_expired_deadline_fails_loudly_rather_than_partially(
 
 @respx.mock
 async def test_a_guessed_tool_name_costs_nothing_and_the_hop_continues(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """A model reaching for a tool it was never offered is an ordinary turn, not a failure.
 
@@ -380,7 +416,7 @@ async def test_a_guessed_tool_name_costs_nothing_and_the_hop_continues(
         tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
         "notes",
         verdict(True),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, _, ctx = await drive(script, offline_settings, registry=registry)
@@ -392,7 +428,7 @@ async def test_a_guessed_tool_name_costs_nothing_and_the_hop_continues(
 
 @respx.mock
 async def test_output_that_drifts_twice_degrades_to_a_report(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """`extra="forbid"` turns drift into a retry — it must not turn it into a loop.
 
@@ -403,7 +439,7 @@ async def test_output_that_drifts_twice_degrades_to_a_report(
     script = [
         json.dumps({"unexpected": "shape"}),
         json.dumps({"still": "wrong"}),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, provider, _ = await drive(script, offline_settings)
@@ -418,7 +454,7 @@ async def test_output_that_drifts_twice_degrades_to_a_report(
 
 @respx.mock
 async def test_an_unavailable_search_degrades_the_report_instead_of_crashing(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """A hop that gathered nothing still has to produce an honest report.
 
@@ -431,7 +467,7 @@ async def test_an_unavailable_search_degrades_the_report_instead_of_crashing(
         tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
         "the search failed",
         verdict(True),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, provider, _ = await drive(script, offline_settings)
@@ -442,7 +478,7 @@ async def test_an_unavailable_search_degrades_the_report_instead_of_crashing(
 
 @respx.mock
 async def test_the_hop_cap_is_named_in_the_reports_unknowns(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """Why a run stopped short is bookkeeping, not something the model is trusted to add.
 
@@ -452,7 +488,7 @@ async def test_the_hop_cap_is_named_in_the_reports_unknowns(
     script: list[Any] = []
     for hop in range(3):
         script += [plan("RESEARCH", f"q{hop}"), "notes", verdict(False, "more")]
-    script.append(json.dumps({**valid_report_payload, "unknowns": []}))
+    script.append(scripted_report(unknowns=[]))
 
     report, _, _ = await drive(script, offline_settings)
 
@@ -461,7 +497,7 @@ async def test_the_hop_cap_is_named_in_the_reports_unknowns(
 
 @respx.mock
 async def test_a_fetched_page_becomes_read_evidence(
-    offline_settings: Settings, valid_report_payload: dict[str, Any]
+    offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
     """`retrieved_at` is what separates evidence from a lead, and it is set here or nowhere.
 
@@ -481,7 +517,7 @@ async def test_a_fetched_page_becomes_read_evidence(
         tool_turn(("fetch_url", {"url": DOCS_URL})),
         "notes",
         verdict(True),
-        json.dumps(valid_report_payload),
+        scripted_report(),
     ]
 
     report, provider, ctx = await drive(script, offline_settings)
@@ -489,3 +525,243 @@ async def test_a_fetched_page_becomes_read_evidence(
     assert report.sources_examined == 1, "the fetch must upgrade its lead, not add a second"
     assert ctx.budget.remaining("fetch") == offline_settings.max_fetch_calls - 1
     assert "status: read" in prompts_for(provider, "AppraisalVerdict")[0]
+
+
+# --- the retry ladder (S10) --------------------------------------------------------------
+#
+# S9 wrote the grounding rule and proved it in `test_validate_report.py`; nothing here
+# re-proves the rule itself. What is new — and what only exists once the validator is wired
+# into `finalise` — is that a report which breaks it is *refused and asked again*, that the
+# asking is bounded, and that a run which cannot produce a valid report fails instead of
+# returning one anyway.
+
+
+UNGROUNDED_URL = "https://example.com/an-invented-guide"
+"""A page no run in this suite ever searches for or opens."""
+
+
+def serve_docs_page() -> None:
+    """`DOCS_URL` answered locally, so a run can genuinely *read* something to cite."""
+    respx.get(DOCS_URL).mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/html"}, text=PAGE
+        )
+    )
+
+
+def researched(*reports: str) -> list[Any]:
+    """A run that searches, opens `DOCS_URL`, is judged sufficient, and then finalises.
+
+    Every ladder test needs real evidence behind it — a grounding check against an empty
+    evidence set proves only that nothing can be cited. The finalise attempts are whatever
+    the test passes in.
+    """
+    return [
+        plan("RESEARCH", "what does a B-tree index do"),
+        tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
+        tool_turn(("fetch_url", {"url": DOCS_URL})),
+        "notes",
+        verdict(True),
+        *reports,
+    ]
+
+
+def finalise_turns(provider: FakeProvider) -> list[Any]:
+    """Every attempt at the report, in order — the ladder as the model experienced it."""
+    return [
+        call for call in provider.calls if call.schema_name == "FocusPreparationReport"
+    ]
+
+
+@respx.mock
+async def test_an_ungrounded_citation_is_refused_and_the_correction_is_returned(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """The reason S10 exists: the grounding rule is now enforced, not merely available.
+
+    Until the validator was wired into `finalise`, a report citing a page the run never saw
+    was returned as though it were true — the precise failure set membership was written to
+    make impossible. Two halves matter equally: the bad report is rejected, and the retry
+    names the offending URL, because a model told only "that was wrong" replaces one
+    invented source with another.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    script = researched(
+        scripted_report(resources=[resource(UNGROUNDED_URL)]),
+        scripted_report(resources=[resource(DOCS_URL)]),
+    )
+
+    report, provider, _ = await drive(script, offline_settings)
+
+    assert [str(item.url) for item in report.resources] == [DOCS_URL]
+    attempts = finalise_turns(provider)
+    assert len(attempts) == 2
+    assert UNGROUNDED_URL in attempts[1].messages[-1].content
+
+
+@respx.mock
+async def test_a_grounded_report_costs_exactly_one_attempt(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """A validator that rejects good work is worse than no validator at all.
+
+    The ladder must not fire on a report that cites a page the run actually opened. If it
+    did, every healthy run would pay two or three extra model calls — on this hardware, a
+    minute each — and the reserve that keeps a report affordable would stop being enough.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    script = researched(scripted_report(resources=[resource(DOCS_URL)]))
+
+    report, provider, _ = await drive(script, offline_settings)
+
+    assert len(finalise_turns(provider)) == 1
+    assert report.sources_examined == 1
+
+
+@respx.mock
+async def test_a_report_that_never_grounds_fails_loudly_with_its_errors(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """The rule the whole subtask exists for: never return a report that failed the check.
+
+    Three attempts, three ungrounded reports, and the run must end in a failure the caller
+    can see rather than the last invalid report — a plausible-looking plan nobody checks is
+    the one outcome worse than no plan. The errors travel with the exception because that is
+    all a failed run has to explain itself with until S12 builds a CLI.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    script = researched(
+        *[scripted_report(resources=[resource(UNGROUNDED_URL)])] * 3
+    )
+
+    with pytest.raises(PreparationFailed) as raised:
+        await drive(script, offline_settings)
+
+    assert raised.value.attempts == 3, "MAX_OUTPUT_RETRIES counts attempts, not retries"
+    assert [issue.code for issue in raised.value.issues] == ["ungrounded_url"]
+    assert raised.value.run_id is not None
+
+
+@respx.mock
+async def test_a_drifted_report_costs_one_attempt_and_the_next_one_is_returned(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """A reply that misses the schema is the same event as one that breaks a rule.
+
+    Both mean *this report is not acceptable*, so both take one rung of the same ladder.
+    Before S10 a drift here ended the run on the first occurrence — an expensive way to lose
+    a fully-researched run to a 4B model's stray field, when a re-ask quoting the error
+    usually fixes it.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    script = researched(
+        json.dumps({"definitely": "not a report"}),
+        scripted_report(resources=[resource(DOCS_URL)]),
+    )
+
+    report, provider, _ = await drive(script, offline_settings)
+
+    attempts = finalise_turns(provider)
+    assert len(attempts) == 2
+    assert "not acceptable" in attempts[1].messages[-1].content
+    assert report.sources_examined == 1
+
+
+@respx.mock
+async def test_the_ladder_stops_when_the_ledger_refuses_another_attempt(
+    tmp_path: Path, scripted_report: Callable[..., str]
+) -> None:
+    """A retry is a model call, and no retry path may go around `claim`.
+
+    The ladder wanting another attempt is exactly the pressure that would justify a special
+    case, so this pins the opposite: budget exhaustion stops it, as ordinary control flow,
+    and the count says how far it actually got. Six calls is one plan, three research turns,
+    one appraisal and precisely one report.
+    """
+    settings = Settings(
+        _env_file=None,
+        db_path=tmp_path / "agent.sqlite3",
+        search_fixture_dir=tmp_path / "search",
+        max_model_calls=6,
+    )
+    recorded_search(settings)
+    serve_docs_page()
+    script = researched(*[scripted_report(resources=[resource(UNGROUNDED_URL)])] * 2)
+
+    with pytest.raises(PreparationFailed) as raised:
+        await drive(script, settings)
+
+    assert raised.value.attempts == 1
+    assert raised.value.issues, "the errors from the one attempt made must survive"
+
+
+@respx.mock
+async def test_the_final_attempt_goes_to_the_configured_alternate(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """Both halves of the provider rule, which is one decision with two outcomes.
+
+    A model that has failed twice on the same evidence will fail a third time, so the last
+    attempt changes model when a second one is genuinely configured. "Genuinely" is the load
+    -bearing word: `HostedProvider` constructs happily without a key and only fails when
+    called, so an alternate assumed rather than checked would spend the final attempt
+    discovering there was never one.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    primary = FakeProvider(
+        researched(*[scripted_report(resources=[resource(UNGROUNDED_URL)])] * 2)
+    )
+    alternate = FakeProvider(
+        [scripted_report(resources=[resource(DOCS_URL)])], model="alternate-model"
+    )
+
+    report = await run_agent(
+        TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25),
+        registry=build_tool_registry(offline_settings),
+        providers=AgentProviders(primary, primary, primary, fallback=alternate),
+        ctx=RunContext(budget=RunBudget.from_settings(offline_settings)),
+        settings=offline_settings,
+    )
+
+    assert report.model_used == "alternate-model"
+    assert primary.remaining == 0 and alternate.remaining == 0
+
+    # Both keys passed explicitly, never inherited from the developer's environment: whether
+    # an alternate exists is the switch this test turns, so it cannot be ambient.
+    keyless = Settings(_env_file=None, google_api_key=None)
+    keyed = Settings(_env_file=None, google_api_key="a-key")
+    assert AgentProviders.from_settings(keyless).fallback is None, (
+        "no GOOGLE_API_KEY means no second model, and the ladder must stay on the primary "
+        "rather than spend its last attempt on a provider that raises when called"
+    )
+    assert AgentProviders.from_settings(keyed).fallback is not None
+
+
+@respx.mock
+async def test_a_retry_rewrites_the_report_without_researching_again(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """A validation failure means the report broke our contract, not that the run was wrong.
+
+    The cheapest possible guard against the most expensive mistake available here: a ladder
+    that re-entered the loop would spend SerpAPI quota — 250 calls a month, for the whole
+    project — correcting a paragraph. The evidence is fixed the moment finalisation starts.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    registry, seen = recording_registry(offline_settings)
+    script = researched(
+        scripted_report(resources=[resource(UNGROUNDED_URL)]),
+        scripted_report(resources=[resource(DOCS_URL)]),
+    )
+
+    _, _, ctx = await drive(script, offline_settings, registry=registry)
+
+    assert seen == ["web_search", "fetch_url"]
+    assert ctx.budget.remaining("search") == offline_settings.max_search_calls - 1
+    assert ctx.budget.remaining("fetch") == offline_settings.max_fetch_calls - 1
