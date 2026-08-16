@@ -693,6 +693,7 @@ async def finalise(
     messages = list(opening)
     attempts = settings.max_output_retries
     issues: tuple[ReportIssue, ...] = ()
+    last_failure = ""
 
     for attempt in range(1, attempts + 1):
         # Only the *last* attempt switches, and only when there is more than one: the first
@@ -733,7 +734,12 @@ async def finalise(
             # A drifted shape and a broken rule are the same event to the caller, so they
             # share the ladder. The shape errors are not `ReportValidation` issues, though —
             # they are quoted to the model but never claimed as a verdict on a report that
-            # never existed.
+            # never existed. **Both records are cleared**, because an earlier attempt's
+            # verdict is not this one's: reporting it as final would send a caller looking
+            # for a citation problem in a reply that never parsed.
+            issues = ()
+            state.validation_errors = []
+            last_failure = "the model's reply did not fit FocusPreparationReport"
             messages = _with_correction(opening, response.text, _errors(exc))
             continue
 
@@ -756,17 +762,27 @@ async def finalise(
 
         issues = tuple(validation.issues)
         state.validation_errors = validation.as_lines()[:20]
+        last_failure = "the report did not match the evidence this run gathered"
         messages = _with_correction(
             opening, response.text, "\n".join(validation.as_lines())
         )
 
     raise PreparationFailed(
-        f"no report satisfied the run's own evidence after {attempts} attempts"
+        f"no valid report after {_attempt_count(attempts)}: {last_failure}"
         + _issue_block(issues),
         run_id=ctx.run_id,
         attempts=attempts,
         issues=issues,
     )
+
+
+def _attempt_count(n: int) -> str:
+    """`1 attempt` / `3 attempts`.
+
+    The ladder's bound is configurable and ends up in two different failure messages, so
+    `1 attempts` is reachable rather than hypothetical.
+    """
+    return f"{n} attempt{'' if n == 1 else 's'}"
 
 
 def _with_correction(opening: list[Message], reply: str, errors: str) -> list[Message]:
@@ -825,8 +841,8 @@ def _exhausted_message(
             f"spent limits: {spent}"
         )
     return (
-        f"the run ran out of time or model calls after {made} finalise "
-        f"attempt(s); spent limits: {spent}" + _issue_block(issues)
+        f"the run ran out of time or model calls after {_attempt_count(made)} at the "
+        f"report; spent limits: {spent}" + _issue_block(issues)
     )
 
 
