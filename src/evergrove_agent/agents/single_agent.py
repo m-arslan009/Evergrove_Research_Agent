@@ -24,11 +24,18 @@ so the run stops rather than pretending.
 
 **Nothing here is allowed to loop without a bound.** Hops are bounded by `MAX_HOPS` through
 `RunState.hop`, turns within a hop by `_MAX_RESEARCH_TURNS`, re-asks by
-`_MAX_DECODE_ATTEMPTS`, and every model call and tool call by the ledger.
+`_MAX_DECODE_ATTEMPTS`, the report's retry ladder by `MAX_OUTPUT_RETRIES`, and every model
+call and tool call by the ledger.
+
+**A report is not finished until the evidence says so.** `finalise` runs S9's
+`validate_report` against the run's own gathered URLs and asks again, up to
+`MAX_OUTPUT_RETRIES` times, quoting back exactly what was wrong. A run that cannot produce a
+valid report raises `PreparationFailed`; it never returns an invalid one.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -76,6 +83,7 @@ from evergrove_agent.search.normalize import canonicalize_url
 from evergrove_agent.tools.base import BudgetKind, RunBudget, RunContext
 from evergrove_agent.tools.fetch_url import FetchUrlOutput
 from evergrove_agent.tools.registry import ToolRegistry
+from evergrove_agent.tools.validate_report import ReportIssue, validate_report
 from evergrove_agent.tools.web_search import WebSearchOutput
 
 StopReason = Literal[
@@ -101,10 +109,31 @@ class PreparationFailed(RuntimeError):
     returns a partial one** — a half-filled plan that looks complete is worse than a failure
     the caller can see.
 
-    S10 keeps this class and adds the retry ladder in front of it (primary model, primary
-    with the validation errors quoted back, then the second provider); today `finalise`
-    raises on the first failure.
+    Message-first, with the same facts also attached structurally. The string still says
+    everything on its own, but S11's `service.py` and S12's CLI both have to show a user
+    *why* a run failed, and recovering that by parsing a formatted sentence breaks the first
+    time the sentence is reworded. Deliberately not a trace record: Day 4 owns tracing, and
+    a terminal failure must not wait for it.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        attempts: int = 0,
+        issues: Sequence[ReportIssue] = (),
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.attempts = attempts
+        """Finalise attempts actually made. Fewer than `MAX_OUTPUT_RETRIES` when the ledger
+        stopped the ladder early, which is the difference between "the model cannot write a
+        valid report" and "the run ran out of room to ask it again"."""
+        self.issues = tuple(issues)
+        """What `validate_report` still objected to on the last attempt that produced a
+        parseable report. Empty when every attempt drifted off the schema, or when the budget
+        refused the first attempt."""
 
 
 # --- how much of the budget each stage may take ------------------------------------------
@@ -206,6 +235,26 @@ _BUDGET_NOUNS: dict[BudgetKind, str] = {
 # --- the providers the four stages use ----------------------------------------------------
 
 
+def _alternate_provider(settings: Settings) -> LLMProvider | None:
+    """The other provider, when one is genuinely configured — the retry ladder's last hope.
+
+    **"Genuinely configured" is the whole point.** `HostedProvider` constructs happily
+    without a key and only raises when it is called, so treating it as available whenever the
+    class exists would spend the final attempt discovering that there was never a second
+    model. A hosted alternate therefore requires `GOOGLE_API_KEY`; a local one requires
+    nothing beyond the reachable Ollama the primary path is already betting on.
+
+    Resolved against the supervisor's provider because finalising is the supervisor's stage,
+    and `build_provider` stays the only factory — `override` is the same seam the CLI's
+    `--provider` flag uses.
+    """
+    if settings.provider_for("supervisor") == "hosted":
+        return build_provider("supervisor", settings, override="local")
+    if settings.google_api_key is None:
+        return None
+    return build_provider("supervisor", settings, override="hosted")
+
+
 @dataclass(frozen=True)
 class AgentProviders:
     """One provider per reasoning role, resolved once for the whole run.
@@ -221,6 +270,12 @@ class AgentProviders:
     supervisor: LLMProvider
     researcher: LLMProvider
     appraiser: LLMProvider
+    fallback: LLMProvider | None = None
+    """The provider the retry ladder's last attempt uses, when an alternate is configured.
+
+    Defaulted rather than required, because it is not a role — it is a second chance at one
+    stage. A run with no alternate simply repeats on the primary, and a test constructing
+    `AgentProviders(fake, fake, fake)` keeps meaning exactly what it did before."""
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> AgentProviders:
@@ -230,6 +285,7 @@ class AgentProviders:
             supervisor=build_provider("supervisor", settings),
             researcher=build_provider("researcher", settings),
             appraiser=build_provider("appraiser", settings),
+            fallback=_alternate_provider(settings),
         )
 
 
@@ -570,7 +626,7 @@ async def judge_sufficiency(
     return verdict if isinstance(verdict, AppraisalVerdict) else None
 
 
-# --- stage 4: finalisation (a single attempt; S10 adds the ladder) ------------------------
+# --- stage 4: finalisation and the retry ladder (S10) -------------------------------------
 
 
 async def finalise(
@@ -580,27 +636,45 @@ async def finalise(
     ctx: RunContext,
     stop_reason: StopReason = "sufficient",
     settings: Settings | None = None,
+    fallback_provider: LLMProvider | None = None,
 ) -> FocusPreparationReport:
-    """Write the report. Becomes `supervisor.finalise()`.
+    """Write the report, and keep asking until it is a valid one. Becomes
+    `supervisor.finalise()`.
 
-    One attempt today. S10 wraps this in the retry ladder — primary model, primary with the
-    validation errors quoted back, then the second provider — and the shape here is already
-    the one that ladder needs: the extra `Message` below is exactly the mechanism it uses,
-    because `finalise.md`'s five placeholders are frozen and a sixth would break `main.py`'s
-    `--no-research` path.
+    **`MAX_OUTPUT_RETRIES` counts total attempts, not retries** — the shipped 3 is one
+    initial call plus two corrections. The name is the plan's and is kept deliberately;
+    this paragraph is where the mismatch is recorded, because changing the meaning silently
+    would move a budget nobody re-approved.
 
-    Why the run stopped travels twice. Once as that message, so the model can write it into
-    `unknowns` in its own words, and once as bookkeeping, because a model may ignore the
+    Each attempt is checked three times over: by constrained decoding against the JSON
+    schema, by `model_validate_json`, and then by S9's `validate_report`, the only one of the
+    three that can see what the run actually gathered. A failure of either of the last two is
+    the same kind of event — *this report is not acceptable* — so both feed one ladder, and
+    the reason is quoted back as an extra `Message`. Never as a placeholder: `finalise.md`'s
+    five are frozen, and a sixth is a `KeyError` on `main.py`'s `--no-research` path.
+
+    **The retry corrects the report, never the research.** No search, no fetch, no new
+    evidence: a validation failure means the report broke our contract, not that the run
+    needs redoing. Task, narrowed goal, sources, findings, verdict, failures and the
+    grounding set are identical on every attempt; the only thing that changes is what the
+    model has been told about its own last answer.
+
+    The last attempt goes to `fallback_provider` when one exists, on the reasoning that a
+    model which has already failed twice against the same evidence will fail a third time.
+
+    Why the run stopped travels twice. Once as an extra message, so the model can write it
+    into `unknowns` in its own words, and once as bookkeeping, because a model may ignore the
     message and a degraded run must never read like a confident one.
 
-    Raises `PreparationFailed` rather than returning a partial report — including when the
-    ledger refuses the call, which at this point means the run's deadline has passed.
+    Raises `PreparationFailed` rather than returning a partial report: when the ledger
+    refuses an attempt, when the alternate provider cannot be reached, and when every attempt
+    was spent without a valid report.
     """
     settings = settings or get_settings()
     task = state.task
     note = render_stop_reason(stop_reason, exhausted=ctx.budget.exhausted_limits)
 
-    messages = [
+    opening = [
         Message(
             role="user",
             content=render_prompt(
@@ -614,25 +688,146 @@ async def finalise(
         )
     ]
     if note:
-        messages.append(Message(role="user", content=note))
+        opening.append(Message(role="user", content=note))
 
-    if not ctx.budget.claim("model_call"):
-        raise PreparationFailed(
-            "the run ran out of time or model calls before a report could be written; "
-            f"spent limits: {', '.join(ctx.budget.exhausted_limits) or 'none'}"
+    messages = list(opening)
+    attempts = settings.max_output_retries
+    issues: tuple[ReportIssue, ...] = ()
+
+    for attempt in range(1, attempts + 1):
+        # Only the *last* attempt switches, and only when there is more than one: the first
+        # attempt belongs to the configured provider whatever `MAX_OUTPUT_RETRIES` says.
+        use_fallback = (
+            fallback_provider is not None and attempts > 1 and attempt == attempts
+        )
+        current = fallback_provider if use_fallback else provider
+
+        if not ctx.budget.claim("model_call"):
+            raise PreparationFailed(
+                _exhausted_message(ctx, attempt - 1, issues),
+                run_id=ctx.run_id,
+                attempts=attempt - 1,
+                issues=issues,
+            )
+
+        try:
+            response = await current.generate(
+                messages, schema=FocusPreparationReport, temperature=settings.temperature
+            )
+        except LLMError as exc:
+            if not use_fallback:
+                # The primary being unreachable is a broken run, and that asymmetry with
+                # `ToolError` is deliberate project-wide.
+                raise
+            raise PreparationFailed(
+                f"the alternate provider could not be reached on the final attempt: {exc}"
+                + _issue_block(issues),
+                run_id=ctx.run_id,
+                attempts=attempt,
+                issues=issues,
+            ) from exc
+
+        try:
+            parsed = FocusPreparationReport.model_validate_json(response.text)
+        except ValidationError as exc:
+            # A drifted shape and a broken rule are the same event to the caller, so they
+            # share the ladder. The shape errors are not `ReportValidation` issues, though —
+            # they are quoted to the model but never claimed as a verdict on a report that
+            # never existed.
+            messages = _with_correction(opening, response.text, _errors(exc))
+            continue
+
+        report = _apply_bookkeeping(
+            parsed, state, ctx=ctx, model_used=response.model, note=note
+        )
+        # Validated *after* bookkeeping, on purpose: `original_task`,
+        # `session_duration_minutes` and the appended `unknowns` note are all fields
+        # `validate_report` reads, and all fields `finalise.md` tells the model not to bother
+        # filling in. Judging the raw reply would reject reports for our own omissions.
+        validation = validate_report(
+            report,
+            evidence_urls=state.evidence_urls,
+            fetched_urls=state.fetched_urls,
+            max_topics=max_topics_for(task.session_minutes),
+            research_performed=bool(state.findings),
+        )
+        if validation.ok:
+            return report
+
+        issues = tuple(validation.issues)
+        state.validation_errors = validation.as_lines()[:20]
+        messages = _with_correction(
+            opening, response.text, "\n".join(validation.as_lines())
         )
 
-    response = await provider.generate(
-        messages, schema=FocusPreparationReport, temperature=settings.temperature
+    raise PreparationFailed(
+        f"no report satisfied the run's own evidence after {attempts} attempts"
+        + _issue_block(issues),
+        run_id=ctx.run_id,
+        attempts=attempts,
+        issues=issues,
     )
-    try:
-        report = FocusPreparationReport.model_validate_json(response.text)
-    except ValidationError as exc:
-        raise PreparationFailed(
-            f"the model's reply did not satisfy FocusPreparationReport:\n{_errors(exc)}"
-        ) from exc
 
-    return _apply_bookkeeping(report, state, ctx=ctx, model_used=response.model, note=note)
+
+def _with_correction(opening: list[Message], reply: str, errors: str) -> list[Message]:
+    """The next attempt's turns: what was asked, what came back, and what was wrong with it.
+
+    The same shape `_decode` uses for a drifted decision, for the same reason — a model
+    cannot correct an answer it cannot see. Built from the *opening* turns each time rather
+    than appended to the previous attempt, so the third attempt argues with the second answer
+    instead of wading through the first one as well. The evidence and the stop reason live in
+    those opening turns and travel unchanged, which is what keeps every attempt grounded in
+    exactly the same run.
+    """
+    return [
+        *opening,
+        Message(role="assistant", content=reply),
+        Message(role="user", content=_VALIDATION_INSTRUCTION.format(errors=errors)),
+    ]
+
+
+_VALIDATION_INSTRUCTION = (
+    "That report is not acceptable:\n{errors}\n"
+    "Fix exactly these problems and answer again with the whole report as JSON matching "
+    "the schema you were given. Change nothing else, and do not cite any source that is "
+    "not listed in the research section above."
+)
+"""The correction turn. It says *fix these* rather than *try again* because the model has
+already produced its best unaided attempt; and it repeats the citation rule because the
+issue it most often has to fix is a URL the run never saw, which a model will otherwise
+replace with a second invented one."""
+
+
+def _issue_block(issues: Sequence[ReportIssue]) -> str:
+    """The final validation errors, for the exception's own message.
+
+    `PreparationFailed.issues` carries them structurally; this is so a bare `print(exc)` in a
+    terminal still says what was wrong, which is all a failing run gets until S12.
+    """
+    if not issues:
+        return ""
+    lines = "\n".join(f"- {issue.field}: {issue.message}" for issue in issues)
+    return f"\nlast validation errors:\n{lines}"
+
+
+def _exhausted_message(
+    ctx: RunContext, made: int, issues: Sequence[ReportIssue]
+) -> str:
+    """Why the ladder stopped early, distinguishing "no room" from "no valid report".
+
+    A run that never got to ask and a run that asked and was refused fail for different
+    reasons, and the difference is the first thing anyone reading the failure needs.
+    """
+    spent = ", ".join(ctx.budget.exhausted_limits) or "none"
+    if made == 0:
+        return (
+            "the run ran out of time or model calls before a report could be written; "
+            f"spent limits: {spent}"
+        )
+    return (
+        f"the run ran out of time or model calls after {made} finalise "
+        f"attempt(s); spent limits: {spent}" + _issue_block(issues)
+    )
 
 
 def _apply_bookkeeping(
@@ -655,7 +850,9 @@ def _apply_bookkeeping(
 
     `resources` is left exactly as the model wrote it. Checking that every cited URL was
     actually seen is S9's grounding rule, and doing it here as well would be a second
-    definition of the project's strongest anti-hallucination guard.
+    definition of the project's strongest anti-hallucination guard. `finalise` runs that
+    check on the report this returns — after these fields are set, because three of the rules
+    read them.
     """
     unknowns = list(report.unknowns)
     if note and note not in unknowns:
@@ -768,6 +965,7 @@ async def run_agent(
         ctx=ctx,
         stop_reason=stop,
         settings=settings,
+        fallback_provider=providers.fallback,
     )
 
 
