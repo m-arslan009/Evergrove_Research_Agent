@@ -20,6 +20,7 @@ from evergrove_agent.agents.prompt_context import (
     render_sources,
     render_stop_reason,
     render_tool_outcome,
+    render_turn_state,
 )
 from evergrove_agent.agents.single_agent import (
     AgentProviders,
@@ -62,6 +63,7 @@ __all__ = [
     "render_sources",
     "render_stop_reason",
     "render_tool_outcome",
+    "render_turn_state",
     "run_agent",
     "run_research_step",
     "to_tool_spec",

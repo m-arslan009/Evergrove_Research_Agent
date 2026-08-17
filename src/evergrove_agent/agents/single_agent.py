@@ -53,6 +53,7 @@ from evergrove_agent.agents.prompt_context import (
     render_sources,
     render_stop_reason,
     render_tool_outcome,
+    render_turn_state,
 )
 from evergrove_agent.agents.tool_calling import (
     ToolCallOutcome,
@@ -70,6 +71,7 @@ from evergrove_agent.schemas import (
     ErrorCode,
     FocusPreparationReport,
     GatheredSource,
+    ResearchAction,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -415,8 +417,15 @@ async def run_research_step(
     and whether a retry could help — everything `research_step.md`'s recovery instruction
     tells the model to act on.
 
-    The hop ends early on any of: prose instead of tool calls (that text becomes `notes`), a
-    refused budget claim, or an unreachable model.
+    **A turn is one constrained `ResearchAction`, not free-form tool calling** — Day 3's
+    contingency option (2), spent during S14 on measurement rather than on a reliability
+    failure: free-form calls were *correct* on `qwen3:4b` but cost 361 s a turn against 46 s
+    for a constrained call, because nothing stopped the model prefixing ~4 000 characters of
+    reasoning. `dispatch` still receives a `ToolCall` and arguments still travel as a raw
+    mapping, so this is the same tool path with a cheaper decision in front of it.
+
+    The hop ends early on any of: an empty `tool` (the model saying it has enough), a reply
+    that does not fit the schema, a refused budget claim, or an unreachable model.
 
     **Always returns findings, never raises.** A hop that gathered nothing is still a fact
     about the run, and the failures it collected are what stop the report reading like a
@@ -456,7 +465,7 @@ async def run_research_step(
             break
         try:
             response = await provider.generate(
-                messages, tools=specs, temperature=settings.temperature
+                messages, schema=ResearchAction, temperature=settings.temperature
             )
         except LLMError as exc:
             # Not fatal here, unlike every other stage: this hop already holds evidence
@@ -465,13 +474,26 @@ async def run_research_step(
             notes = notes or f"The research step stopped early: {exc}"
             break
 
-        if response.text.strip():
-            notes = response.text.strip()
-        if not response.tool_calls:
+        try:
+            action = ResearchAction.model_validate_json(response.text)
+        except ValidationError:
+            # Drift ends the hop, exactly as prose instead of a tool call used to. There is
+            # no re-ask here on purpose: `_decode`'s retry exists for stages whose answer
+            # steers control flow, while a hop that stops early still returns its findings.
             break
 
+        if action.reasoning.strip():
+            notes = action.reasoning.strip()
+        if not action.tool.strip():
+            break
+
+        # One call per turn. `dispatch` still receives a `ToolCall` and the arguments still
+        # travel as the raw mapping they arrived in, so the registry remains the only
+        # argument validator and this is not a second tool path.
+        calls = [ToolCall(name=action.tool.strip(), arguments=dict(action.arguments))]
+
         outcomes: list[ToolCallOutcome] = []
-        for call in response.tool_calls:
+        for call in calls:
             refusal = _claim_for_tool(call, budget)
             result = (
                 refusal
@@ -482,14 +504,25 @@ async def run_research_step(
             outcomes.append(outcome)
             _absorb(outcome, assignment, sources, queries, failures, settings)
 
+        # The observation carries the hop's *current* state, not the opening state the
+        # prompt was rendered with. Without this the model re-asks the question it just
+        # asked: S14 measured three identical `web_search` calls in one hop, which the
+        # cache answered for free while still spending all three search claims and leaving
+        # `fetch_url` untouched.
+        observation = "\n\n".join(
+            render_tool_outcome(outcome, settings=settings) for outcome in outcomes
+        )
         messages = [
             *messages,
             Message(role="assistant", content=response.text or _ASKED_FOR_TOOLS),
             Message(
                 role="user",
-                content="\n\n".join(
-                    render_tool_outcome(outcome, settings=settings)
-                    for outcome in outcomes
+                content=observation
+                + "\n\n"
+                + render_turn_state(
+                    searches_left=budget.remaining("search"),
+                    fetches_left=budget.remaining("fetch"),
+                    queries=queries,
                 ),
             ),
         ]

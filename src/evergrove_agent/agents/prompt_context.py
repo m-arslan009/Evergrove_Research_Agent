@@ -32,6 +32,7 @@ every source rather than left to be inferred from a missing field.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from evergrove_agent.agents.tool_calling import ToolCallOutcome
 from evergrove_agent.config import Settings, get_settings
@@ -102,17 +103,57 @@ def render_progress(state: RunState, *, hops_remaining: int) -> str:
 
 
 def render_available_tools(specs: Sequence[ToolSpec]) -> str:
-    """`research_step.md`'s `available_tools` — the menu, by name, in menu order.
+    """`research_step.md`'s `available_tools` — the menu, with each tool's arguments.
 
     Takes the specs `advertise()` produced rather than a role, so the list the prompt
-    names and the list the provider was handed cannot describe different menus. Names
-    only: the descriptions and the argument schemas already travel with the specs, and a
-    second copy in prose is a second tool-selection mechanism that would drift from the
-    allow-list `dispatch` enforces.
+    names and the list the provider was handed cannot describe different menus.
+
+    **This rendered names only until S14, and that stopped being enough.** The reason was
+    "the descriptions and the argument schemas already travel with the specs" — true while
+    the research step called `generate(tools=specs)`, because Ollama put each schema on the
+    wire. Once S14's contingency moved that turn to `generate(schema=ResearchAction)` the
+    specs stopped travelling, and a model that could see only `web_search` and `fetch_url`
+    guessed the argument names: every `fetch_url` call in the first live run came back
+    `BAD_ARGUMENTS`, and the run cited a page it had never opened.
+
+    Still not a second tool-selection mechanism, which is what the original warning was
+    about: `advertise()` remains the only source of this list, and `dispatch`'s allow-list
+    remains the only thing that decides whether a chosen name may run. What is rendered is
+    what the provider used to be handed — required arguments first, so the model reads them
+    in the order it must supply them.
     """
     if not specs:
         return "No tools are available at this step."
-    return "\n".join(spec.name for spec in specs)
+
+    blocks: list[str] = []
+    for spec in specs:
+        properties: dict[str, Any] = spec.parameters.get("properties", {}) or {}
+        required = [name for name in spec.parameters.get("required", []) if name in properties]
+        optional = [name for name in properties if name not in required]
+
+        lines = [f"{spec.name} — {spec.description}"]
+        for name in (*required, *optional):
+            field = properties.get(name) or {}
+            # An optional field is `T | None`, which Pydantic emits as an `anyOf` with no
+            # top-level `type`. Naming the non-null branch keeps "string" from degrading to
+            # "value" on exactly the arguments a model is least sure about.
+            kind = field.get("type") or next(
+                (
+                    branch["type"]
+                    for branch in field.get("anyOf", [])
+                    if branch.get("type") and branch["type"] != "null"
+                ),
+                "value",
+            )
+            mark = "required" if name in required else "optional"
+            detail = f"  {name} ({kind}, {mark})"
+            enum = field.get("enum")
+            if enum:
+                detail += f": one of {', '.join(str(value) for value in enum)}"
+            lines.append(detail)
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks)
 
 
 def render_allowance(assignment: ResearchAssignment) -> str:
@@ -148,6 +189,42 @@ def render_already_covered(assignment: ResearchAssignment) -> str:
             lines += [""]
         lines += ["Pages already read — do not open them again:"]
         lines += _bullets(assignment.avoid_urls)
+    return "\n".join(lines)
+
+
+def render_turn_state(
+    *, searches_left: int, fetches_left: int, queries: Sequence[str]
+) -> str:
+    """What this hop has spent *so far*, appended to each turn's observation.
+
+    Not a placeholder: `research_step.md` is rendered once, before the turn loop, so
+    `{allowance}` and `{already_covered}` describe the hop's opening state and never move
+    again. That is what S14 caught — the model re-issued a byte-identical `web_search` on
+    turns 2 and 3, exhausting the hop's three search claims without ever calling
+    `fetch_url`, because it was deciding turn 3 with turn 1's picture of the run. The
+    cache answered the repeats, so the waste cost no SerpAPI quota and stayed invisible in
+    the ledger while still losing the hop its evidence.
+
+    Travels as part of the observation message, the same way `render_stop_reason` reaches
+    `finalise.md` — the placeholder set stays frozen either way.
+
+    Counts are passed in rather than read from `RunBudget`, which keeps this module free of
+    `tools/` and pure: the same numbers in always render the same block.
+    """
+    lines = [
+        "Where this step now stands: "
+        f"{_count(searches_left, 'search', 'searches')} and "
+        f"{_count(fetches_left, 'page read', 'page reads')} left."
+    ]
+    if queries:
+        lines += ["", "Searches already run in this step — do not run any of them again:"]
+        lines += _bullets(queries)
+        if fetches_left:
+            lines += [
+                "",
+                "You already have results. Open one of them with fetch_url rather than "
+                "searching again.",
+            ]
     return "\n".join(lines)
 
 

@@ -55,6 +55,15 @@ class OllamaProvider:
             # keep_alive here as well as in the environment, so a caller cannot
             # accidentally pay the 5-20 s reload on every call (plan 14.3).
             "keep_alive": self._settings.local_keep_alive,
+            # Thinking models reason into `message.thinking`, which `format` does not
+            # constrain and which this provider discards — only `message.content` is read
+            # below. Left on, qwen3:4b spends minutes per call generating tokens that are
+            # then dropped: measured during Day 3 S14, one trivial prompt took 173.9 s with
+            # thinking and 5.1 s without, on the same model, schema and machine. Prefill
+            # falls too (547 -> 16 tokens), because the thinking scaffolding leaves the
+            # chat template with it. Servers and models that do not support the field
+            # ignore it.
+            "think": False,
             "options": {
                 "temperature": temperature,
                 "num_ctx": self._settings.num_ctx,
@@ -90,7 +99,18 @@ class OllamaProvider:
                 f"Ollama returned {exc.response.status_code}: {exc.response.text[:200]}. "
                 f"Is the model '{self.model}' pulled? Try: ollama pull {self.model}",
             ) from exc
-        except httpx.HTTPError as exc:  # unreachable, DNS, timeout
+        except httpx.TimeoutException as exc:
+            # Separated from the unreachable case because the two need opposite fixes and
+            # a timeout stringifies to "", so folding them together reported a running
+            # server as unreachable and gave nothing to act on (found during S14).
+            raise LLMError(
+                self.name,
+                f"Ollama did not answer within TOTAL_RUN_TIMEOUT_S="
+                f"{self._settings.total_run_timeout_s}s (model '{self.model}'). The server "
+                f"is reachable; the request was too slow. Check `ollama ps` for the load, "
+                f"or use a smaller model.",
+            ) from exc
+        except httpx.HTTPError as exc:  # unreachable, DNS, connection refused
             raise LLMError(
                 self.name,
                 f"could not reach Ollama at {self._settings.ollama_host}: {exc}",
