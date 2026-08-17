@@ -1071,3 +1071,8 @@ structured JSON log line per operation as part of this task, while still deferri
 behavior, research-quality, continuation-quality, multi-hop, and end-to-end acceptance validation
 to the final day. Keep this implementation minimal and reuse the existing tracing/hook data rather
 than introducing a new tracing path.
+
+`Title`: All live-run testing consolidated into Day 7; implementation first
+
+`User prompt`: Keep all the testing for day 7 such as live run. First we complete the
+implementation, later we will focus on testing.

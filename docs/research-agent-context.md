@@ -23,10 +23,10 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 4 — Memory, hooks and tracing** — **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
-| **Day 3** | S1–S14 implemented and live-verified; **not signed off** — two acceptance runs still owed, see *S14 results* |
+| **Day 3** | S1–S14 implemented and live-verified. **Implementation complete; sign-off deferred to Day 7** — two acceptance runs are owed and banked there, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
-| **Next task** | **Day 5 — the Supervisor / Researcher / Appraiser split.** Three acceptance runs remain owed and none has been made: two more S14 runs for Day 3 sign-off, and the Day 4 run that proves run 2 differs from run 1 |
+| **Next task** | **Day 5 — the Supervisor / Researcher / Appraiser split.** Day 4 is implementation complete, and its acceptance run is **not** a blocker: by standing decision (*Engineering decisions* 12) every live run in this project is Day 7's. Three are banked and owed there — two S14 runs for Day 3, and the Day 4 pair that proves run 2 differs from run 1 |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -44,8 +44,8 @@ exists. Do not describe or assume any other Day 3 capability as present.
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **S1–S14 done and live-verified; sign-off pending 2 more acceptance runs** |
-| 4 | Memory, hooks, tracing | **T1–T6 built and covered offline; acceptance run owed** |
+| 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
+| 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
@@ -1168,6 +1168,16 @@ read/unread distinction, the excerpt bound and that a degraded run stays visibly
     time-dependent.
 11. **Composition roots stay logic-free** — `wiring.py` and `cli.py` build and dispatch, they never
     decide behaviour.
+12. **Implementation first; every live run is Day 7's.** Standing instruction from the user
+    (2026-08-17). Acceptance runs, evaluations and any other model-, network- or quota-spending
+    verification are **consolidated into Day 7** rather than run at each day's boundary — including
+    the ones Days 3 and 4 nominally owe. A day is therefore "implementation complete" when its
+    subtasks are built and covered offline, and a milestone is not blocked from starting because an
+    earlier one has unspent live runs. **This does not weaken the offline gate:** the cheapest test
+    that can prove a behaviour still runs at the time the behaviour is written
+    ([`offline-first-development.md`](../.claude/rules/offline-first-development.md) §2), and
+    `.githooks/pre-push` is unchanged. What is deferred is only what costs a model, a key, the
+    network or quota.
 
 ## Verified deviations from the 7-day plan
 
@@ -1263,8 +1273,8 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 still builds these):** nothing — S14 ran. **Two more acceptance runs are owed**
-before Day 3 can be signed off; see below.
+**Missing (Day 3 still builds these):** nothing — S14 ran. **Two more acceptance runs are owed and
+banked for Day 7**; see below.
 
 **Memory is now written *and* read (T4/T5).** A run recalls before it plans, saves after it
 validates, and mirrors each hop. What is **not** proven is what a real model does with the
@@ -1561,8 +1571,9 @@ correct nesting and timings · run 2 covers different topics from run 1 and says
 `interpreted_goal` · budget exhaustion produces an honest report with populated `unknowns`, not a
 crash.
 
-**Day 3 is not signed off.** Two more S14 acceptance runs are owed for "valid report on ≥4 of 5
-attempts". They are independent of Day 4 work, which does not touch the loop's decisions.
+**Day 3's two remaining S14 acceptance runs are banked for Day 7**, with everything else that costs
+a model (*Engineering decisions* 12). They are independent of Day 4 work, which does not touch the
+loop's decisions, and they do not block Day 5.
 
 ---
 
