@@ -16,6 +16,8 @@ Offline: a temporary SQLite file, no model, no network.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -296,3 +298,72 @@ async def test_a_failed_call_closes_its_span_with_the_reason(
     assert span.ok is False
     assert span.error_code == error_code
     assert span.ended_at is not None
+
+
+# --- the JSON log line (T6) -----------------------------------------------------------------
+
+
+def logged_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """Every JSON trace line the hooks emitted, parsed."""
+    return [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "evergrove_agent.trace"
+    ]
+
+
+async def test_one_tool_call_logs_one_json_line_that_matches_its_span(
+    connection: sqlite3.Connection,
+    ctx: RunContext,
+    wire: Callable[..., ToolRegistry],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The line and the row are one observation, so they must not disagree.
+
+    The regression this catches is the whole reason both are emitted from the same
+    post-hook: a log line that re-derives `duration_ms`, re-reads `from_cache`, or measures
+    its own timing would drift from the span row it is supposed to mirror, and someone
+    debugging a run would have two sources telling them different things. Pinned against
+    the stored span rather than against literals, so the two cannot drift apart silently.
+    """
+    with caplog.at_level(logging.INFO, logger="evergrove_agent.trace"):
+        result = await wire(
+            StubTool("fetch_url", outcome="fail")
+        ).call("fetch_url", {}, ctx)
+
+    (line,) = logged_lines(caplog)
+    (span,) = spans_for(connection, ctx)
+
+    assert line["event"] == "tool_call"
+    assert line["run_id"] == ctx.run_id
+    assert line["span_id"] == span.span_id
+    assert line["tool"] == "fetch_url"
+    assert line["ok"] is result.ok is span.ok is False
+    assert line["error_code"] == span.error_code == "SEARCH_UNAVAILABLE"
+    assert line["duration_ms"] == span.duration_ms == result.duration_ms
+    assert line["from_cache"] == span.from_cache is False
+
+
+async def test_a_call_with_no_tracer_still_logs_and_still_pays(
+    ctx: RunContext, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No database is not the same as no record, and never an unenforced budget.
+
+    T6 made `TracingHooks` unconditional precisely so a run whose database could not be
+    opened still says what it did. Two things have to hold in that configuration and each
+    is silent when broken: the line is emitted with `span_id: null` (rather than the hook
+    being skipped entirely, or raising on a `None` tracer), and `enforce_run_budget` still
+    refuses the third of two allowed searches.
+    """
+    registry = ToolRegistry()
+    registry.register(StubTool("web_search"))
+    install_registry_hooks(registry, tracer=None)
+
+    with caplog.at_level(logging.INFO, logger="evergrove_agent.trace"):
+        for _ in range(3):
+            await registry.call("web_search", {}, ctx)
+
+    lines = logged_lines(caplog)
+    assert [line["span_id"] for line in lines] == [None, None, None]
+    assert [line["ok"] for line in lines] == [True, True, False]
+    assert lines[-1]["error_code"] == "BUDGET_EXCEEDED"

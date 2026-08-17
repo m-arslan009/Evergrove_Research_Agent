@@ -1045,3 +1045,29 @@ distinct: persistent memory helps continue previous preparation, while session m
 current run from forgetting its own earlier hops. Do not implement the trace renderer or
 multi-agent Supervisor/Researcher/Appraiser behavior in this task. Add tests only for the core
 behavior introduced by this task.
+
+`Title`: Trace renderer and structured JSON trace logging
+
+`User prompt`: Implement **Trace Renderer** for the Evergrove Research Agent. The purpose of this
+task is only to make the tracing information already stored by the system easy to inspect.
+Implement `scripts/show_trace.py <run_id>` using the existing tracing storage rather than creating
+another trace representation. It should load the requested run and its spans, reconstruct their
+hierarchy using `parent_span_id`, and print a clear human-readable trace tree. The output should
+make it easy to see operation names, nesting, timestamps or durations, success/failure state, cache
+hits, and error codes when available. The renderer must remain read-only and separate from tracing
+persistence, hooks, memory, and agent logic. It should gracefully handle failed spans, incomplete
+spans, missing run IDs, and traces containing different levels of nesting without crashing. Do not
+redesign the tracing schema just to simplify rendering, and do not introduce new tracing, memory,
+budgeting, or agent behavior in this task. Do not perform model-quality evaluation,
+research-quality verification, continuation-quality validation, multi-hop correctness validation,
+or full Day 4 acceptance testing here. Those checks should remain for the final testing and
+evaluation day. Add tests only for the core renderer behavior where necessary.
+
+`Title`: Structured JSON trace logging belongs to Day 4, not the final validation day
+
+`User prompt`: Do not defer structured JSON trace logging to the final validation day. It is
+deterministic Day 4 tracing functionality, not model-quality validation. Include the required
+structured JSON log line per operation as part of this task, while still deferring all live model
+behavior, research-quality, continuation-quality, multi-hop, and end-to-end acceptance validation
+to the final day. Keep this implementation minimal and reuse the existing tracing/hook data rather
+than introducing a new tracing path.

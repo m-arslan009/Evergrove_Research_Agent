@@ -19,11 +19,21 @@ one place it is decided, because it is not obvious and it is not local:
 **Neither hook can change a result.** The budget hook only ever *replaces* a call it
 refused before it happened; the tracing hooks return `None` throughout. A trace that could
 rewrite what a tool answered would be a trace nobody could trust.
+
+**Two sinks, one observation (T6).** Plan section 13 specifies the post-hook trace write as
+"one row into `spans`, plus one structured JSON log line". Both are emitted from
+`TracingHooks.after`, from the same values, so a line and the row it mirrors cannot
+disagree. They differ in one way only: the row needs a database and the line does not, so
+the line is emitted for **every** tool call while the row appears only when a `Tracer` was
+supplied. A run whose database could not be opened still leaves a record of what it did.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -32,6 +42,18 @@ from evergrove_agent.schemas import ErrorCode, ToolError, ToolResult
 from evergrove_agent.tools.base import BudgetKind, ToolInvocation
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tracing.tracer import Tracer
+
+trace_logger = logging.getLogger("evergrove_agent.trace")
+"""Where the structured JSON lines go.
+
+A logger of its own, not `__name__`, and deliberately **not** a `print`. Plan section 13
+says "to stdout", but `main.py` documents stdout as the report and nothing else — "a piped
+or redirected report is byte-identical to a silent run" — so a line printed there would
+corrupt the one output this project promises to keep clean. Section 13's own choice of
+mechanism resolves it: "stdlib JSON logging", where the stream is a handler's business
+rather than a hard-coded destination. `main.py --trace-log` attaches one on stderr; a run
+with no handler emits nothing, which is why this is silent by default.
+"""
 
 TOOL_BUDGET: dict[str, BudgetKind] = {
     "web_search": "search",
@@ -89,7 +111,7 @@ async def enforce_run_budget(invocation: ToolInvocation) -> ToolResult[Any] | No
 
 @dataclass
 class TracingHooks:
-    """One span per tool call: opened by `before`, closed by `after` (T2).
+    """One span per tool call, and one JSON line per tool call (T2, T6).
 
     A pre-hook and a post-hook are two separate callables with no shared frame, which is
     why `Tracer` exposes `open_span` / `close_span` as a pair rather than a context
@@ -101,9 +123,14 @@ class TracingHooks:
     One instance per registry, not per call: the dictionary is the correlation, and a fresh
     instance per call would have nothing to correlate. Entries are removed as they close,
     so the only ones that linger are calls whose post-hook never ran.
+
+    **`tracer` is optional (T6).** Without one there are no rows, but the JSON line is still
+    emitted — with `span_id: null`, since no span was minted. That is what lets a run whose
+    database could not be opened still say what it did, and it is why this hook is now
+    installed unconditionally.
     """
 
-    tracer: Tracer
+    tracer: Tracer | None = None
     _open_spans: dict[int, str] = field(default_factory=dict, repr=False)
 
     async def before(self, invocation: ToolInvocation) -> None:
@@ -113,7 +140,12 @@ class TracingHooks:
         inside an agent or model operation nests under it with nothing passed down. Today
         nothing else opens a span during a run, so tool spans sit directly under the run;
         that becomes a tree the moment agent spans exist, without this code changing.
+
+        With no tracer there is nothing to open and nothing to remember: `after` finds no
+        entry, logs its line, and closes no span.
         """
+        if self.tracer is None:
+            return None
         span_id = self.tracer.open_span(
             invocation.ctx,
             invocation.tool.name,
@@ -124,30 +156,35 @@ class TracingHooks:
         return None
 
     async def after(self, invocation: ToolInvocation, result: ToolResult[Any]) -> None:
-        """Close the span this call opened, recording how the call went.
+        """Close the span this call opened and log the same facts as one JSON line.
 
         `duration_ms` is the registry's own measurement, handed straight through:
         `ToolRegistry.call` already timed this exact call, and measuring it a second time
         here would put two different numbers on one event. `from_cache` comes off the
         result for the same reason — the tool is the only thing that knows whether it
-        answered from its cache.
+        answered from its cache. **The log line reads the same values**, so the row and the
+        line are one observation written twice, never two observations that can disagree.
 
-        A missing entry means `before` never ran for this invocation (a hook installed out
-        of order, or a pre-hook that raised before it). There is no span to close, and
-        inventing one would put a row in the trace for an operation nobody observed.
+        A missing entry means either that no tracer was supplied, or that `before` never ran
+        for this invocation (a hook installed out of order, or a pre-hook that raised before
+        it). There is no span to close, and inventing one would put a row in the trace for
+        an operation nobody observed. The line is still emitted either way.
         """
         span_id = self._open_spans.pop(id(invocation), None)
-        if span_id is None:
-            return None
-        self.tracer.close_span(
-            invocation.ctx,
-            span_id,
-            ok=result.ok,
-            error_code=result.error.code.value if result.error is not None else None,
-            from_cache=result.from_cache,
-            output_summary=_summarise_output(result),
-            duration_ms=result.duration_ms,
-        )
+        error_code = result.error.code.value if result.error is not None else None
+
+        if span_id is not None and self.tracer is not None:
+            self.tracer.close_span(
+                invocation.ctx,
+                span_id,
+                ok=result.ok,
+                error_code=error_code,
+                from_cache=result.from_cache,
+                output_summary=_summarise_output(result),
+                duration_ms=result.duration_ms,
+            )
+
+        _log_tool_call(invocation, result, span_id=span_id, error_code=error_code)
         return None
 
 
@@ -156,19 +193,67 @@ def install_registry_hooks(
 ) -> None:
     """Give `registry` the behaviour every tool call is meant to have.
 
-    Budget enforcement is unconditional: a wired registry that does not enforce its limits
-    is the failure S4 and T3 exist to prevent. Tracing needs somewhere to write, so it is
-    installed only when a `tracer` is supplied — a caller with no database still gets a
-    fully enforced registry, one that simply keeps no record.
+    Both hooks are now unconditional. Budget enforcement always was: a wired registry that
+    does not enforce its limits is the failure S4 and T3 exist to prevent. `TracingHooks`
+    joined it in T6, because the JSON log line needs no database — `tracer` now decides
+    whether **rows** are written, not whether the call is observed at all. A caller with no
+    database gets a fully enforced registry that keeps no rows and still reports what it
+    did.
 
     Called by `tools/wiring.py`, which is the only place tools and hooks are assembled.
     Calling it twice on one registry would double every span and charge every call twice.
     """
-    if tracer is not None:
-        hooks = TracingHooks(tracer)
-        registry.add_pre_hook(hooks.before)
-        registry.add_post_hook(hooks.after)
+    hooks = TracingHooks(tracer)
+    registry.add_pre_hook(hooks.before)
+    registry.add_post_hook(hooks.after)
     registry.add_pre_hook(enforce_run_budget)
+
+
+def _log_tool_call(
+    invocation: ToolInvocation,
+    result: ToolResult[Any],
+    *,
+    span_id: str | None,
+    error_code: str | None,
+) -> None:
+    """One tool call as one line of JSON (T6, plan section 13).
+
+    Every field is read from what the registry and the tool already produced — the same
+    values the span row is written from. Nothing is measured, timed or counted here, which
+    is what keeps this a second *view* of one observation rather than a second tracing path.
+
+    `ts` is the moment the line was emitted, not a third measurement of the call: the call's
+    own length is `duration_ms`, timed centrally by `ToolRegistry.call`. It exists so a line
+    from a run with no database still has an instant to line it up against a log.
+
+    Wrapped, because a diagnostic must not be able to fail a tool call — the same stance
+    `Tracer._guard` takes over a failed write. Only serialisation is guarded: `ValueError`
+    and `TypeError` are what a value `json` cannot encode raises.
+    """
+    try:
+        payload = json.dumps(
+            {
+                "event": "tool_call",
+                "ts": datetime.now(UTC).isoformat(),
+                "run_id": invocation.ctx.run_id,
+                "span_id": span_id,
+                "tool": invocation.tool.name,
+                "ok": result.ok,
+                "duration_ms": result.duration_ms,
+                "from_cache": result.from_cache,
+                "error_code": error_code,
+            },
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        trace_logger.warning(
+            "could not serialise the trace log line for %s: %s: %s",
+            invocation.tool.name,
+            type(exc).__name__,
+            exc,
+        )
+        return
+    trace_logger.info(payload)
 
 
 def _summarise_input(args: BaseModel) -> str:

@@ -86,17 +86,28 @@ def test_each_build_is_a_fresh_independent_registry(settings: Settings) -> None:
 def test_every_wired_registry_enforces_the_budget_and_traces_only_on_request(
     settings: Settings,
 ) -> None:
-    """Two opposite mistakes, one assertion each (Day 4 T2/T3).
+    """Two opposite mistakes (Day 4 T2/T3, amended by T6).
 
     Budget enforcement is not optional: a wired registry that forgot its pre-hook would let
-    a run spend without limit, and every caller would have to remember to install it.
-    Tracing is the opposite — it needs somewhere to write, so a registry that started
-    writing spans without being given a tracer would be tracing by accident.
+    a run spend without limit, and every caller would have to remember to install it. And a
+    registry must not start **writing spans** it was given nowhere to write — that would be
+    tracing by accident.
+
+    **T6 changed the mechanism that second guarantee rests on, not the guarantee.** The
+    observing hook is now installed unconditionally, because the JSON log line it emits
+    needs no database; what `tracer` decides is whether span *rows* are written. So the
+    assertion moved from "no hook is installed" to "the installed hook holds no tracer",
+    which is the thing that actually keeps rows from being written. That a tracerless call
+    still logs, still pays and mints no span id is pinned behaviourally in
+    `test_registry_hooks.py`.
     """
     untraced = build_tool_registry(settings)
 
-    assert untraced._pre_hooks == [enforce_run_budget]
-    assert untraced._post_hooks == []
+    assert len(untraced._pre_hooks) == 2
+    assert len(untraced._post_hooks) == 1
+    assert untraced._post_hooks[0].__self__.tracer is None, (
+        "a registry given no tracer must observe without writing a single span row"
+    )
 
     traced = build_tool_registry(settings, tracer=object())
 
@@ -105,6 +116,7 @@ def test_every_wired_registry_enforces_the_budget_and_traces_only_on_request(
         "the span must be opened before the budget can short-circuit the call"
     )
     assert len(traced._post_hooks) == 1
+    assert traced._post_hooks[0].__self__.tracer is not None
 
 
 # --- the registry contracts, over the real tool set ------------------------------------------

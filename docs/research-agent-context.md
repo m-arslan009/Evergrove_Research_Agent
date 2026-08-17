@@ -22,11 +22,11 @@ anything.
 | | |
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
-| **Current milestone** | **Day 4 — Memory, hooks and tracing** — T1–T5 done: every tool call is traced and budget-checked by the registry, both memories exist, and a recalled preparation now steers the planner and the report. The renderer and structured log lines have not started |
+| **Current milestone** | **Day 4 — Memory, hooks and tracing** — **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
 | **Day 3** | S1–S14 implemented and live-verified; **not signed off** — two acceptance runs still owed, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
-| **Next task** | **T6 — the trace renderer and structured JSON log lines** (`scripts/show_trace.py`). Two more S14 acceptance runs are still owed for Day 3 sign-off and are independent of it, as is the Day 4 acceptance run that proves run 2 differs from run 1 |
+| **Next task** | **Day 5 — the Supervisor / Researcher / Appraiser split.** Three acceptance runs remain owed and none has been made: two more S14 runs for Day 3 sign-off, and the Day 4 run that proves run 2 differs from run 1 |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -45,7 +45,7 @@ exists. Do not describe or assume any other Day 3 capability as present.
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
 | 3 | Single research agent — the core loop | **S1–S14 done and live-verified; sign-off pending 2 more acceptance runs** |
-| 4 | Memory, hooks, tracing | **Current — T1–T5 done (tracing, hooks, budget enforcement, both memories, memory-aware prompting); JSON log lines and the renderer not started** |
+| 4 | Memory, hooks, tracing | **T1–T6 built and covered offline; acceptance run owed** |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
@@ -121,7 +121,8 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py`, `prep_memory.py` (cross-run preparation memory, T4), `run_memory.py` (the session-memory mirror, T4) |
-| `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call |
+| `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls), `render.py` (the read side, T6 — pure, writes nothing). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call |
+| `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested |
 | `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
 | `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
 | `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
@@ -131,7 +132,7 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `evals/`, `scripts/`, `.mcp.json`.
+**Not present, do not assume:** `evals/`, `.mcp.json`.
 
 ---
 
@@ -1191,7 +1192,9 @@ The repository is authoritative. **Do not "restore" the plan's version of any of
 | `MAX_HOPS = 2` | **`MAX_HOPS = 3`** in `config.py` and `.env.example` | Raised on the user's explicit instruction during Day 3 S1. It is the ceiling: `FocusPreparationReport.hops_used` is `le=3`. Costs one more possible hop's worth of searches and fetches per run |
 | `SearchSourceType` defined in `search/base.py` | Defined in **`schemas/tools.py`**, re-exported unchanged from `search/base.py` | The Supervisor's `source_preference` is the same enum, and `schemas/` may import nothing from the package — so the definition had to move to the layer both sides can see. Every existing importer is unchanged |
 | `schemas/agents.py` reuses `NormalizedSource` for the agent's sources | A distinct `GatheredSource` | Reuse is impossible (`search/normalize.py` imports `schemas`) and wrong: a search hit is not the same thing as a source that was opened and read |
-| Day 4 creates `tracing/context.py` | **`RunContext` stays in `tools/base.py`**, extended in place with the span stack; `tracing/` holds `store.py` and `tracer.py` only | Moving it would touch the registry, every tool, every agent, `service.py` and `main.py` for zero behaviour change. The DDL still goes in `memory/db.py`, whose own docstring specifies exactly that for tracing |
+| Day 4 creates `tracing/context.py` | **`RunContext` stays in `tools/base.py`**, extended in place with the span stack; `tracing/` holds `store.py`, `tracer.py` and `render.py` | Moving it would touch the registry, every tool, every agent, `service.py` and `main.py` for zero behaviour change. The DDL still goes in `memory/db.py`, whose own docstring specifies exactly that for tracing |
+| The post-hook's JSON trace line goes **to stdout** (§13) | Emitted through the **`logging`** module on the `evergrove_agent.trace` logger, and `main.py --trace-log` attaches a handler on **stderr** (T6) | `main.py` documents stdout as the report and nothing else — "a piped or redirected report is byte-identical to a silent run" — so a JSON line printed there would corrupt the one output this project promises to keep clean. §13's own chosen mechanism is "stdlib JSON logging", where the destination is a handler's business; only the destination moved. **Silent by default**: no handler, no lines |
+| The JSON trace line is part of the span write, so it needs a `Tracer` | `TracingHooks` is installed **unconditionally**; `tracer` decides whether span *rows* are written, not whether the call is observed (T6) | The line needs no database, and a run whose SQLite file could not be opened is precisely the run whose record is most worth keeping. With no tracer the line carries `span_id: null` |
 
 ## Reuse and dependency guidance
 
@@ -1240,14 +1243,16 @@ future session damages the project.
 | A span id, and what it nests under | `RunContext.begin_span()` / `end_span()` — never mint an id or derive a parent at a call site |
 | Write a run or a span to the trace | `tracing.Tracer` — `start_run` / `finish_run` / `open_span` / `close_span`; never call `tracing.store` from a hook, and never guard a trace write yourself |
 | Read a run's trace back | `tracing.get_run` / `tracing.get_spans` |
+| Show a run's trace to a person | `scripts/show_trace.py <run_id>`, or `tracing.render_trace(run, spans)` for the lines — never a second tree builder, and never a `SELECT` of your own |
+| Log what a tool call did | nothing to add — `TracingHooks.after` already emits the JSON line for every call. Never log a tool call from inside a tool |
 | The source-type enum | `schemas.SearchSourceType` — one definition, re-exported by `search/base.py` |
 
 **What later days depend on:**
 
-- **Day 4** (memory, hooks, tracing) — **T1–T5 done**: the span stack and `tracing/`, the registry's
-  hook chains, budget enforcement in the pre-hook, both memories with their three tools, and the
-  recalled preparation reaching the planner and the report. **Still to do:** structured JSON log
-  lines and `scripts/show_trace.py` (T6).
+- **Day 4** (memory, hooks, tracing) — **T1–T6 done**: the span stack and `tracing/`, the registry's
+  hook chains, budget enforcement in the pre-hook, both memories with their three tools, the
+  recalled preparation reaching the planner and the report, and the trace renderer plus the JSON
+  log line. **Still to do:** the acceptance run, which is live-model work.
 - **Day 5** splits Day 3's four functions into `agents/supervisor.py`, `agents/researcher.py`,
   `agents/appraiser.py`. **This is why Day 3 must be written as four separately-prompted functions
   exchanging Pydantic models** — Day 5 then becomes a file move, not a rewrite. Workers reuse the
@@ -1432,15 +1437,22 @@ cached row — that, not a leak, is why `search_budget` runs slightly ahead of t
   bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
   the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
-**Missing (later days):** structured JSON logging, `scripts/show_trace.py`,
-`prep_memory`/`run_memory`, `recall_previous_preparation`, `save_preparation`, memory-aware
-prompting (Day 4 T4 onward) · the supervisor/worker split (Day 5) · the MCP server, client and
-`.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7).
+**Missing (later days):** the supervisor/worker split (Day 5) · the MCP server, client and
+`.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7). Everything
+Day 4 specified is now built.
 
 **Only *tool* spans exist so far.** T2 wired the run header and one span per tool call. There are
 no `agent` or `llm` spans yet, so a trace is currently one flat level of tool calls under the run
 — the parenting is already derived from `RunContext`'s stack, so those spans nest correctly the
-day something opens them, with no change to `tools/hooks.py`.
+day something opens them, with no change to `tools/hooks.py`. **T6's renderer is already proven at
+depth** against synthesised multi-level spans, so Day 5's agent spans need no renderer change
+either.
+
+**No live run has been rendered.** `scripts/show_trace.py` and the JSON log line are proven
+against synthesised rows and against the real registry with the fixture search backend — every
+path offline. What has never happened is reading back a genuine 9-15 minute Ollama run, which is
+part of the owed Day 4 acceptance run. The renderer reads what `store.get_spans` returns and
+nothing else, so the risk is display detail rather than correctness.
 
 **`RunState.validation_errors` is still unsurfaced.** S11 handed it to Day 4 tracing and neither
 T1 nor T2 took it: a corrected-then-successful run needs a *finalisation* span to carry it, and
@@ -1542,7 +1554,7 @@ budget-checked.
 | **T3** | **Budget enforcement into the pre-hook** — `_TOOL_BUDGET` + `_claim_for_tool` lifted out of `single_agent.py` into `enforce_run_budget`; a refused `claim` becomes `ToolResult(BUDGET_EXCEEDED)` and the tool never runs. Removed the over-count on malformed arguments, and on a tool the step was not offered | `tools/hooks.py`, `agents/single_agent.py` | **Done** |
 | **T4** | **Persistent memory** — `prep_memory`, `run_memory`, `recall_previous_preparation`, `save_preparation`, task-key normalisation, the 30-day recall window | `memory/`, `tools/`, `wiring.py` | **Done** |
 | **T5** | **Memory-aware agent integration** — one recall in `run_agent` seeds `RunState.previous`; prior goal, `topics_covered` and `topics_deferred` reach **both** the planner (a new `plan.md` placeholder) and the report (an extra `finalise()` message, since `finalise.md` is frozen). Guidance, not enforcement; `source_urls` never rendered; nothing recalled means the pre-T5 prompts, unchanged | `agents/single_agent.py`, `agents/prompt_context.py`, `llm/prompts/plan.md`, `schemas/agents.py` | **Done** |
-| **T6** | **Trace renderer + JSON log lines** — `scripts/show_trace.py <run_id>` prints §13's tree | `scripts/`, `tracing/` | Not started |
+| **T6** | **Trace renderer + JSON log lines** — `tracing/render.py` (pure: rows in, lines out) and `scripts/show_trace.py <run_id>`, which prints §13's tree. One JSON line per tool call from `TracingHooks.after`, from the same values as the span row; the hook is now installed unconditionally and `main.py --trace-log` attaches the handler | `tracing/render.py`, `scripts/show_trace.py`, `tools/hooks.py`, `main.py` | **Done** |
 
 **Acceptance criteria (plan §24):** zero tool calls outside the registry · the trace tree renders with
 correct nesting and timings · run 2 covers different topics from run 1 and says so in

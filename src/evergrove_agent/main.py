@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet",
         action="store_true",
         help="Suppress the progress line. The report itself is unaffected.",
+    )
+    parser.add_argument(
+        "--trace-log",
+        dest="trace_log",
+        action="store_true",
+        help="Print one JSON line per tool call to stderr as the run makes it. "
+        "The same facts the trace records; see scripts/show_trace.py for the tree.",
     )
     parser.add_argument("--indent", type=int, default=2, help="JSON indent. 0 for one line.")
     return parser
@@ -238,8 +246,33 @@ async def progress(ctx: RunContext, *, enabled: bool, stream: TextIO | None = No
 # --- running one preparation --------------------------------------------------------------
 
 
+def enable_trace_log(stream: TextIO | None = None) -> None:
+    """Send the hooks' JSON trace lines to stderr, one per tool call.
+
+    **stderr, not stdout.** The report is the only thing this CLI writes to stdout, and the
+    progress line already lives on stderr for the documented reason that a redirected report
+    must be byte-identical to a silent run. Plan section 13 says "to stdout"; that predates
+    the shipped CLI and would corrupt the report, so the plan's own choice of mechanism —
+    "stdlib JSON logging" — is honoured instead and the destination is set here.
+
+    A bare `%(message)s` formatter, because the message already *is* the record: prefixing a
+    JSON line with a level and a logger name would make it unparseable by the tools that
+    read JSON lines. `propagate = False` keeps these off the root logger, so enabling this
+    cannot start duplicating them through a handler an embedder installed.
+    """
+    handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger("evergrove_agent.trace")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
 async def run(args: argparse.Namespace) -> int:
     settings = get_settings()
+
+    if args.trace_log:
+        enable_trace_log()
 
     if args.provider is not None:
         for role in ("supervisor", "researcher", "appraiser"):
