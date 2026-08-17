@@ -39,6 +39,7 @@ from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm.base import ToolSpec
 from evergrove_agent.schemas import (
     GatheredSource,
+    PreviousPreparation,
     ResearchAssignment,
     RunState,
     ToolFailure,
@@ -97,6 +98,44 @@ def render_progress(state: RunState, *, hops_remaining: int) -> str:
             lines += [f"Suggested follow-up: {verdict.requested_followup}"]
 
     return "\n".join(lines)
+
+
+def render_previous_preparation(previous: PreviousPreparation | None) -> str:
+    """`plan.md`'s `previous_preparation` — what an earlier session already did (T5).
+
+    **Empty when nothing was recalled**, which is the ordinary case and must stay
+    byte-identical to the pre-T5 prompt in everything that matters — the same "nothing to
+    say means say nothing" shape `render_attachment` already uses for a run with no
+    attachment. A first run, a task nobody prepared, an aged-out row and a memory outage all
+    arrive here as `None` and are answered the same way.
+
+    The planner is told what was covered and what was deferred so a second session does not
+    spend a hop re-establishing settled material. It is **not** told to write anything into
+    the report: `plan.md` decides one thing only, and the continuation wording the report
+    needs belongs to `render_continuation_note`.
+
+    `PreviousPreparation.source_urls` is deliberately absent from both blocks — see
+    `_previous_block`.
+    """
+    if previous is None:
+        return ""
+    return "\n".join([*_previous_block(previous), "", _PLANNER_CONTINUATION])
+
+
+_PLANNER_CONTINUATION = (
+    "This session continues that work. Do not research anything the covered list already "
+    "settled, and do not repeat its goal. Prefer a question that opens one of the deferred "
+    "topics when one of them still fits this task and this session length; when none of "
+    "them does, choose whatever genuinely comes next instead — but never start again from "
+    "material that was already covered."
+)
+"""The planner's half of the continuation instruction.
+
+Guidance, not a rule: the deferred topics are where a continuation usually belongs, and the
+model is told to say so — but a topic that no longer fits the task or the session is a worse
+next step than one the model picks itself. Nothing in code filters the decision, which is why
+this is phrased as a preference with a stated escape.
+"""
 
 
 # --- research_step.md ------------------------------------------------------------------
@@ -428,7 +467,73 @@ def render_stop_reason(reason: str, *, exhausted: Sequence[str] = ()) -> str:
     return sentence + "."
 
 
+def render_continuation_note(previous: PreviousPreparation | None) -> str:
+    """The continuation instruction `finalise()` sends as an extra `Message` (T5).
+
+    **An extra message, never a placeholder.** `finalise.md`'s five placeholders are frozen —
+    `main.py`'s `--no-research` path passes exactly those, and a sixth is a `KeyError` on the
+    one shipped path — so this travels the way `render_stop_reason` already does. Empty when
+    nothing was recalled, and then no message is appended at all.
+
+    This is the stage that writes `interpreted_goal` and `topics_to_cover`, so it gets the
+    half of the instruction the planner has no business hearing: acknowledge the
+    continuation, and keep settled material out of the new plan. Both remain requests. The
+    report is not rewritten afterwards — `_apply_bookkeeping` overwrites provenance, never a
+    field the model was asked to think about — because a continuation the model disagreed
+    with is a decision to read in the trace, not a bug to paper over.
+    """
+    if previous is None:
+        return ""
+    return "\n".join([*_previous_block(previous), "", _FINALISE_CONTINUATION])
+
+
+_FINALISE_CONTINUATION = (
+    "This session continues that work. Say so plainly in `interpreted_goal`, naming what is "
+    "being continued, and keep everything in the covered list out of `topics_to_cover` — "
+    "listing it under `topics_to_skip` instead is the honest way to show it was already "
+    "done. A deferred topic is the natural place to start when it still fits this task and "
+    "this session length; when none of them does, plan whatever genuinely comes next "
+    "instead."
+)
+"""The report's half of the continuation instruction.
+
+It names `interpreted_goal` explicitly because that is the field a user actually reads to
+learn whether anything carried over, and it is the Day 4 acceptance criterion's own wording:
+*run 2 covers different topics from run 1 and says so in `interpreted_goal`*.
+"""
+
+
 # --- shared shaping ---------------------------------------------------------------------
+
+
+def _previous_block(previous: PreviousPreparation) -> list[str]:
+    """A recalled preparation as facts, identically for both stages that see one.
+
+    Shared for the same reason `_source_block` is: two prompts describing one thing in two
+    shapes teaches a model two ways to read it. Only the *instruction* differs between the
+    planner and the report, and each renderer supplies its own.
+
+    **`source_urls` is deliberately never rendered.** `PreviousPreparation` calls it "context,
+    never evidence": a citation must be grounded in what *this* run gathered (S9), so putting
+    yesterday's URLs in front of the stage that writes `resources` would invite a citation the
+    grounding check then has to reject — spending attempts on the retry ladder to undo
+    something we volunteered. What a continuation needs is the topics, and it gets them.
+
+    No clipping here: every field is bounded by the schema itself (a 400-character goal, a
+    300-character objective, at most 8 covered and 10 deferred topics), so this block cannot
+    grow the way an excerpt can.
+    """
+    lines = [f'An earlier session already prepared this task, as "{previous.original_task}".']
+    if previous.interpreted_goal:
+        lines.append(f"Its goal was: {previous.interpreted_goal}")
+    if previous.session_objective:
+        lines.append(f"What it set out to achieve: {previous.session_objective}")
+
+    lines += ["", "Topics that session already covered:"]
+    lines += _bullets(previous.topics_covered or ["none were recorded"])
+    lines += ["", "Topics it deliberately left for later:"]
+    lines += _bullets(previous.topics_deferred or ["none were recorded"])
+    return lines
 
 
 def _source_block(source: GatheredSource, *, body: str) -> str:

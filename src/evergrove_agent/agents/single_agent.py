@@ -31,6 +31,20 @@ call and tool call by the ledger.
 `validate_report` against the run's own gathered URLs and asks again, up to
 `MAX_OUTPUT_RETRIES` times, quoting back exactly what was wrong. A run that cannot produce a
 valid report raises `PreparationFailed`; it never returns an invalid one.
+
+**Memory is written best-effort, and read exactly once (Day 4 T4/T5).** Three registry calls
+sit in this loop. Two write: one mirrors each finished hop into `run_memory`, one saves the
+validated report to `prep_memory`. Neither changes a decision. The third *reads* — a single
+`recall_previous_preparation` before the loop starts, whose answer rides on `RunState.previous`
+into the planner's prompt and into `finalise`'s, so a second session for a task continues the
+first instead of repeating it. All three go through the registry, so all three are traced and
+none can raise; **a memory outage costs a row or a continuation, never a run**, and a run with
+nothing to recall behaves exactly as it did before T5.
+
+**Cross-run and within-run memory stay separate.** `RunState.previous` is what an *earlier*
+run prepared; `RunState`'s findings, `used_queries` and `evidence_urls` are what *this* run has
+seen, and they are still the only session memory the loop runs on. Nothing here reads a
+decision back out of SQLite.
 """
 
 from __future__ import annotations
@@ -38,7 +52,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -48,6 +62,8 @@ from evergrove_agent.agents.prompt_context import (
     render_already_covered,
     render_attachment,
     render_available_tools,
+    render_continuation_note,
+    render_previous_preparation,
     render_progress,
     render_research_context,
     render_sources,
@@ -65,25 +81,30 @@ from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm import LLMError, LLMProvider, Message, build_provider
 from evergrove_agent.llm.base import ToolCall
 from evergrove_agent.llm.prompts import render_prompt
+from evergrove_agent.memory.run_memory import entries_from
 from evergrove_agent.schemas import (
     AppraisalRequest,
     AppraisalVerdict,
-    ErrorCode,
     FocusPreparationReport,
     GatheredSource,
+    PreviousPreparation,
     ResearchAction,
     ResearchAssignment,
     ResearchFindings,
     RunState,
     SupervisorDecision,
     TaskContext,
-    ToolError,
     ToolFailure,
-    ToolResult,
 )
 from evergrove_agent.search.normalize import canonicalize_url
-from evergrove_agent.tools.base import BudgetKind, RunBudget, RunContext
+from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.fetch_url import FetchUrlOutput
+from evergrove_agent.tools.memory_tools import (
+    RecallInput,
+    RecallOutput,
+    RecordRunMemoryInput,
+    SavePreparationInput,
+)
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tools.validate_report import ReportIssue, validate_report
 from evergrove_agent.tools.web_search import WebSearchOutput
@@ -165,17 +186,6 @@ The same reservation applied twice. Without it a hop can gather evidence and the
 itself unjudged, which is the one outcome that wastes both the searches and the reads it
 just spent."""
 
-_TOOL_BUDGET: dict[str, BudgetKind] = {
-    "web_search": "search",
-    "fetch_url": "fetch",
-}
-"""Which tools cost which counter. `read_document` reads local disk and costs neither.
-
-This mapping plus `_claim_for_tool` below is the whole of the loop's tool-budget
-enforcement, deliberately in one place: Day 4 lifts exactly these two into a registry
-pre-hook, and a lift is only cheap while it is one piece."""
-
-
 def _claim_reasoning_call(budget: RunBudget, *, reserve: int) -> bool:
     """Spend one model call on a non-final stage, keeping `reserve` calls back.
 
@@ -187,51 +197,6 @@ def _claim_reasoning_call(budget: RunBudget, *, reserve: int) -> bool:
     if budget.remaining("model_call") <= reserve:
         return False
     return budget.claim("model_call")
-
-
-def _claim_for_tool(call: ToolCall, budget: RunBudget) -> ToolResult[Any] | None:
-    """Pay for a tool call before it runs, or refuse it as a result the model can read.
-
-    `None` means paid — the caller dispatches. A `ToolResult` means refused, and the tool is
-    never reached, which is what makes the count honest: claiming after the call would let a
-    timed-out call go uncounted.
-
-    This is the `False` → `ToolResult(BUDGET_EXCEEDED)` lift that S4's docstring describes,
-    written here rather than in `RunBudget` so the ledger stays free of `ErrorCode`.
-
-    A tool with no counter (`read_document`) is free. So is a name the model invented: it is
-    not in the mapping, so it costs nothing and `dispatch` refuses it a moment later — a
-    guessed name must not be able to drain a budget.
-
-    **Known over-count, resolved by Day 4.** A correctly named tool whose *arguments* are
-    malformed is charged here, because the claim has to come before the call and only the
-    registry can judge arguments. Day 4's pre-hook runs after `ToolRegistry.call` has
-    validated them, so moving this there stops the over-count for free — one more reason the
-    mapping and the lift stay in one piece. Over-counting is the safe direction meanwhile,
-    and `render_tool_outcome` hands the model the offending field so its next turn recovers.
-    """
-    kind = _TOOL_BUDGET.get(call.name)
-    if kind is None or budget.claim(kind):
-        return None
-    return ToolResult(
-        ok=False,
-        error=ToolError(
-            code=ErrorCode.BUDGET_EXCEEDED,
-            message=(
-                f"this run has no {_BUDGET_NOUNS[kind]} left, so {call.name} was not run. "
-                "Work with what you already have."
-            ),
-            retryable=False,
-        ),
-        duration_ms=0,
-    )
-
-
-_BUDGET_NOUNS: dict[BudgetKind, str] = {
-    "search": "searches",
-    "fetch": "page reads",
-    "model_call": "model calls",
-}
 
 
 # --- the providers the four stages use ----------------------------------------------------
@@ -374,6 +339,12 @@ async def decide_next_step(
     the whole of what stops hop 2 repeating hop 1 — the spent queries, the gathered sources,
     and the appraiser's follow-up.
 
+    **Two memories reach this stage, and they answer different questions (T5).**
+    `render_progress` says what *this* run has already done; `render_previous_preparation`
+    says what an *earlier* run prepared, so a hop is not spent re-establishing material a
+    previous session settled. The second block is empty whenever nothing was recalled, which
+    is what keeps a fresh task's prompt the one it has always been.
+
     `None` when the budget refused or the model drifted twice; the loop finalises.
     """
     settings = settings or get_settings()
@@ -385,6 +356,7 @@ async def decide_next_step(
         progress=render_progress(
             state, hops_remaining=ctx.budget.hops_remaining(state.hop)
         ),
+        previous_preparation=render_previous_preparation(state.previous),
     )
     decision = await _decode(
         provider,
@@ -494,12 +466,9 @@ async def run_research_step(
 
         outcomes: list[ToolCallOutcome] = []
         for call in calls:
-            refusal = _claim_for_tool(call, budget)
-            result = (
-                refusal
-                if refusal is not None
-                else await dispatch(call, registry=registry, ctx=ctx, allowed=allowed)
-            )
+            # The registry's pre-hook claims the counter and refuses the call when the run
+            # cannot afford it (Day 4 T3), so the loop no longer pays for tools itself.
+            result = await dispatch(call, registry=registry, ctx=ctx, allowed=allowed)
             outcome = ToolCallOutcome(call=call, result=result)
             outcomes.append(outcome)
             _absorb(outcome, assignment, sources, queries, failures, settings)
@@ -699,6 +668,12 @@ async def finalise(
     into `unknowns` in its own words, and once as bookkeeping, because a model may ignore the
     message and a degraded run must never read like a confident one.
 
+    **A recalled preparation travels once, and only as a request (T5).** It reaches the model
+    as a further extra message and is never enforced afterwards: `_apply_bookkeeping`
+    overwrites provenance, never `interpreted_goal` or `topics_to_cover`. A continuation the
+    model declined is a decision worth reading in the trace, and a report we rewrote would
+    hide it — the same reason `resources` is left exactly as the model wrote it.
+
     Raises `PreparationFailed` rather than returning a partial report: when the ledger
     refuses an attempt, when the alternate provider cannot be reached, and when every attempt
     was spent without a valid report.
@@ -722,6 +697,12 @@ async def finalise(
     ]
     if note:
         opening.append(Message(role="user", content=note))
+    # The same extra-message mechanism, for the same reason: `finalise.md`'s five
+    # placeholders are frozen. It rides in the *opening* turns so every rung of the retry
+    # ladder argues with a model that was told about the earlier session (T5).
+    continuation = render_continuation_note(state.previous)
+    if continuation:
+        opening.append(Message(role="user", content=continuation))
 
     messages = list(opening)
     attempts = settings.max_output_retries
@@ -942,12 +923,22 @@ async def run_agent(
     Every exit lands on the same `finalise` call, carrying a `StopReason`. There is no path
     that returns nothing, no path that loops without a bound, and no path that lets a
     limitation go unmentioned in the report.
+
+    **Memory is recalled once, here, before anything is decided (T5).** One lookup for the
+    whole run: the planner and the report must not be able to disagree about what the last
+    session did, and a per-stage lookup would also charge a 9-15 minute run several database
+    reads to answer one question. It happens before the first `decide_next_step` because the
+    very first decision — what this session is even about — is the one a continuation changes
+    most.
     """
     settings = settings or get_settings()
     providers = providers or AgentProviders.from_settings(settings)
     ctx = ctx or RunContext(budget=RunBudget.from_settings(settings))
     budget = ctx.budget
-    state = RunState(task=task)
+    state = RunState(
+        task=task,
+        previous=await _recall_previous_preparation(registry, ctx, task, settings),
+    )
     stop: StopReason
 
     while True:
@@ -993,10 +984,18 @@ async def run_agent(
             ctx=ctx,
             settings=settings,
         )
+        if verdict is not None:
+            state.verdict = verdict
+
+        # The hop is mirrored whether or not it was judged: a hop that gathered evidence and
+        # then lost its appraiser is exactly the run someone will want the history of.
+        await _mirror_session_memory(
+            registry, ctx, decision=decision, findings=findings, verdict=verdict
+        )
+
         if verdict is None:
             stop = "appraiser_unavailable"
             break
-        state.verdict = verdict
 
         if verdict.sufficient:
             stop = "sufficient"
@@ -1008,7 +1007,7 @@ async def run_agent(
             stop = "no_followup"
             break
 
-    return await finalise(
+    report = await finalise(
         state,
         provider=providers.supervisor,
         ctx=ctx,
@@ -1016,6 +1015,129 @@ async def run_agent(
         settings=settings,
         fallback_provider=providers.fallback,
     )
+    # The one place a validated report exists: `finalise` returns one or raises, so this line
+    # is what makes "an invalid preparation is never remembered" structural rather than a rule
+    # somebody has to follow.
+    await _remember_preparation(registry, ctx, report)
+    return report
+
+
+async def _recall_previous_preparation(
+    registry: ToolRegistry,
+    ctx: RunContext,
+    task: TaskContext,
+    settings: Settings,
+) -> PreviousPreparation | None:
+    """What an earlier run prepared for this task, or `None` — and `None` is never a failure.
+
+    **The one lookup path.** It goes through the registered tool rather than
+    `prep_memory.recall_previous_preparation`, for the same reason the writes do: the tool is
+    the guard that turns a `sqlite3.Error` into a `ToolResult`, and the registry is what makes
+    the call a span in the trace. A `SELECT` of our own here would be a second path that has
+    to re-implement both.
+
+    **Four outcomes, one answer.** A miss (`found=False`), a storage failure (`ok=False`
+    carrying `UNKNOWN`), a payload of an unexpected type, and no recent row all degrade to
+    `None`, and `None` means the run proceeds exactly as it did before this existed. That is
+    the whole guarantee memory rests on: `registry.call` never raises and the tool never
+    raises, so there is no path from a broken database to a failed run.
+
+    `found` is checked rather than inferred from `previous is not None`: the tool's contract
+    makes `found` the field that distinguishes "nothing recent matches" from a failure, and
+    reading the payload around it would quietly re-couple the two.
+
+    `max_age_days` is passed explicitly so the *run's* settings decide the recall window.
+    Leaving it `None` is documented as "use `MEMORY_RECALL_MAX_AGE_DAYS`", but the default is
+    resolved inside `prep_memory` through the process-wide `get_settings()`, which ignores a
+    `settings` override this loop was handed.
+
+    Costs no budget: `TOOL_BUDGET` has no entry for a local SQLite read, and a name absent
+    from that map is free.
+    """
+    result = await registry.call(
+        "recall_previous_preparation",
+        RecallInput(
+            task_title=task.task_title,
+            max_age_days=settings.memory_recall_max_age_days,
+        ),
+        ctx,
+    )
+    if not result.ok or not isinstance(result.data, RecallOutput):
+        return None
+    return result.data.previous if result.data.found else None
+
+
+async def _mirror_session_memory(
+    registry: ToolRegistry,
+    ctx: RunContext,
+    *,
+    decision: SupervisorDecision,
+    findings: ResearchFindings,
+    verdict: AppraisalVerdict | None,
+) -> None:
+    """Write one finished hop into `run_memory`, and carry on regardless of the outcome.
+
+    **`RunState` remains the session memory this loop runs on.** It already carries the goal,
+    the findings and the seen queries and URLs from hop to hop, and nothing here is ever read
+    back to make a decision — reading state out of SQLite would be the second, competing state
+    mechanism `memory/run_memory.py` exists not to be. This is durability: `RunState` dies with
+    the process, and a nine-to-fifteen-minute run deserves to leave a record of how it got
+    where it did.
+
+    Best-effort by construction. `registry.call` never raises and the memory tool turns a
+    storage failure into a `ToolResult`, so the result is deliberately not inspected: there is
+    nothing this loop could usefully do about a mirror that did not write, and stopping a run
+    over it would be the exact failure the tool's guard exists to prevent.
+    """
+    await registry.call(
+        "record_run_memory",
+        RecordRunMemoryInput(
+            hop=findings.hop,
+            entries=entries_from(
+                goal=findings.research_question,
+                decision=f"{decision.action}: {decision.reasoning}",
+                findings=findings.notes or f"{len(findings.sources)} sources gathered",
+                appraisal=_appraisal_line(verdict),
+                queries=findings.queries_used,
+                urls=[source.url for source in findings.sources],
+            ),
+        ),
+        ctx,
+    )
+
+
+def _appraisal_line(verdict: AppraisalVerdict | None) -> str:
+    """The verdict as one remembered line, or `""` when the hop was never judged.
+
+    Empty means `entries_from` records no `appraisal` row at all, which is the honest shape:
+    a missing row reads as "this hop was not judged", where a row saying nothing would read as
+    a judgement that found nothing.
+    """
+    if verdict is None:
+        return ""
+    line = f"sufficient={verdict.sufficient}: {verdict.reasoning}"
+    if verdict.missing_information:
+        line += f" | missing: {'; '.join(verdict.missing_information)}"
+    if verdict.requested_followup:
+        line += f" | follow-up: {verdict.requested_followup}"
+    return line
+
+
+async def _remember_preparation(
+    registry: ToolRegistry, ctx: RunContext, report: FocusPreparationReport
+) -> None:
+    """Store the finished preparation so a later session can continue it.
+
+    Called with the report `finalise` returned, which is the only report that exists: every
+    other outcome is a `PreparationFailed`. That is why no `validated=` flag is passed and no
+    grounding is re-checked here — the guarantee comes from *where* this is called, not from
+    something the caller promises.
+
+    Best-effort, for the same reason as the mirror above: a run that produced a valid report
+    has already succeeded, and failing it because the report could not be filed away would
+    throw away the fifteen minutes that produced it.
+    """
+    await registry.call("save_preparation", SavePreparationInput(report=report), ctx)
 
 
 def _assign(

@@ -19,6 +19,7 @@ database is involved.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,8 @@ import pytest
 
 from evergrove_agent.agents.prompt_context import (
     render_already_covered,
+    render_continuation_note,
+    render_previous_preparation,
     render_progress,
     render_research_context,
     render_sources,
@@ -39,6 +42,7 @@ from evergrove_agent.schemas import (
     AppraisalVerdict,
     ErrorCode,
     GatheredSource,
+    PreviousPreparation,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -58,6 +62,7 @@ PROMPT_PLACEHOLDERS: dict[str, dict[str, Any]] = {
         "task_description": "DESCRIPTION-SENTINEL",
         "session_minutes": 25,
         "progress": "PROGRESS-SENTINEL",
+        "previous_preparation": "PREVIOUS-SENTINEL",
     },
     "research_step": {
         "research_question": "QUESTION-SENTINEL",
@@ -85,6 +90,22 @@ PROMPT_PLACEHOLDERS: dict[str, dict[str, Any]] = {
 QUESTION = "Which PostgreSQL index type suits equality lookups?"
 DOCS_URL = "https://www.postgresql.org/docs/current/indexes.html"
 BLOG_URL = "https://example.com/indexing-explained"
+PREVIOUS_URL = "https://www.postgresql.org/docs/current/indexes-intro.html"
+
+
+def _previous_preparation() -> PreviousPreparation:
+    """What an earlier run left behind, as `prep_memory` rebuilds it."""
+    return PreviousPreparation(
+        task_key="indexing postgresql",
+        original_task="Learn PostgreSQL indexing",
+        interpreted_goal="Understand what a B-tree index does to a lookup",
+        session_objective="Read EXPLAIN and recognise an index scan",
+        topics_covered=["What an index is", "B-tree basics"],
+        topics_deferred=["Partial indexes", "GIN and GiST"],
+        source_urls=[PREVIOUS_URL],
+        run_id="run_earlier",
+        created_at=datetime(2026, 8, 14, 9, 0, tzinfo=timezone.utc),
+    )
 
 
 def _read_source(excerpt: str = "B-tree indexes answer equality and range lookups.") -> GatheredSource:
@@ -216,6 +237,40 @@ def test_already_covered_lists_both_spent_queries_and_opened_pages() -> None:
 
     assert "postgresql index types" in text
     assert DOCS_URL in text
+
+
+@pytest.mark.parametrize(
+    "render", [render_previous_preparation, render_continuation_note]
+)
+def test_a_recalled_preparation_carries_its_topics_and_never_its_urls(
+    render: Callable[[PreviousPreparation | None], str],
+) -> None:
+    """Both continuation blocks, and the three things either of them can get wrong.
+
+    *Nothing recalled renders nothing.* A block that said anything for a run with no memory
+    would change the opening prompt of every first session in the project — the regression
+    with the widest blast radius here, and the one no loop test would attribute to this
+    module.
+
+    *The topics survive the trip.* `topics_covered` is what a continuation must not redo and
+    `topics_deferred` is where it should usually start; a block that named neither would leave
+    the whole feature looking wired while changing nothing a model can act on.
+
+    *`source_urls` never appears.* They are context, never evidence: showing yesterday's URLs
+    to the stage that writes `resources` invites a citation S9's grounding check must then
+    reject, spending finalise attempts undoing something we volunteered.
+
+    Wording is deliberately not asserted — it is the part of a prompt that stays safe to
+    change (S3), so what is pinned is the memory's own content reaching the text.
+    """
+    assert render(None) == "", "a run with nothing recalled must read exactly as it did"
+
+    text = render(_previous_preparation())
+
+    assert "Understand what a B-tree index does to a lookup" in text
+    assert "B-tree basics" in text, "covered topics are what a continuation must not redo"
+    assert "Partial indexes" in text, "deferred topics are where it should usually start"
+    assert PREVIOUS_URL not in text, "a previous run's URLs are context, never evidence"
 
 
 def test_a_tool_outcome_reaches_the_model_readable_and_bounded() -> None:

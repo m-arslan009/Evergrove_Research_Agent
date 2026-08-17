@@ -41,7 +41,13 @@ from evergrove_agent.agents.single_agent import (
 )
 from evergrove_agent.config import Settings
 from evergrove_agent.llm import FakeProvider
-from evergrove_agent.schemas import ResearchAction, RunState, TaskContext
+from evergrove_agent.memory import db, prep_memory, run_memory
+from evergrove_agent.schemas import (
+    FocusPreparationReport,
+    ResearchAction,
+    RunState,
+    TaskContext,
+)
 from evergrove_agent.tools import RunBudget, RunContext, ToolRegistry
 from evergrove_agent.tools.wiring import build_tool_registry
 
@@ -96,11 +102,32 @@ def recorded_search(settings: Settings) -> None:
     )
 
 
+def recording_tool(registry: ToolRegistry, name: str) -> list[Any]:
+    """A wired tool that also reports every call that reached the tool *itself*.
+
+    Since Day 4 T3 the budget is enforced by the registry's own pre-hook, so a refused call
+    reaches `ToolRegistry.call` and is stopped inside it. Registry entry therefore no
+    longer distinguishes an enforced budget from a decorative one — tool execution does,
+    and that is what this observes.
+    """
+    tool = registry.get(name)
+    assert tool is not None, f"{name} is not registered"
+    executed: list[Any] = []
+    inner = tool.run
+
+    async def recording(args, ctx):
+        executed.append(args)
+        return await inner(args, ctx)
+
+    tool.run = recording
+    return executed
+
+
 def recording_registry(settings: Settings) -> tuple[ToolRegistry, list[str]]:
     """A wired registry that also reports every name that reached `call`.
 
-    The list is how a test proves a call was stopped *before* the registry — the only
-    difference between a budget that is enforced and one that is merely reported.
+    The list is how a test proves a call was stopped *before* the registry — which, since
+    the budget moved into the registry, means the menu guard rather than the ledger.
     """
     registry = build_tool_registry(settings)
     seen: list[str] = []
@@ -349,14 +376,16 @@ async def test_a_report_is_still_affordable_after_a_greedy_loop(
 
 
 @respx.mock
-async def test_a_refused_budget_stops_a_tool_before_the_registry(
+async def test_a_refused_budget_stops_a_tool_before_it_runs(
     tmp_path: Path, scripted_report: Callable[..., str]
 ) -> None:
     """A budget that is only reported is not a budget.
 
-    The claim happens before dispatch precisely so an exhausted counter cannot be spent
-    anyway; this proves the second search never reached the registry, rather than reaching it
-    and being counted twice.
+    The claim happens before the tool runs precisely so an exhausted counter cannot be spent
+    anyway; this proves the second search never reached the search tool, rather than reaching
+    it and being counted twice. Both calls now reach `ToolRegistry.call` — that is where the
+    refusal lives since Day 4 T3 — so the assertion is about execution, not entry, and the
+    loop carries on to a report either way.
     """
     settings = Settings(
         _env_file=None,
@@ -366,6 +395,7 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
     )
     recorded_search(settings)
     registry, seen = recording_registry(settings)
+    executed = recording_tool(registry, "web_search")
     script = [
         plan("RESEARCH", "q"),
         tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
@@ -377,7 +407,8 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
 
     report, _, ctx = await drive(script, settings, registry=registry)
 
-    assert seen.count("web_search") == 1
+    assert len(executed) == 1, "the second search was refused before the tool ran"
+    assert seen.count("web_search") == 2, "the refusal happens inside the registry now"
     assert ctx.budget.remaining("search") == 0
     assert report is not None
 
@@ -759,6 +790,12 @@ async def test_a_retry_rewrites_the_report_without_researching_again(
     The cheapest possible guard against the most expensive mistake available here: a ladder
     that re-entered the loop would spend SerpAPI quota — 250 calls a month, for the whole
     project — correcting a paragraph. The evidence is fixed the moment finalisation starts.
+
+    Filtered to the two tools that reach the outside world rather than asserted over the whole
+    call list, because Day 4 T4 added local memory writes to a finished run. What must not
+    happen is a *search or a fetch* during finalisation; a SQLite write costs no quota, no
+    network and no new evidence, and folding both concerns into one list equality would make
+    this guard fail for reasons that have nothing to do with research.
     """
     recorded_search(offline_settings)
     serve_docs_page()
@@ -770,7 +807,10 @@ async def test_a_retry_rewrites_the_report_without_researching_again(
 
     _, _, ctx = await drive(script, offline_settings, registry=registry)
 
-    assert seen == ["web_search", "fetch_url"]
+    assert [name for name in seen if name in {"web_search", "fetch_url"}] == [
+        "web_search",
+        "fetch_url",
+    ]
     assert ctx.budget.remaining("search") == offline_settings.max_search_calls - 1
     assert ctx.budget.remaining("fetch") == offline_settings.max_fetch_calls - 1
 
@@ -816,3 +856,238 @@ async def test_a_later_drift_does_not_report_the_earlier_verdict(
     assert "did not fit" in str(raised.value), (
         "the message must name the failure that actually ended the ladder"
     )
+
+
+# --- memory: written by the loop, never consulted by it (Day 4 T4) --------------------------
+#
+# `test_memory.py` proves the storage and `test_memory_tools.py` proves the guards. What only
+# exists once the loop is wired to them is *when* a write happens: after validation and never
+# before it, once per finished hop, and never at the cost of the run.
+
+
+@respx.mock
+async def test_a_validated_run_remembers_itself(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """A run that produced a valid report leaves both kinds of memory behind.
+
+    Two claims in one run because they are one wiring: the finished preparation is findable
+    under a reworded title, and the hop that produced it left its own history. Catches the
+    wire being absent altogether — every unit below it can pass while `run_agent` never calls
+    either tool, and the only symptom would be a second session that starts from scratch.
+    """
+    recorded_search(offline_settings)
+    script = [
+        plan("RESEARCH", "what does a B-tree index do"),
+        tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
+        "notes",
+        verdict(True),
+        scripted_report(),
+    ]
+
+    report, _, ctx = await drive(script, offline_settings)
+
+    with db.open_database(offline_settings.db_path) as connection:
+        previous = prep_memory.recall_previous_preparation(
+            connection, task_title="Continue postgresql indexing"
+        )
+        remembered = run_memory.get_run_memory(connection, ctx.run_id)
+        queries = run_memory.seen_queries(connection, ctx.run_id)
+
+    assert previous is not None
+    assert previous.run_id == report.run_id
+    assert previous.topics_covered == report.topics_to_cover
+    assert previous.topics_deferred == report.topics_to_skip
+
+    assert {row.kind for row in remembered} == {
+        "goal",
+        "decision",
+        "finding",
+        "appraisal",
+        "seen_query",
+        "seen_url",
+    }
+    assert {row.hop for row in remembered} == {1}
+    assert queries == {QUERY}, "the hop's own query must be recoverable from disk"
+
+
+@respx.mock
+async def test_a_run_that_never_produced_a_valid_report_remembers_nothing(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """Three ungrounded attempts, a `PreparationFailed`, and an empty `prep_memory`.
+
+    The rule that keeps cross-run memory worth trusting: a preparation nobody could validate
+    must never come back tomorrow as "what we did last time". It holds because the save is
+    reached only through the value `finalise` returns — this is what would catch someone
+    moving that call somewhere a failure also passes through, such as a `finally`.
+
+    The hop still leaves its `run_memory` rows, and should: the run genuinely happened, and
+    its history is the only remaining evidence of why it failed.
+    """
+    recorded_search(offline_settings)
+    serve_docs_page()
+    script = researched(*[scripted_report(resources=[resource(UNGROUNDED_URL)])] * 3)
+
+    with pytest.raises(PreparationFailed):
+        await drive(script, offline_settings)
+
+    with db.open_database(offline_settings.db_path) as connection:
+        saved = connection.execute("SELECT COUNT(*) AS n FROM prep_memory").fetchone()
+        hops = connection.execute("SELECT COUNT(*) AS n FROM run_memory").fetchone()
+
+    assert saved["n"] == 0, "an invalid preparation must never be remembered"
+    assert hops["n"] > 0, "the hop that ran is still part of the run's own history"
+
+
+@respx.mock
+async def test_a_broken_memory_layer_does_not_cost_the_run_its_report(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """With every memory write failing, the run still returns its validated report.
+
+    The guarantee that makes memory safe to add at all, asserted at the level where it
+    matters — the run, not the tool. A closed connection makes both the per-hop mirror and the
+    final save fail for real, and neither may raise, retry, or change what the run produces.
+    Losing nine to fifteen minutes of research because a diagnostic could not be written would
+    be a far worse failure than having no memory.
+    """
+    connection = db.connect(offline_settings.db_path)
+    db.initialize_schema(connection)
+    connection.close()
+    registry = build_tool_registry(offline_settings, connection=connection)
+    script = [plan("RESEARCH", "q"), "notes", verdict(True), scripted_report()]
+
+    report, _, _ = await drive(script, offline_settings, registry=registry)
+
+    assert report.hops_used == 1
+    assert report.interpreted_goal
+
+
+# --- memory: read once, and only as guidance (Day 4 T5) --------------------------------------
+#
+# `test_prompt_context.py` proves what the two continuation blocks say and that a previous run's
+# URLs never appear in one. What only exists once the loop is wired to them is that a recalled
+# preparation *reaches* the two stages that can act on it — and, just as load-bearing, that a run
+# with nothing to recall is the run this project shipped before T5.
+#
+# The script is `FINALISE` on the first decision throughout: what these tests are about is the
+# planning prompt and the report prompt, and a hop would add two model calls and a search without
+# adding a claim.
+
+
+def remember_a_previous_session(
+    settings: Settings, payload: dict[str, Any], **overrides: Any
+) -> None:
+    """One validated preparation already on disk, as an earlier run would have left it.
+
+    Written through `prep_memory` rather than by hand: the row a recall has to find is
+    whatever `save_preparation` actually writes, and a hand-built INSERT would keep passing
+    after the two drifted apart.
+    """
+    report = FocusPreparationReport.model_validate({**payload, **overrides})
+    with db.open_database(settings.db_path) as connection:
+        prep_memory.save_preparation(connection, report=report)
+
+
+def messages_at(provider: FakeProvider, schema_name: str) -> list[str]:
+    """Every message of the first call to one stage — the whole turn, not just the prompt.
+
+    `prompts_for` reads `messages[0]`, which is all a planner ever gets. The report stage is
+    the one that also receives extra messages (the stop reason, and now the continuation), so
+    a test about what it was told has to look past the first one.
+    """
+    call = next(call for call in provider.calls if call.schema_name == schema_name)
+    return [message.content for message in call.messages]
+
+
+@respx.mock
+async def test_a_recalled_preparation_reaches_the_planner_and_the_report(
+    offline_settings: Settings,
+    valid_report_payload: dict[str, Any],
+    scripted_report: Callable[..., str],
+) -> None:
+    """A second session for a remembered task is told what the first one did.
+
+    The wire T4 left unbuilt, at the only level that can see it: `recall_previous_preparation`
+    was registered, tested and never called, so every unit beneath this passed while a second
+    session still started from scratch. Both stages are asserted because they act on different
+    halves — the planner must not spend a hop re-researching settled material, and the report
+    is where `interpreted_goal` and `topics_to_cover` are actually written.
+
+    What is pinned is the *memory's own content* arriving, never the sentence around it:
+    wording is the part of a prompt S3 keeps free to change.
+    """
+    remember_a_previous_session(offline_settings, valid_report_payload)
+    script = [plan("FINALISE"), scripted_report()]
+
+    report, provider, _ = await drive(script, offline_settings)
+
+    planner = prompts_for(provider, "SupervisorDecision")[0]
+    assert "Understand B-tree indexes" in planner, "the previous goal must reach the planner"
+    assert "B-tree basics" in planner, "so a hop is not spent on settled material"
+    assert "GIN" in planner, "the deferred topics are where a continuation usually starts"
+
+    finalising = "\n".join(messages_at(provider, "FocusPreparationReport"))
+    assert "Understand B-tree indexes" in finalising
+    assert "B-tree basics" in finalising
+    assert "GIN" in finalising
+    assert report.interpreted_goal, "and the run still produces its report"
+
+
+@respx.mock
+async def test_a_task_with_nothing_remembered_is_prepared_exactly_as_before(
+    offline_settings: Settings,
+    valid_report_payload: dict[str, Any],
+    scripted_report: Callable[..., str],
+) -> None:
+    """The same script with an empty `prep_memory`: no continuation anywhere.
+
+    The regression with the widest blast radius in T5 — memory is an *enhancement*, and a
+    first session for a task is still the overwhelming majority of runs. The report stage is
+    checked by message count rather than by content, because that is the assertion a stray
+    empty block would fail: with nothing recalled and nothing exhausted, `finalise` sends the
+    prompt and nothing else.
+    """
+    script = [plan("FINALISE"), scripted_report()]
+
+    report, provider, _ = await drive(script, offline_settings)
+
+    # The same strings the test above finds, read off the preparation this run did *not* have.
+    never_recalled = valid_report_payload["topics_to_cover"]
+    planner = prompts_for(provider, "SupervisorDecision")[0]
+    assert not any(topic in planner for topic in never_recalled), (
+        "nothing was remembered, so nothing may be claimed"
+    )
+    assert len(messages_at(provider, "FocusPreparationReport")) == 1, (
+        "a fresh run's report turn is the prompt alone"
+    )
+    assert report.interpreted_goal
+
+
+@respx.mock
+async def test_a_failed_recall_leaves_the_run_working_as_a_fresh_task(
+    offline_settings: Settings,
+    valid_report_payload: dict[str, Any],
+    scripted_report: Callable[..., str],
+) -> None:
+    """A preparation exists, the database is broken, and the run finishes anyway.
+
+    Distinct from the broken-*write* case above: this failure happens before the loop starts,
+    on the one memory call whose answer a decision depends on. The guarantee is that it has no
+    special status — a recall that cannot be served is worth exactly as much as a task nobody
+    has prepared, and both leave the run to proceed normally. Catches anyone later making the
+    recall raise, retry, or gate the run on its result.
+    """
+    remember_a_previous_session(offline_settings, valid_report_payload)
+    connection = db.connect(offline_settings.db_path)
+    db.initialize_schema(connection)
+    connection.close()
+    registry = build_tool_registry(offline_settings, connection=connection)
+    script = [plan("FINALISE"), scripted_report()]
+
+    report, provider, _ = await drive(script, offline_settings, registry=registry)
+
+    assert report.interpreted_goal, "a memory outage must never cost a run its report"
+    assert "B-tree basics" not in prompts_for(provider, "SupervisorDecision")[0]
+    assert len(messages_at(provider, "FocusPreparationReport")) == 1

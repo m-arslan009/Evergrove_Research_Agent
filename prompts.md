@@ -945,3 +945,134 @@ identify the exact stage and root cause, then propose the smallest fix before im
 `Title`: Stop the S14 acceptance runs after the third run
 
 `User prompt`: this is the last run do not run 4 to 5 to check validity. stop after 3rd run
+
+`Title`: Build the Day 4 tracing foundation
+
+`User prompt`: Implement Tracing Foundation for the Evergrove Research Agent. Build only the core
+tracing infrastructure that later hooks, budget enforcement, memory, and multi-agent tracing will
+depend on. Introduce or extend RunContext so every research run has a unique run_id, maintains an
+active span stack, generates a unique span_id for each traced operation, and derives parent_span_id
+from the currently active span so nested operations automatically form a trace tree. Preserve the
+existing budget state and counters, but do not move or redesign budget enforcement in this task.
+Add SQLite-backed persistence for runs and spans. Span records should support the existing
+architecture requirements, including span_id, run_id, parent_span_id, name, kind, started_at,
+ended_at, duration_ms, ok, error_code, from_cache, and concise input/output summaries. Keep tracing
+persistence separate from agent/business logic and expose a small, clear API for starting and
+finishing runs and spans so the registry hooks can use it later without redesigning the tracing
+layer. Do not implement registry pre/post hooks, centralized budget enforcement, persistent
+preparation memory, memory-aware prompting, trace rendering, or multi-agent tracing in this task.
+Reuse current abstractions where possible, keep tracing deterministic and independent of the LLM,
+and do not introduce new frameworks or infrastructure. Add tests only for the core tracing behavior
+introduced by this task.
+
+`Title`: Wire registry hooks and centralize budget enforcement
+
+`User prompt`: Implement Registry Hooks + Budget Enforcement for the Evergrove Research Agent.
+Build on the existing tracing foundation and wire tracing plus budget checks into the tool
+registry so every tool call follows one consistent execution path. Use the registry's existing
+pre-hook and post-hook mechanism rather than adding tracing or budget logic inside individual
+tools. The pre-hook should run before tool execution, start or prepare the tool span using the
+current RunContext, and enforce the applicable run budget before the underlying tool is invoked.
+If the next call would exceed the allowed budget, the registry must return a normal ToolResult
+with BUDGET_EXCEEDED and must not execute the actual tool. The post-hook should complete the
+corresponding span and persist the operation outcome, including timing, success/failure state,
+error information, and cache status. Make sure span parenting continues to use the tracing
+foundation so tool spans appear under the currently active agent/operation span. The goal is to
+make the registry the single choke point for this behavior so no tool has to implement its own
+tracing or budget checks, moving budget enforcement into the pre-hook instead of keeping
+scattered checks. Preserve the current ToolResult contract and the existing behavior that tool
+failures are returned as values rather than raised as normal control-flow exceptions. Avoid
+redesigning the tracing model, budget model, tool registry, or agent loop unless a minimal
+compatibility change is required. Do not implement persistent memory, memory-aware prompting,
+trace rendering, or multi-agent tracing in this task. Keep the implementation deterministic,
+centralized, and reusable by all current and future registry-managed tools. Add tests only for
+the core functionality introduced here.
+
+`Title`: Build persistent and session memory
+
+`User prompt`: Implement Persistent & Session Memory for the Evergrove Research Agent. Build the
+memory layer that allows the system to retain useful information during a research run and recall
+validated preparation from previous runs. Implement persistent preparation memory so that after a
+preparation has been successfully validated, a compact summary can be stored and retrieved later.
+The stored memory should use a normalized `task_key` so semantically equivalent continuation
+requests can match prior work; for example, the architecture expects `"Learn PostgreSQL indexing"`
+to normalize in a way that can match `"postgresql indexing"`. Store only the information needed to
+support future preparation, such as the previous interpreted goal, topics already covered, topics
+deferred, relevant summary information, associated run ID, and creation time. Do not save invalid
+or failed preparations to persistent memory. Implement `recall_previous_preparation` with the
+planned default 30-day recall window and return a clear "not found" result when there is no recent
+matching preparation. Memory lookup failures must degrade safely: a database or memory-layer error
+must not fail the overall research run. Also implement session/run memory for information that
+must survive across hops inside the same research run. Reuse the existing run state where
+appropriate instead of creating a second competing state model. The memory should support
+retaining the current narrowed goal, findings gathered so far, appraisal/sufficiency information,
+decisions, previously seen queries, and previously seen URLs so later hops can reuse earlier work
+rather than forgetting or repeating it. Keep session memory logically separate from persistent
+cross-run preparation memory even if both use the same SQLite database. The goal of this task is
+to provide reliable storage and retrieval only; do not yet change the agent's prompts or
+decision-making so that it actively avoids previously covered topics or prefers deferred topics —
+that behavior belongs to the next task. Integrate memory through the existing architecture rather
+than bypassing it. Add the required memory tool or service functions in a way that can later be
+called through the registry and traced using the infrastructure already implemented. Preserve the
+existing tool and tracing contracts, avoid unnecessary changes to the research loop, and do not
+redesign the database or agent architecture unless a minimal compatibility change is required. Do
+not implement memory-aware prompting, the trace renderer, or multi-agent behavior in this task.
+Add tests only for the core memory functionality introduced here.
+
+`Title`: Memory-aware agent integration
+
+`User prompt`: Implement Memory-Aware Agent Integration for the Evergrove Research Agent. Build on
+the existing persistent and session memory layer so recalled preparation actually influences the
+agent's task interpretation, research decisions, and final preparation. When a relevant previous
+preparation is recalled, provide the agent with the useful memory needed for continuation,
+especially the previous interpreted goal, `topics_covered`, and `topics_deferred`. Update the
+task-understanding or planning behavior so the agent is instructed not to repeat topics that were
+already covered, to prefer useful deferred topics where appropriate, and to explicitly acknowledge
+the continuation in the new `interpreted_goal`. The memory should guide the agent rather than
+rigidly dictate its output: if a deferred topic no longer fits the current task or session length,
+the agent may choose another appropriate next topic, but it should not silently restart from
+previously completed material. When no previous memory is found, preserve the existing behavior
+exactly so a fresh task is handled normally. Memory should remain an optional enhancement; a recall
+failure or missing memory must not prevent the research run from continuing. Reuse the existing
+memory retrieval mechanism rather than adding another memory lookup path, and keep the integration
+focused on supplying relevant memory to the existing agent decisions. Do not redesign the research
+loop, persistent memory schema, tracing system, budget system, or tool registry unless a minimal
+compatibility change is required. Ensure session memory also continues to influence later hops
+within the same run so previously gathered findings, seen queries, and seen URLs are reused rather
+than unnecessarily repeated. Do not create a second parallel state mechanism if the current run
+state already provides this information. Keep cross-run memory and within-run memory conceptually
+distinct: persistent memory helps continue previous preparation, while session memory prevents the
+current run from forgetting its own earlier hops. Do not implement the trace renderer or
+multi-agent Supervisor/Researcher/Appraiser behavior in this task. Add tests only for the core
+behavior introduced by this task.
+
+`Title`: Trace renderer and structured JSON trace logging
+
+`User prompt`: Implement **Trace Renderer** for the Evergrove Research Agent. The purpose of this
+task is only to make the tracing information already stored by the system easy to inspect.
+Implement `scripts/show_trace.py <run_id>` using the existing tracing storage rather than creating
+another trace representation. It should load the requested run and its spans, reconstruct their
+hierarchy using `parent_span_id`, and print a clear human-readable trace tree. The output should
+make it easy to see operation names, nesting, timestamps or durations, success/failure state, cache
+hits, and error codes when available. The renderer must remain read-only and separate from tracing
+persistence, hooks, memory, and agent logic. It should gracefully handle failed spans, incomplete
+spans, missing run IDs, and traces containing different levels of nesting without crashing. Do not
+redesign the tracing schema just to simplify rendering, and do not introduce new tracing, memory,
+budgeting, or agent behavior in this task. Do not perform model-quality evaluation,
+research-quality verification, continuation-quality validation, multi-hop correctness validation,
+or full Day 4 acceptance testing here. Those checks should remain for the final testing and
+evaluation day. Add tests only for the core renderer behavior where necessary.
+
+`Title`: Structured JSON trace logging belongs to Day 4, not the final validation day
+
+`User prompt`: Do not defer structured JSON trace logging to the final validation day. It is
+deterministic Day 4 tracing functionality, not model-quality validation. Include the required
+structured JSON log line per operation as part of this task, while still deferring all live model
+behavior, research-quality, continuation-quality, multi-hop, and end-to-end acceptance validation
+to the final day. Keep this implementation minimal and reuse the existing tracing/hook data rather
+than introducing a new tracing path.
+
+`Title`: All live-run testing consolidated into Day 7; implementation first
+
+`User prompt`: Keep all the testing for day 7 such as live run. First we complete the
+implementation, later we will focus on testing.

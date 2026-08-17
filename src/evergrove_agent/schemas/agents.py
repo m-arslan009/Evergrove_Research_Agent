@@ -283,6 +283,50 @@ class AppraisalVerdict(BaseModel):
     # follow-up would turn that into a retry loop and invite an invented question.
 
 
+# --- what survives between runs -----------------------------------------------------------
+
+
+class PreviousPreparation(BaseModel):
+    """A validated preparation from an earlier run, compactly enough to reuse (plan 12.2).
+
+    Code-assembled: built from a `FocusPreparationReport` that already passed
+    `validate_report`, and never handed to a model as a schema. It lives here rather than
+    beside the storage that writes it because it is a *message* — `memory/prep_memory.py`
+    produces it, the recall tool returns it, and the memory-aware prompting task puts it in
+    front of the planner. `schemas/` is the one layer all three can import.
+
+    **A summary, not a second copy of the report.** Only the fields a later session needs to
+    continue rather than restart: what the previous run aimed at, what it covered, what it
+    deliberately deferred, and where it read. The full report is not stored — nothing needs
+    it, and `FocusPreparationReport` is the most expensive schema in the project to change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_key: str = Field(min_length=1, max_length=500)
+    """The normalised form the recall lookup matches on — `normalize_task_key`'s output.
+    Carried on the record so a caller can see *why* a preparation was recalled."""
+    original_task: str = Field(min_length=1, max_length=500)
+    """The title as the user actually typed it. The key is for matching; this is for reading."""
+    interpreted_goal: str = Field(default="", max_length=400)
+    session_objective: str = Field(default="", max_length=300)
+    """Both, because they answer different questions: the goal is the slice the previous run
+    narrowed the task down to, the objective is what that session was to achieve."""
+    topics_covered: list[str] = Field(default_factory=list, max_length=8)
+    """`topics_to_cover` from the previous report — the material a continuation must not
+    repeat. Bounded as the report bounds it."""
+    topics_deferred: list[str] = Field(default_factory=list, max_length=10)
+    """`topics_to_skip` — the neighbouring material the previous run left out on purpose,
+    which is the most likely place a continuation should start."""
+    source_urls: list[str] = Field(default_factory=list, max_length=5)
+    """Where the previous session read. Not evidence for this run: a citation must still be
+    grounded in what *this* run gathered (S9), so these are context only."""
+    run_id: str = Field(min_length=1, max_length=64)
+    created_at: datetime
+    """When the preparation was saved, timezone-aware UTC. What the recall window compares
+    against."""
+
+
 # --- the run's working state -------------------------------------------------------------
 
 
@@ -305,6 +349,19 @@ class RunState(BaseModel):
     model driving the run forever."""
 
     task: TaskContext
+    previous: PreviousPreparation | None = None
+    """What an earlier run prepared for this same task, when one was recalled (T5).
+
+    Additive and defaulted, so no construction site moved — the shape T1's `span_stack`
+    addition took. It sits here rather than being threaded through two stage signatures
+    because both stages that read it already receive this object, and because "what this run
+    knows" has one home: `run_agent` recalls once, before the loop, and every later stage
+    reads the same answer.
+
+    **`None` is the ordinary case and must stay indistinguishable from today.** A first run,
+    a task nobody has prepared, an aged-out row and a memory outage all arrive here as `None`,
+    and the renderers answer all four with an empty block.
+    """
     hop: int = Field(default=0, ge=0, le=3)
     """Hops completed. 0 before any research; the ceiling matches
     `FocusPreparationReport.hops_used`. `MAX_HOPS` is config and is enforced by the loop —

@@ -11,6 +11,12 @@ retry, no error translation. `run_agent` already owns every one of those, and it
 loop takes them so composition can live outside it. If a change to this file would alter
 what a run does rather than what it is built from, it belongs in `agents/single_agent.py`.
 
+**This module owns the run's database handle** (Day 4 T2). It is the only layer that knows
+when a run begins and ends, and both a trace and a shared cache connection need exactly
+that lifetime — so the connection is opened here, handed to the `Tracer` and to the tools,
+and closed here. Writing the run's header and its outcome is bookkeeping about the run, not
+a decision inside it, which is why it does not contradict the paragraph above.
+
 **Failures travel unchanged.** `PreparationFailed` and `LLMError` pass straight through.
 A surface has to show a user why a run failed, and a layer that wrapped those in a third
 exception type would leave `PreparationFailed.issues` behind at exactly the moment someone
@@ -25,12 +31,19 @@ whole run rather than only its result.
 
 from __future__ import annotations
 
+import logging
+import sqlite3
+
 from evergrove_agent.agents import AgentProviders, run_agent
 from evergrove_agent.config import Settings, get_settings
+from evergrove_agent.memory import db
 from evergrove_agent.schemas import FocusPreparationReport, TaskContext
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tools.wiring import build_tool_registry
+from evergrove_agent.tracing import RunStatus, Tracer
+
+logger = logging.getLogger(__name__)
 
 
 async def prepare_focus_session(
@@ -53,14 +66,76 @@ async def prepare_focus_session(
     reach for `get_settings()` on its own would ignore a caller's override in two places out
     of three — and `--fully-local` is exactly such an override.
 
+    The run is traced: a `runs` row is written before the loop starts and closed out after
+    it, and a registry built here is given both the connection and the `Tracer`, so its
+    tool calls become spans under this run. A registry the **caller** supplied is used
+    exactly as given and carries no tracer — a caller that assembled its own call path has
+    said what it wants that path to be, and quietly attaching hooks to it would make the
+    object behave differently from the one they built.
+
     Raises `PreparationFailed` when the run could not produce a valid report, and `LLMError`
     when the configured model could not be reached. Both are the caller's to render.
     """
     settings = settings or get_settings()
-    return await run_agent(
-        task,
-        registry=registry if registry is not None else build_tool_registry(settings),
-        providers=providers or AgentProviders.from_settings(settings),
-        ctx=ctx or RunContext(budget=RunBudget.from_settings(settings)),
-        settings=settings,
-    )
+    ctx = ctx or RunContext(budget=RunBudget.from_settings(settings))
+
+    connection = _open_trace_connection(settings)
+    tracer = Tracer(connection, settings=settings) if connection is not None else None
+    status: RunStatus = "failed"
+    hops_used = 0
+    try:
+        if tracer is not None:
+            tracer.start_run(ctx, task)
+        report = await run_agent(
+            task,
+            registry=(
+                registry
+                if registry is not None
+                else build_tool_registry(settings, connection=connection, tracer=tracer)
+            ),
+            providers=providers or AgentProviders.from_settings(settings),
+            ctx=ctx,
+            settings=settings,
+        )
+    except Exception:
+        # A run that stopped because it ran out of allowance is a different fact from one
+        # that stopped because something broke, and the trace is the only place that
+        # distinction survives — `PreparationFailed` carries the attempts, not the reason.
+        status = "budget_exhausted" if ctx.budget.exhausted_limits else "failed"
+        raise
+    else:
+        status, hops_used = "ok", report.hops_used
+        return report
+    finally:
+        if tracer is not None:
+            tracer.finish_run(ctx, status=status, hops_used=hops_used)
+        if connection is not None:
+            connection.close()
+
+
+def _open_trace_connection(settings: Settings) -> sqlite3.Connection | None:
+    """The run's own handle on the database, or `None` if it could not be opened.
+
+    `connect` + `initialize_schema` rather than the `open_database` context manager,
+    because the handle has to live for the whole run and be closed in the same `finally`
+    that closes the run out.
+
+    A failure here is logged and swallowed, and the run proceeds untraced with the tools
+    opening their own connections per call, exactly as they did before this existed. The
+    same stance `Tracer` takes over every individual write, for the same reason: a
+    diagnostic that can end a fifteen-minute research run is worse than no diagnostic.
+    `OSError` is caught beside `sqlite3.Error` because `connect` creates `DB_PATH`'s parent
+    directory, and an unwritable one fails before SQLite is ever reached.
+    """
+    try:
+        connection = db.connect(settings.db_path)
+        db.initialize_schema(connection)
+    except (sqlite3.Error, OSError) as exc:
+        logger.warning(
+            "could not open %s (%s: %s); this run will not be traced",
+            settings.db_path,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return connection

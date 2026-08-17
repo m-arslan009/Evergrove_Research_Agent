@@ -13,6 +13,8 @@ Session length: {session_minutes} minutes
 
 {progress}
 
+{previous_preparation}
+
 ## How to choose
 
 - Choose RESEARCH when one checkable fact is missing and a single search plus one page

@@ -24,6 +24,16 @@ def _new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:6]}"
 
 
+def _new_span_id() -> str:
+    """Short, greppable span identifier — one per traced operation.
+
+    Wider than a run id because a single run mints one of these per tool call, per
+    reasoning turn and per agent boundary, and a collision would make a `finish_span`
+    update the wrong row.
+    """
+    return f"span_{uuid.uuid4().hex[:8]}"
+
+
 BudgetKind = Literal["search", "fetch", "model_call"]
 """The three things a run spends one at a time. Each maps to a counter on `RunBudget`;
 Day 4's pre-hook maps a tool name onto one of these values and claims through it."""
@@ -187,8 +197,16 @@ class RunBudget:
 class RunContext:
     """Everything a tool is allowed to know about the run it belongs to.
 
-    Day 4 adds the span stack (`span_id` / `parent_span_id`); plan section 27 names this
-    shape as expensive to change, because the registry, every hook and every agent read it.
+    Plan section 27 names this shape as expensive to change, because the registry, every
+    hook and every agent read it. Day 4 added the span stack below; the field was
+    *appended* with a default so no existing construction site or positional call had to
+    move.
+
+    **Identity and nesting only — no I/O.** This object never holds a database connection
+    or a tracer: `tools/base.py` may not import `sqlite3` (the same rule that keeps
+    `httpx`, `pypdf` and the search backends off the import of `RunContext`). Minting an
+    id and knowing what it nests under is pure; writing a row is `tracing/`'s job, and a
+    hook closes over both.
     """
 
     run_id: str = field(default_factory=_new_run_id)
@@ -196,6 +214,56 @@ class RunContext:
     """The run's spend ledger. Reachable from every tool and, on Day 4, from every hook,
     which is why it lives here and not beside the loop: moving enforcement into a registry
     pre-hook then needs no new plumbing."""
+
+    span_stack: list[str] = field(default_factory=list)
+    """The operations currently in flight, outermost first — so the innermost is the last
+    entry and `parent_span_id` is simply "whatever was already on top".
+
+    A stack rather than a passed-down parameter because a pre-hook and a post-hook are two
+    separate callables with no shared frame: the pre-hook pushes, the post-hook pops, and
+    anything opened in between nests under it without either hook being told about the
+    other."""
+
+    # --- tracing identity (plan section 13) -------------------------------------------
+
+    @property
+    def current_span_id(self) -> str | None:
+        """The operation this run is inside right now, or `None` at the top level."""
+        return self.span_stack[-1] if self.span_stack else None
+
+    def begin_span(self) -> tuple[str, str | None]:
+        """Mint a span, derive its parent from the active one, and make it active.
+
+        Returns `(span_id, parent_span_id)` — both, because the caller has to write both
+        into the row and deriving the parent at a call site is how a trace tree ends up
+        flat. The parent is read *before* the push, so a top-level operation gets `None`
+        and a nested one gets whatever it is nested inside.
+        """
+        parent_span_id = self.current_span_id
+        span_id = _new_span_id()
+        self.span_stack.append(span_id)
+        return span_id, parent_span_id
+
+    def end_span(self, span_id: str) -> None:
+        """Mark `span_id` finished, and let whatever contained it become active again.
+
+        Deliberately tolerant of an out-of-order close. A tool that raises, or a hook
+        chain that short-circuits, can leave an inner span unclosed — and the failure to
+        prevent is one such span mis-parenting every operation that follows it for the
+        rest of a fifteen-minute run. So: the usual case pops the top; a span found
+        deeper is removed *along with everything above it*, since those can no longer
+        close in order either; an unknown id is ignored.
+
+        Nothing here raises. A trace is a diagnostic, and a diagnostic that can end a run
+        is worse than no diagnostic — the same stance `Tracer` takes over `sqlite3`.
+        """
+        if not self.span_stack:
+            return
+        if self.span_stack[-1] == span_id:
+            self.span_stack.pop()
+            return
+        if span_id in self.span_stack:
+            del self.span_stack[self.span_stack.index(span_id) :]
 
 
 @runtime_checkable
