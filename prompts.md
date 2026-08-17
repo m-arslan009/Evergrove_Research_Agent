@@ -945,3 +945,45 @@ identify the exact stage and root cause, then propose the smallest fix before im
 `Title`: Stop the S14 acceptance runs after the third run
 
 `User prompt`: this is the last run do not run 4 to 5 to check validity. stop after 3rd run
+
+`Title`: Build the Day 4 tracing foundation
+
+`User prompt`: Implement Tracing Foundation for the Evergrove Research Agent. Build only the core
+tracing infrastructure that later hooks, budget enforcement, memory, and multi-agent tracing will
+depend on. Introduce or extend RunContext so every research run has a unique run_id, maintains an
+active span stack, generates a unique span_id for each traced operation, and derives parent_span_id
+from the currently active span so nested operations automatically form a trace tree. Preserve the
+existing budget state and counters, but do not move or redesign budget enforcement in this task.
+Add SQLite-backed persistence for runs and spans. Span records should support the existing
+architecture requirements, including span_id, run_id, parent_span_id, name, kind, started_at,
+ended_at, duration_ms, ok, error_code, from_cache, and concise input/output summaries. Keep tracing
+persistence separate from agent/business logic and expose a small, clear API for starting and
+finishing runs and spans so the registry hooks can use it later without redesigning the tracing
+layer. Do not implement registry pre/post hooks, centralized budget enforcement, persistent
+preparation memory, memory-aware prompting, trace rendering, or multi-agent tracing in this task.
+Reuse current abstractions where possible, keep tracing deterministic and independent of the LLM,
+and do not introduce new frameworks or infrastructure. Add tests only for the core tracing behavior
+introduced by this task.
+
+`Title`: Wire registry hooks and centralize budget enforcement
+
+`User prompt`: Implement Registry Hooks + Budget Enforcement for the Evergrove Research Agent.
+Build on the existing tracing foundation and wire tracing plus budget checks into the tool
+registry so every tool call follows one consistent execution path. Use the registry's existing
+pre-hook and post-hook mechanism rather than adding tracing or budget logic inside individual
+tools. The pre-hook should run before tool execution, start or prepare the tool span using the
+current RunContext, and enforce the applicable run budget before the underlying tool is invoked.
+If the next call would exceed the allowed budget, the registry must return a normal ToolResult
+with BUDGET_EXCEEDED and must not execute the actual tool. The post-hook should complete the
+corresponding span and persist the operation outcome, including timing, success/failure state,
+error information, and cache status. Make sure span parenting continues to use the tracing
+foundation so tool spans appear under the currently active agent/operation span. The goal is to
+make the registry the single choke point for this behavior so no tool has to implement its own
+tracing or budget checks, moving budget enforcement into the pre-hook instead of keeping
+scattered checks. Preserve the current ToolResult contract and the existing behavior that tool
+failures are returned as values rather than raised as normal control-flow exceptions. Avoid
+redesigning the tracing model, budget model, tool registry, or agent loop unless a minimal
+compatibility change is required. Do not implement persistent memory, memory-aware prompting,
+trace rendering, or multi-agent tracing in this task. Keep the implementation deterministic,
+centralized, and reusable by all current and future registry-managed tools. Add tests only for
+the core functionality introduced here.

@@ -8,25 +8,49 @@ can resolve its own settings behind a caller's back.
 
 Offline and model-free: `FakeProvider` is injected, and the registry is the real wired one
 with `SEARCH_BACKEND=fixture`, because no test here reaches a tool.
+
+Since Day 4 T2 this layer also owns the run's database handle and writes the run's trace
+header, so every test here overrides `settings` onto a temporary `DB_PATH` — a suite that
+composes a real run must not write to the developer's own database.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from evergrove_agent.agents import AgentProviders
+from evergrove_agent.agents.single_agent import PreparationFailed
 from evergrove_agent.config import Settings
 from evergrove_agent.llm import FakeProvider
+from evergrove_agent.memory import db
 from evergrove_agent.schemas import FocusPreparationReport, TaskContext
 from evergrove_agent.service import prepare_focus_session
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.wiring import build_tool_registry
+from evergrove_agent.tracing import get_run
 
 TASK = TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25)
+
+
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    """Defaults, but pointed at a temporary database — overrides `conftest.settings`."""
+    return Settings(_env_file=None, db_path=tmp_path / "agent.sqlite3")
+
+
+class FakeClock:
+    """The injected clock from `test_run_budget.py`, so an expired deadline costs no wait."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 @pytest.fixture
@@ -98,7 +122,7 @@ async def test_the_caller_s_run_context_is_the_one_the_run_spends(
 
 
 async def test_defaults_are_built_from_the_settings_it_was_given(
-    report_json: Callable[..., str]
+    tmp_path: Path, report_json: Callable[..., str]
 ) -> None:
     """`--fully-local` and `--provider` reach the run only as a mutated `Settings`. A
     collaborator defaulted from `get_settings()` instead of the argument would ignore both,
@@ -108,7 +132,9 @@ async def test_defaults_are_built_from_the_settings_it_was_given(
     the run skips straight to the report. Under the default 10 the planner would go first and
     consume the scripted report as a decision.
     """
-    settings = Settings(_env_file=None, max_model_calls=1)
+    settings = Settings(
+        _env_file=None, db_path=tmp_path / "agent.sqlite3", max_model_calls=1
+    )
     provider = FakeProvider([report_json()])
 
     report = await prepare_focus_session(
@@ -120,3 +146,66 @@ async def test_defaults_are_built_from_the_settings_it_was_given(
 
     assert report.hops_used == 0
     assert len(provider.calls) == 1, "the report only; the planner was never affordable"
+
+
+# --- the run's trace header (Day 4 T2) --------------------------------------------------------
+
+
+async def test_a_completed_run_writes_its_header_and_closes_it(
+    settings: Settings, report_json: Callable[..., str]
+) -> None:
+    """Someone reading a trace has to be able to tell a finished run from a killed one.
+
+    The header is written before the loop and updated after it, so the two halves are the
+    regression: a run that only appears once it has succeeded is missing at exactly the
+    moment a trace is wanted, and one that is never closed reads as still running forever.
+    The counters are asserted because they are the snapshot the live ledger leaves behind.
+    """
+    provider = FakeProvider([finalise_now(), report_json()])
+    ctx = RunContext(budget=RunBudget.from_settings(settings))
+
+    report = await prepare_focus_session(
+        TASK,
+        settings=settings,
+        providers=AgentProviders(provider, provider, provider),
+        ctx=ctx,
+    )
+
+    with db.open_database(settings.db_path) as connection:
+        run = get_run(connection, ctx.run_id)
+
+    assert run is not None
+    assert run.status == "ok"
+    assert run.task_title == TASK.task_title
+    assert run.ended_at is not None
+    assert (run.hops_used, run.model_calls) == (report.hops_used, 2)
+
+
+async def test_a_run_that_ran_out_of_allowance_says_so_rather_than_just_failing(
+    tmp_path: Path, report_json: Callable[..., str]
+) -> None:
+    """`failed` and `budget_exhausted` are different diagnoses and only the trace keeps them
+    apart — `PreparationFailed` carries the attempts made, never the reason there were none.
+    Mistaking an exhausted run for a broken one is what sends someone debugging a model that
+    was never called.
+    """
+    settings = Settings(_env_file=None, db_path=tmp_path / "agent.sqlite3")
+    provider = FakeProvider([report_json()])
+    clock = FakeClock()
+    ctx = RunContext(budget=RunBudget.from_settings(settings, clock=clock))
+    clock.now = float(settings.total_run_timeout_s) + 1.0
+
+    with pytest.raises(PreparationFailed):
+        await prepare_focus_session(
+            TASK,
+            settings=settings,
+            providers=AgentProviders(provider, provider, provider),
+            ctx=ctx,
+        )
+
+    with db.open_database(settings.db_path) as connection:
+        run = get_run(connection, ctx.run_id)
+
+    assert run is not None
+    assert run.status == "budget_exhausted"
+    assert run.ended_at is not None

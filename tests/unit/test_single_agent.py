@@ -96,11 +96,32 @@ def recorded_search(settings: Settings) -> None:
     )
 
 
+def recording_tool(registry: ToolRegistry, name: str) -> list[Any]:
+    """A wired tool that also reports every call that reached the tool *itself*.
+
+    Since Day 4 T3 the budget is enforced by the registry's own pre-hook, so a refused call
+    reaches `ToolRegistry.call` and is stopped inside it. Registry entry therefore no
+    longer distinguishes an enforced budget from a decorative one — tool execution does,
+    and that is what this observes.
+    """
+    tool = registry.get(name)
+    assert tool is not None, f"{name} is not registered"
+    executed: list[Any] = []
+    inner = tool.run
+
+    async def recording(args, ctx):
+        executed.append(args)
+        return await inner(args, ctx)
+
+    tool.run = recording
+    return executed
+
+
 def recording_registry(settings: Settings) -> tuple[ToolRegistry, list[str]]:
     """A wired registry that also reports every name that reached `call`.
 
-    The list is how a test proves a call was stopped *before* the registry — the only
-    difference between a budget that is enforced and one that is merely reported.
+    The list is how a test proves a call was stopped *before* the registry — which, since
+    the budget moved into the registry, means the menu guard rather than the ledger.
     """
     registry = build_tool_registry(settings)
     seen: list[str] = []
@@ -349,14 +370,16 @@ async def test_a_report_is_still_affordable_after_a_greedy_loop(
 
 
 @respx.mock
-async def test_a_refused_budget_stops_a_tool_before_the_registry(
+async def test_a_refused_budget_stops_a_tool_before_it_runs(
     tmp_path: Path, scripted_report: Callable[..., str]
 ) -> None:
     """A budget that is only reported is not a budget.
 
-    The claim happens before dispatch precisely so an exhausted counter cannot be spent
-    anyway; this proves the second search never reached the registry, rather than reaching it
-    and being counted twice.
+    The claim happens before the tool runs precisely so an exhausted counter cannot be spent
+    anyway; this proves the second search never reached the search tool, rather than reaching
+    it and being counted twice. Both calls now reach `ToolRegistry.call` — that is where the
+    refusal lives since Day 4 T3 — so the assertion is about execution, not entry, and the
+    loop carries on to a report either way.
     """
     settings = Settings(
         _env_file=None,
@@ -366,6 +389,7 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
     )
     recorded_search(settings)
     registry, seen = recording_registry(settings)
+    executed = recording_tool(registry, "web_search")
     script = [
         plan("RESEARCH", "q"),
         tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
@@ -377,7 +401,8 @@ async def test_a_refused_budget_stops_a_tool_before_the_registry(
 
     report, _, ctx = await drive(script, settings, registry=registry)
 
-    assert seen.count("web_search") == 1
+    assert len(executed) == 1, "the second search was refused before the tool ran"
+    assert seen.count("web_search") == 2, "the refusal happens inside the registry now"
     assert ctx.budget.remaining("search") == 0
     assert report is not None
 

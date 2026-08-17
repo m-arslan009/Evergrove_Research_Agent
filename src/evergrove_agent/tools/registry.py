@@ -102,6 +102,10 @@ class ToolRegistry:
         return a result to skip the tool; the post-hooks still run over it, so a
         short-circuited call is traced like any other. An unknown name or invalid arguments
         return before the hook chain, since there is no validated invocation to hand it.
+
+        The guard below is the last one: a *post*-hook that raises is caught here, after
+        the result it was given already exists. Everything earlier is caught inside
+        `_run_chain`, so the post-hooks see it too.
         """
         started = time.perf_counter()
 
@@ -125,7 +129,7 @@ class ToolRegistry:
         invocation = ToolInvocation(tool=tool, args=parsed, ctx=ctx)
         try:
             result = await self._run_chain(invocation)
-        except Exception as exc:  # a raising tool or hook must not break the run
+        except Exception as exc:  # a raising post-hook must not break the run either
             return self._failure(
                 ErrorCode.UNKNOWN,
                 f"{name} failed unexpectedly: {type(exc).__name__}: {exc}",
@@ -134,10 +138,39 @@ class ToolRegistry:
         return result
 
     async def _run_chain(self, invocation: ToolInvocation) -> ToolResult[Any]:
-        """Pre-hooks, then the tool unless one of them short-circuited, then post-hooks."""
+        """Pre-hooks, then the tool unless one of them short-circuited, then post-hooks.
+
+        **Every outcome reaches the post-hooks, including a raising tool or pre-hook.** A
+        tool that raises is the one case that breaks the contract, so it is also the one
+        case a trace is most wanted for; leaving it as the single path that skips the
+        post-hooks would leave its span open forever and make a crash the hardest failure
+        to read back. The exception still becomes an ordinary `UNKNOWN` failure — the
+        post-hooks observe it, they do not learn it was an exception.
+        """
         started = time.perf_counter()
         name = invocation.tool.name
 
+        try:
+            result = await self._invoke(invocation, started)
+        except Exception as exc:  # a raising tool or pre-hook must not break the run
+            result = self._failure(
+                ErrorCode.UNKNOWN,
+                f"{name} failed unexpectedly: {type(exc).__name__}: {exc}",
+                started,
+            )
+
+        for hook in self._post_hooks:
+            replacement = await hook(invocation, result)
+            if replacement is not None:
+                result = replacement
+        return result
+
+    async def _invoke(self, invocation: ToolInvocation, started: float) -> ToolResult[Any]:
+        """The pre-hooks and the tool: everything the post-hooks report *on*.
+
+        Split out so one `try` in `_run_chain` covers all of it and none of the post-hooks.
+        Raises whatever a pre-hook or a tool raises.
+        """
         result: ToolResult[Any] | None = None
         for hook in self._pre_hooks:
             result = await hook(invocation)
@@ -150,18 +183,13 @@ class ToolRegistry:
         if not isinstance(result, ToolResult):
             return self._failure(
                 ErrorCode.UNKNOWN,
-                f"{name} returned {type(result).__name__}, not a ToolResult",
+                f"{invocation.tool.name} returned {type(result).__name__}, "
+                "not a ToolResult",
                 started,
             )
 
         # The registry times the call, so no tool has to and every trace row agrees.
-        result = result.model_copy(update={"duration_ms": self._elapsed_ms(started)})
-
-        for hook in self._post_hooks:
-            replacement = await hook(invocation, result)
-            if replacement is not None:
-                result = replacement
-        return result
+        return result.model_copy(update={"duration_ms": self._elapsed_ms(started)})
 
     # --- helpers --------------------------------------------------------------------------
 

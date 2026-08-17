@@ -22,9 +22,11 @@ anything.
 | | |
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
-| **Current milestone** | **Day 3 — Single research agent (the core loop)** — S1–S14 implemented and live-verified; **not signed off**, see *S14 results* |
+| **Current milestone** | **Day 4 — Memory, hooks and tracing** — T1–T3 done: every tool call is now traced and budget-checked by the registry. Memory (T4) has not started |
+| **Day 3** | S1–S14 implemented and live-verified; **not signed off** — two acceptance runs still owed, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
-| **Next task** | **Two more S14 acceptance runs** to satisfy "valid report on ≥4 of 5 attempts", then Day 4 |
+| **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` |
+| **Next task** | **Day 4 T4 — persistent memory**, which is the first thing that reads the tables the trace now writes into. Two more S14 acceptance runs are still owed for Day 3 sign-off and are independent of it |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -42,8 +44,8 @@ exists. Do not describe or assume any other Day 3 capability as present.
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **Current — S1–S14 done and live-verified; sign-off pending 2 more acceptance runs** |
-| 4 | Memory, hooks, tracing | Not started |
+| 3 | Single research agent — the core loop | **S1–S14 done and live-verified; sign-off pending 2 more acceptance runs** |
+| 4 | Memory, hooks, tracing | **Current — T1 (tracing foundation) done; hooks, memory and the renderer not started** |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
@@ -81,7 +83,7 @@ is organised, not how many services are deployed.
               agents/tool_calling.py               ← BUILT (S2). Advertise → dispatch;
                           │                          the only way a model reaches a tool
                    tool registry                  ← BUILT. The only path to a tool.
-                          │                          Hook lists exist but are empty (Day 4)
+                          │                          Hooks installed: span + budget (T2/T3)
         ┌─────────────────┼─────────────────┐
         ▼                 ▼                 ▼
    search backends   documents/         SQLite          ← all BUILT
@@ -112,10 +114,11 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `plan.md`, `research_step.md`, `sufficiency.md`, `finalise.md`) |
 | `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3); `single_agent.py` — the four stage functions and the loop (S5–S8) |
-| `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `wiring.py` (composition root), `cli.py`, and the five tools — the four Day 2 ones plus `validate_report.py` (S9) |
+| `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `hooks.py` (span + budget hooks, T2/T3), `wiring.py` (composition root), `cli.py`, and the five tools — the four Day 2 ones plus `validate_report.py` (S9) |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py` |
+| `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call |
 | `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
 | `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
 | `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
@@ -243,8 +246,9 @@ class Tool(Protocol):
 `description` and `input_model` are **the half the model sees** — they are what Day 3 Subtask 2
 turns into a `ToolSpec`. `run` is the half only the registry calls.
 
-**`RunContext`** — `run_id` and `budget: RunBudget` (S4). Day 4 adds the span stack. The registry,
-every hook and every agent read it, so its shape is expensive to change.
+**`RunContext`** — `run_id`, `budget: RunBudget` (S4) and `span_stack: list[str]` (Day 4 T1). The
+registry, every hook and every agent read it, so its shape is expensive to change. T1's field was
+**appended with a default**, so no construction site or positional call moved.
 
 **The run's spend ledger** (`tools/base.py`, Day 3 S4) — `RunBudget`, held by `RunContext`, built by
 `RunBudget.from_settings(settings=None, *, clock=time.monotonic)`.
@@ -283,14 +287,96 @@ Invariants later work must preserve:
   importing `RunContext` must not drag in `httpx`, `sqlite3`, `pypdf` or the search backends still
   holds.
 
+**The tracing contract** (`tools/base.py` + `tracing/`, Day 4 T1) — one `run_id` per run, one
+`span_id` per operation, `parent_span_id` from a stack so the tree builds itself (plan §13).
+**Wired by T2:** `service.py` opens the run's connection and writes its header, and the registry's
+hooks write one `tool` span per call. `single_agent.py` remains untouched by tracing — the loop
+does not know a trace exists.
+
+Three layers, and the split is the contract:
+
+```python
+# tools/base.py — identity and nesting. Pure; no I/O.
+RunContext.span_stack: list[str]              # outermost first
+RunContext.current_span_id -> str | None
+RunContext.begin_span() -> tuple[str, str | None]   # (span_id, parent_span_id); mints and pushes
+RunContext.end_span(span_id) -> None                # pops; tolerant of an out-of-order close
+
+# tracing/store.py — the rows. Raises on a database error.
+start_run / finish_run / get_run · start_span / finish_span / get_spans
+RunRecord · SpanRecord · SpanKind = agent | tool | llm
+RunStatus = running | ok | failed | budget_exhausted
+
+# tracing/tracer.py — what a hook calls.
+Tracer(connection, *, settings=None, clock=_utc_now)
+    .start_run(ctx, task) · .finish_run(ctx, *, status, hops_used)
+    .open_span(ctx, name, kind, *, input_summary=None) -> str
+    .close_span(ctx, span_id, *, ok, error_code=None, from_cache=False,
+                output_summary=None, duration_ms=None)
+```
+
+Invariants later work must preserve:
+
+- **`RunContext` holds identifiers, never I/O.** No connection, no tracer, no `sqlite3` import in
+  `tools/base.py` — the same rule that keeps `httpx`, `pypdf` and the search backends off the
+  import of `RunContext`. Minting an id is pure; writing a row is `tracing/`'s job, and a hook
+  closes over both.
+- **Start and finish are a *pair of methods*, not a context manager.** A pre-hook and a post-hook
+  are two independent callables with no shared frame: the pre-hook calls `open_span`, the post-hook
+  calls `close_span`. A convenience manager for the agent and model spans that *are* opened and
+  closed in one frame is additive and belongs with the work that adds them.
+- **`parent_span_id` is read before the push**, so a top-level operation is unparented and a sibling
+  opened after a close points at the *outer* span, not at its finished sibling. Never derive a
+  parent at a call site.
+- **Two writes per operation, not one.** A row is inserted when something starts, with `ended_at`
+  NULL, and updated when it finishes. Runs take 9–15 minutes on this hardware and S14 killed several:
+  `ended_at IS NULL` reads "this never finished", which is a diagnosis rather than a gap. `ok is
+  None` is likewise distinct from `ok is False`.
+- **`store.py` raises; `Tracer` swallows.** Only `sqlite3.Error`, logged at WARNING — the stance
+  `fetch_url` already takes over its cache, and the plan's Day 4 requirement that a storage failure
+  never fails a run. The guard is in `Tracer._guard` alone, so a test can still see the real error.
+  A `TypeError` or a bad `SpanKind` is a caller bug and still surfaces.
+- **The stack is kept consistent whatever the database does.** `open_span` mints and pushes *before*
+  it writes, and `close_span` pops *before* it writes. A failed write costs a row, never the nesting
+  of the rest of the run.
+- **`duration_ms` is accepted when the caller already measured it**, derived from the row's
+  timestamps otherwise, and clamped at 0. `ToolRegistry.call` already times every tool and stamps
+  `ToolResult.duration_ms`; a post-hook hands that number through rather than creating a second,
+  disagreeing measurement of one call.
+- **Summaries are bounded at write time** by `TRACE_SUMMARY_CHARS` (200), with an ellipsis marking a
+  cut. A trace records enough to recognise a call, not a second copy of the evidence — the fetched
+  text already lives in `source_cache`. An unmarked truncation would read as a tool that returned
+  exactly that much.
+- **The counters are passed in, not recounted.** `Tracer.finish_run` reads the three live ones off
+  `ctx.budget` (the one place that happens) and takes `hops_used` as a parameter, because `RunState`
+  owns that count — the same division `RunBudget.hops_remaining` already rests on.
+- **Wall-clock UTC here, monotonic in `RunBudget`.** A budget must not be enlarged by a clock
+  adjustment; a trace has to be a real instant someone can line up against a log line. The clock is
+  injected, so a duration is tested without waiting for it.
+- **`Tracer` takes a caller-supplied connection** and opens none of its own, as `memory/cache.py`
+  does. **`service.py` owns it** (T2's call): one handle per run, opened with
+  `db.connect` + `initialize_schema`, handed to both the `Tracer` and the tools it wires, closed
+  in the same `finally` that writes `finish_run`. A connection that cannot be opened is logged
+  and the run proceeds untraced, the same stance `Tracer` takes over each individual write.
+
 **`ToolRegistry`** — `register`, `get`, `names`, `add_pre_hook`, `add_post_hook`, and
 `async call(name, args, ctx) -> ToolResult`. `args` may be the tool's input model, a raw mapping
 (**which is the form a model's tool call arrives in**) or `None`. Order: resolve → validate args
 → pre-hooks → `Tool.run` → post-hooks. **`call` never raises**; it times the call and stamps
 `duration_ms` centrally; an unknown name returns `UNKNOWN` with the menu, invalid arguments
-return `BAD_ARGUMENTS`, and a tool that raises anyway is caught. A pre-hook returning a
-`ToolResult` short-circuits the tool — that is how Day 4's cache hits and budget refusals will
-work. Duplicate registration raises at wiring time; everything at call time is a `ToolResult`.
+return `BAD_ARGUMENTS`, and a tool that raises anyway is caught **and still handed to the
+post-hooks** (T2), so the one call that breaks the contract is not the one call whose span never
+closes. A pre-hook returning a `ToolResult` short-circuits the tool — that is how the budget
+refusal works. Duplicate registration raises at wiring time; everything at call time is a
+`ToolResult`.
+
+**`tools/hooks.py`** (T2/T3) — `TOOL_BUDGET`, `enforce_run_budget`, `TracingHooks` and
+`install_registry_hooks`, which `wiring.py` calls. **Install order is the behaviour:** the
+tracing pre-hook first (so a refused call is still a span), `enforce_run_budget` second (so
+nothing runs unpaid), the tracing post-hook over whichever result came back. The span id is
+correlated between the two halves by the `ToolInvocation` object, not by re-reading
+`ctx.current_span_id`. Budget enforcement is unconditional; tracing needs a `Tracer` and is
+otherwise absent.
 
 **The LLM contract** (`llm/base.py`): `Message{role, content}`, `ToolSpec{name, description,
 parameters: JSON Schema}`, `ToolCall{name, arguments: dict}`, `LLMResponse{text, model, provider,
@@ -468,16 +554,15 @@ Invariants later work must preserve:
   fully-judged hops plus the report into `MAX_MODEL_CALLS=10` with nothing to spare.
   **`finalise` claims with no reserve** — a refusal there means the deadline passed, and the
   run raises `PreparationFailed` rather than returning a partial report.
-- **`_TOOL_BUDGET` + `_claim_for_tool` are the whole of tool-budget enforcement**, deliberately
-  in one piece because Day 4 lifts exactly those two into a registry pre-hook. `web_search` →
-  `search`, `fetch_url` → `fetch`; `read_document` is local disk and free; a name the model
-  invented is absent from the map, so a guessed name cannot drain a budget.
-  **Known over-count Day 4 removes for free:** a correctly named tool with malformed arguments
-  is charged, because the claim must precede the call while `ToolRegistry.call` rejects
-  arguments before the tool runs. Day 4's pre-hook runs *after* that validation, so the move
-  fixes it.
-- **`dispatch_all` is not used by the loop** — a claim has to sit between one call and the
-  next, so `dispatch` is called per tool call, still strictly in the model's own order.
+- **Tool-budget enforcement left the loop in T3.** `TOOL_BUDGET` + `enforce_run_budget` now live
+  in `tools/hooks.py` and run inside `ToolRegistry.call`: `web_search` → `search`, `fetch_url` →
+  `fetch`; `read_document` is local disk and free; a name the model invented is absent from the
+  map, so a guessed name cannot drain a budget. The loop just calls `dispatch`.
+  **The known over-count is gone:** the pre-hook runs *after* argument validation, so a
+  malformed call is `BAD_ARGUMENTS` without being charged. A tool the step was not offered is
+  also no longer charged, since `dispatch` refuses it before the registry is reached.
+- **`dispatch_all` is not used by the loop** — the counters are claimed one call at a time, so
+  `dispatch` is called per tool call, still strictly in the model's own order.
 - **A later hop's question is never written by our code.** `requested_followup` →
   `state.verdict` → `render_progress` → `plan.md`'s "prefer the suggested follow-up" clause.
   The loop only carries it. A null follow-up ends the run (`"no_followup"`); never invent one.
@@ -693,8 +778,9 @@ broken run, not something the agent can reason around. Preserve the asymmetry.
 - **Few tools, enum-routed.** One `web_search` with a `source_type`, one `read_document` with a
   `mode` — a small local model's tool selection degrades as the menu grows. The routing behind
   each enum is deterministic Python.
-- **Hook points now, hooks later.** The pre/post lists exist and stay **empty** until Day 4. Do
-  not install a hook before then, and do not install one from `wiring.py`.
+- **Hooks are installed in exactly one place** — `install_registry_hooks`, called by
+  `wiring.py` (T2/T3). What they do lives in `tools/hooks.py`, never in a tool and never in
+  `registry.py`; the order they are added in is part of the behaviour and is decided there.
 - **`build_tool_registry` builds a fresh registry per call** — no module-level singleton, because
   duplicate names raise by design. It is deliberately **not** re-exported from `tools/__init__.py`
   (which imports only `base` and `registry`), so importing `RunContext` does not drag in `httpx`,
@@ -753,8 +839,8 @@ end in the same shaping function**, so one URL and one question give one answer 
   returned.
 - **No headless browser, no JS rendering**: a client-side-rendered page returns `EMPTY_FILE`, by
   design.
-- `MAX_FETCH_CALLS` is **not** enforced here — that is Day 4's registry pre-hook (and Day 3's
-  in-memory counter).
+- `MAX_FETCH_CALLS` is **not** enforced here — that is the registry pre-hook
+  (`enforce_run_budget`, T3), which claims `fetch` before this tool is ever reached.
 
 `documents/`:
 
@@ -781,8 +867,11 @@ end in the same shaping function**, so one URL and one question give one answer 
 ## SQLite, caches and the quota guard
 
 One file, stdlib `sqlite3`, no ORM, no Redis, no second database. `memory/db.py` owns **all DDL**
-in `SCHEMA_STATEMENTS` (`schema_meta`, `source_cache`, `search_cache`, `search_budget`);
-`SCHEMA_VERSION` is 1 and is only a marker for whoever first changes an existing table's shape.
+in `SCHEMA_STATEMENTS` (`schema_meta`, `source_cache`, `search_cache`, `search_budget`, and Day 4
+T1's `runs`, `spans` + `idx_spans_run`); `SCHEMA_VERSION` is **still 1** — it marks a change to an
+existing table's *shape*, and T1 only appended new tables. Verified against the real populated file:
+the two tables and the index appear, every existing row count is unchanged and `search_budget` still
+reads 13.
 `connect()` sets `row_factory = sqlite3.Row` and the pragmas `foreign_keys=ON`,
 `journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. `initialize_schema` is idempotent;
 `open_database()` runs it on every open. Multi-statement writes go through `transaction(conn)`.
@@ -809,6 +898,13 @@ Feature modules own only their queries — `db.py` stays free of tools, models, 
   `YYYY-MM`. **Reserve before the call; there is no refund path** — a search that times out may
   still have counted at the provider, so over-counting is the safe direction.
   `QUOTA_CONSUMING_BACKENDS = {"serpapi"}` only.
+- **Traces** (`tracing/store.py`, Day 4 T1) — `runs` and `spans`, exactly plan §12.2's columns.
+  `spans.run_id` carries **no foreign key** to `runs.run_id`, matching the plan: `foreign_keys=ON` is
+  set, so a key would make a span unwritable in the one case a trace is most wanted — the one where
+  the run header failed to write. `ended_at`, `ok`, `from_cache` and `duration_ms` are nullable
+  because a row is written when an operation *starts*. `get_spans` orders by `started_at` then
+  `rowid`: two operations can start inside one millisecond and insertion order is the only honest
+  tiebreak.
 - **The search-cache read happens before the quota check**, so a cached query costs neither network
   nor quota. A budget ledger that cannot be read **refuses** the live call as `SEARCH_UNAVAILABLE`
   (never `MONTHLY_BUDGET_EXCEEDED`, which would claim to know something unreadable) — the one place
@@ -824,7 +920,10 @@ inline.** An empty `.env` is a valid, fully local, $0 configuration.
 `SERPAPI_API_KEY`, `MONTHLY_SEARCH_BUDGET`, `SEARCH_TIMEOUT_S`, `SOURCE_EXCERPT_CHARS`,
 `MAX_SOURCE_TEXT_CHARS`, `MAX_DOCUMENT_BYTES`, `MAX_FETCH_BYTES`, `FETCH_TIMEOUT_S`,
 `TOTAL_RUN_TIMEOUT_S` (as the Ollama client timeout), `CACHE_TTL_DAYS`, `SEARCH_CACHE_TTL_DAYS`,
-`DB_PATH`, `ALLOWED_ATTACHMENT_DIR`, `SEARCH_FIXTURE_DIR`.
+`DB_PATH`, `ALLOWED_ATTACHMENT_DIR`, `SEARCH_FIXTURE_DIR`, `TRACE_SUMMARY_CHARS`.
+
+**`TRACE_SUMMARY_CHARS=200`** is the only setting Day 4 added (T1) — the ceiling on a span's
+`input_summary` / `output_summary`. Everything else Day 4 needs was already sized.
 
 **Declared but not yet consumed — these are Day 3's and Day 4's budgets, already sized:**
 `MAX_HOPS=3` (**raised from the plan's 2 on request, Day 3**; 3 is also the ceiling
@@ -838,8 +937,16 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**400 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`; the count was previously recorded as ~356 and had drifted). The newest are
+**432 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`; this count drifts — it has been recorded as ~356, 400 and 420 before, so
+re-measure rather than trusting it). The newest are the 10 in `tests/unit/test_registry_hooks.py`
+(T2/T3) — the span open before the tool and closed after, tool-span parenting, the recorded row
+against the result, two calls paid and the third refused for each budgeted tool, an uncharged
+free tool, the refusal itself traced, a cache hit on the span, and both failure endings. Before
+them, the 8 in `tests/unit/test_tracing.py` (Day 4 T1)
+— parent derivation across all four nesting shapes, id uniqueness and stack unwinding, an
+out-of-order close, both round trips, the caller-supplied-vs-derived duration, a closed connection
+proving a trace failure never reaches the run, and the summary bound. Before them,
 the 8 in `tests/integration/test_single_loop.py` (S13) — the whole run driven through
 `prepare_focus_session` against the **committed** `fixtures/search/` tree and the real SQLite file,
 proving what no unit suite structurally can: that the composition holds, that the shipped offline
@@ -881,7 +988,8 @@ read/unread distinction, the excerpt bound and that a degraded run stays visibly
 2. **Tools never raise**; a failure is a `ToolResult` with a specific `ErrorCode`. Providers *do*
    raise (`LLMError`, `SearchBackendError`) — the failure ladder is the caller's control flow.
 3. **Few tools, enum-routed**, because small-model tool selection degrades as the menu grows.
-4. **Hook points now, hooks later** — the lists stay empty until Day 4.
+4. **One place installs the hooks** — `tools/hooks.py` decides what they do, `wiring.py` says
+   that an assembled registry has them.
 5. **`schemas/` imports nothing** from the package; everything imports it.
 6. **Deterministic first** — no model, embeddings or vector store anywhere in the tool layer.
 7. **Storage is one SQLite file**, stdlib `sqlite3`, no ORM, no migration runner.
@@ -910,6 +1018,7 @@ The repository is authoritative. **Do not "restore" the plan's version of any of
 | `MAX_HOPS = 2` | **`MAX_HOPS = 3`** in `config.py` and `.env.example` | Raised on the user's explicit instruction during Day 3 S1. It is the ceiling: `FocusPreparationReport.hops_used` is `le=3`. Costs one more possible hop's worth of searches and fetches per run |
 | `SearchSourceType` defined in `search/base.py` | Defined in **`schemas/tools.py`**, re-exported unchanged from `search/base.py` | The Supervisor's `source_preference` is the same enum, and `schemas/` may import nothing from the package — so the definition had to move to the layer both sides can see. Every existing importer is unchanged |
 | `schemas/agents.py` reuses `NormalizedSource` for the agent's sources | A distinct `GatheredSource` | Reuse is impossible (`search/normalize.py` imports `schemas`) and wrong: a search hit is not the same thing as a source that was opened and read |
+| Day 4 creates `tracing/context.py` | **`RunContext` stays in `tools/base.py`**, extended in place with the span stack; `tracing/` holds `store.py` and `tracer.py` only | Moving it would touch the registry, every tool, every agent, `service.py` and `main.py` for zero behaviour change. The DDL still goes in `memory/db.py`, whose own docstring specifies exactly that for tracing |
 
 ## Reuse and dependency guidance
 
@@ -949,14 +1058,19 @@ future session damages the project.
 | A source the agent gathered | `schemas.GatheredSource` (not `NormalizedSource`, which is a search hit) |
 | "What has this run seen?" | `RunState.evidence_urls` / `fetched_urls` / `used_queries` / `all_sources` |
 | "What has this run spent?" / may it spend one more? | `RunContext.budget` — `claim(kind)` / `remaining(kind)` / `exhausted_limits`; never a counter of your own |
+| A span id, and what it nests under | `RunContext.begin_span()` / `end_span()` — never mint an id or derive a parent at a call site |
+| Write a run or a span to the trace | `tracing.Tracer` — `start_run` / `finish_run` / `open_span` / `close_span`; never call `tracing.store` from a hook, and never guard a trace write yourself |
+| Read a run's trace back | `tracing.get_run` / `tracing.get_spans` |
 | The source-type enum | `schemas.SearchSourceType` — one definition, re-exported by `search/base.py` |
 
 **What later days depend on:**
 
-- **Day 4** (memory, hooks, tracing) fills the registry's existing hook lists, extends `RunContext`
-  with the span stack, moves budget enforcement out of the Day 3 loop into pre-hooks, and adds
-  `recall_previous_preparation` + `save_preparation` and the `runs`/`spans` tables. **Day 3 should
-  therefore keep budget enforcement in one place, so moving it is a lift and not a rewrite.**
+- **Day 4** (memory, hooks, tracing) — **T1 done**: `RunContext` has the span stack, and the
+  `runs`/`spans` tables and `tracing/` exist. **Still to do:** fill the registry's existing hook
+  lists (T2), move budget enforcement out of the Day 3 loop into pre-hooks (`_TOOL_BUDGET` +
+  `_claim_for_tool` are the two pieces to lift), add `recall_previous_preparation` +
+  `save_preparation` and `prep_memory`/`run_memory`, memory-aware prompting, structured JSON log
+  lines, and `scripts/show_trace.py`.
 - **Day 5** splits Day 3's four functions into `agents/supervisor.py`, `agents/researcher.py`,
   `agents/appraiser.py`. **This is why Day 3 must be written as four separately-prompted functions
   exchanging Pydantic models** — Day 5 then becomes a file move, not a rewrite. Workers reuse the
@@ -1125,10 +1239,20 @@ cached row — that, not a leak, is why `search_budget` runs slightly ahead of t
   bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
   the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
-**Missing (later days):** hooks, tracing, `runs`/`spans` tables, `recall_previous_preparation`,
-`save_preparation`, memory-aware prompting (Day 4) · the supervisor/worker split (Day 5) · the MCP
-server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo
-(Day 7).
+**Missing (later days):** structured JSON logging, `scripts/show_trace.py`,
+`prep_memory`/`run_memory`, `recall_previous_preparation`, `save_preparation`, memory-aware
+prompting (Day 4 T4 onward) · the supervisor/worker split (Day 5) · the MCP server, client and
+`.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7).
+
+**Only *tool* spans exist so far.** T2 wired the run header and one span per tool call. There are
+no `agent` or `llm` spans yet, so a trace is currently one flat level of tool calls under the run
+— the parenting is already derived from `RunContext`'s stack, so those spans nest correctly the
+day something opens them, with no change to `tools/hooks.py`.
+
+**`RunState.validation_errors` is still unsurfaced.** S11 handed it to Day 4 tracing and neither
+T1 nor T2 took it: a corrected-then-successful run needs a *finalisation* span to carry it, and
+T2 added only tool spans. The field's lifecycle stays live (set on a rule failure, cleared on a
+drift).
 
 **Outstanding Day 1/Day 2 validation — partially cleared during S14 (2026-08-16):**
 
@@ -1213,7 +1337,31 @@ has ever been made). S10's stake stands: the ladder's final rung is unproven.
 
 ---
 
-## Current milestone — Day 3: single research agent (the core loop)
+## Current milestone — Day 4: memory, hooks and tracing
+
+**Goal (plan §24):** the system remembers across runs, and every tool call is timestamped, traced and
+budget-checked.
+
+| # | Subtask | Primary targets | Status |
+| --- | --- | --- | --- |
+| **T1** | **Tracing foundation** — the span stack on `RunContext`; the `runs`/`spans` tables; `tracing/store.py` (rows, raises) and `tracing/tracer.py` (the hook-facing API, swallows `sqlite3.Error`). `TRACE_SUMMARY_CHARS` added. **Wired to nothing** — the agent flow is byte-identical | `tools/base.py`, `memory/db.py`, `tracing/`, `config.py`, `.env.example`, `tests/unit/test_tracing.py` | **Done** |
+| **T2** | **Registry hook chains** — `tools/hooks.py`: span open/close around every tool call, `from_cache` on the span, `ToolResult.duration_ms` passed through. `service.py` owns the run's connection, writes the run header and closes it `ok`/`failed`/`budget_exhausted`. A raising tool now also reaches the post-hooks, so its span closes | `tools/hooks.py`, `tools/registry.py`, `tools/wiring.py`, `service.py` | **Done** |
+| **T3** | **Budget enforcement into the pre-hook** — `_TOOL_BUDGET` + `_claim_for_tool` lifted out of `single_agent.py` into `enforce_run_budget`; a refused `claim` becomes `ToolResult(BUDGET_EXCEEDED)` and the tool never runs. Removed the over-count on malformed arguments, and on a tool the step was not offered | `tools/hooks.py`, `agents/single_agent.py` | **Done** |
+| **T4** | **Persistent memory** — `prep_memory`, `run_memory`, `recall_previous_preparation`, `save_preparation`, task-key normalisation, the 30-day recall window | `memory/`, `tools/`, `wiring.py` | Not started |
+| **T5** | **Memory-aware prompting** — prior `topics_covered` / `topics_deferred` reach the planner | `llm/prompts/plan.md`, `agents/prompt_context.py` | Not started |
+| **T6** | **Trace renderer + JSON log lines** — `scripts/show_trace.py <run_id>` prints §13's tree | `scripts/`, `tracing/` | Not started |
+
+**Acceptance criteria (plan §24):** zero tool calls outside the registry · the trace tree renders with
+correct nesting and timings · run 2 covers different topics from run 1 and says so in
+`interpreted_goal` · budget exhaustion produces an honest report with populated `unknowns`, not a
+crash.
+
+**Day 3 is not signed off.** Two more S14 acceptance runs are owed for "valid report on ≥4 of 5
+attempts". They are independent of Day 4 work, which does not touch the loop's decisions.
+
+---
+
+## Previous milestone — Day 3: single research agent (the core loop)
 
 **Goal:** one agent that plans, searches, reads, decides whether it has enough, performs a second
 hop when needed, and produces a validated `FocusPreparationReport`. No Supervisor, no workers yet.

@@ -38,7 +38,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -68,7 +68,6 @@ from evergrove_agent.llm.prompts import render_prompt
 from evergrove_agent.schemas import (
     AppraisalRequest,
     AppraisalVerdict,
-    ErrorCode,
     FocusPreparationReport,
     GatheredSource,
     ResearchAction,
@@ -77,12 +76,10 @@ from evergrove_agent.schemas import (
     RunState,
     SupervisorDecision,
     TaskContext,
-    ToolError,
     ToolFailure,
-    ToolResult,
 )
 from evergrove_agent.search.normalize import canonicalize_url
-from evergrove_agent.tools.base import BudgetKind, RunBudget, RunContext
+from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.fetch_url import FetchUrlOutput
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tools.validate_report import ReportIssue, validate_report
@@ -165,17 +162,6 @@ The same reservation applied twice. Without it a hop can gather evidence and the
 itself unjudged, which is the one outcome that wastes both the searches and the reads it
 just spent."""
 
-_TOOL_BUDGET: dict[str, BudgetKind] = {
-    "web_search": "search",
-    "fetch_url": "fetch",
-}
-"""Which tools cost which counter. `read_document` reads local disk and costs neither.
-
-This mapping plus `_claim_for_tool` below is the whole of the loop's tool-budget
-enforcement, deliberately in one place: Day 4 lifts exactly these two into a registry
-pre-hook, and a lift is only cheap while it is one piece."""
-
-
 def _claim_reasoning_call(budget: RunBudget, *, reserve: int) -> bool:
     """Spend one model call on a non-final stage, keeping `reserve` calls back.
 
@@ -187,51 +173,6 @@ def _claim_reasoning_call(budget: RunBudget, *, reserve: int) -> bool:
     if budget.remaining("model_call") <= reserve:
         return False
     return budget.claim("model_call")
-
-
-def _claim_for_tool(call: ToolCall, budget: RunBudget) -> ToolResult[Any] | None:
-    """Pay for a tool call before it runs, or refuse it as a result the model can read.
-
-    `None` means paid — the caller dispatches. A `ToolResult` means refused, and the tool is
-    never reached, which is what makes the count honest: claiming after the call would let a
-    timed-out call go uncounted.
-
-    This is the `False` → `ToolResult(BUDGET_EXCEEDED)` lift that S4's docstring describes,
-    written here rather than in `RunBudget` so the ledger stays free of `ErrorCode`.
-
-    A tool with no counter (`read_document`) is free. So is a name the model invented: it is
-    not in the mapping, so it costs nothing and `dispatch` refuses it a moment later — a
-    guessed name must not be able to drain a budget.
-
-    **Known over-count, resolved by Day 4.** A correctly named tool whose *arguments* are
-    malformed is charged here, because the claim has to come before the call and only the
-    registry can judge arguments. Day 4's pre-hook runs after `ToolRegistry.call` has
-    validated them, so moving this there stops the over-count for free — one more reason the
-    mapping and the lift stay in one piece. Over-counting is the safe direction meanwhile,
-    and `render_tool_outcome` hands the model the offending field so its next turn recovers.
-    """
-    kind = _TOOL_BUDGET.get(call.name)
-    if kind is None or budget.claim(kind):
-        return None
-    return ToolResult(
-        ok=False,
-        error=ToolError(
-            code=ErrorCode.BUDGET_EXCEEDED,
-            message=(
-                f"this run has no {_BUDGET_NOUNS[kind]} left, so {call.name} was not run. "
-                "Work with what you already have."
-            ),
-            retryable=False,
-        ),
-        duration_ms=0,
-    )
-
-
-_BUDGET_NOUNS: dict[BudgetKind, str] = {
-    "search": "searches",
-    "fetch": "page reads",
-    "model_call": "model calls",
-}
 
 
 # --- the providers the four stages use ----------------------------------------------------
@@ -494,12 +435,9 @@ async def run_research_step(
 
         outcomes: list[ToolCallOutcome] = []
         for call in calls:
-            refusal = _claim_for_tool(call, budget)
-            result = (
-                refusal
-                if refusal is not None
-                else await dispatch(call, registry=registry, ctx=ctx, allowed=allowed)
-            )
+            # The registry's pre-hook claims the counter and refuses the call when the run
+            # cannot afford it (Day 4 T3), so the loop no longer pays for tools itself.
+            result = await dispatch(call, registry=registry, ctx=ctx, allowed=allowed)
             outcome = ToolCallOutcome(call=call, result=result)
             outcomes.append(outcome)
             _absorb(outcome, assignment, sources, queries, failures, settings)

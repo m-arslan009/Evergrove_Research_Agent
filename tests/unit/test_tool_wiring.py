@@ -3,7 +3,8 @@ through the assembled registry reach the real tool?
 
 The individual tools are proven in their own suites; nothing is re-proven here. What this
 suite protects is the wiring itself — a finished tool never registered, a name that drifted,
-a hook slipped in early, or a factory that quietly returns one shared registry. The two
+a hook chain assembled in the wrong order, or a factory that quietly returns one shared
+registry. The two
 end-to-end cases run against a temporary attachment directory and a temporary SQLite file,
 with `respx` active and no routes registered, so any HTTP request at all fails the test
 rather than leaving the machine.
@@ -27,6 +28,7 @@ from evergrove_agent.memory import db
 from evergrove_agent.schemas import ErrorCode, ToolResult
 from evergrove_agent.tools import RunContext
 from evergrove_agent.tools.cli import _build_call, build_parser, run
+from evergrove_agent.tools.hooks import enforce_run_budget
 from evergrove_agent.tools.read_document import ReadDocumentTool
 from evergrove_agent.tools.wiring import TOOL_NAMES, build_tool_registry
 
@@ -81,14 +83,28 @@ def test_each_build_is_a_fresh_independent_registry(settings: Settings) -> None:
     assert first.get("web_search") is not second.get("web_search")
 
 
-def test_wiring_installs_no_hooks(settings: Settings) -> None:
-    """The pre/post extension points belong to the tracing capability. Catches a hook
-    installed early, which would change every tool's behaviour from the composition root
-    rather than from the code that owns the concern."""
-    registry = build_tool_registry(settings)
+def test_every_wired_registry_enforces_the_budget_and_traces_only_on_request(
+    settings: Settings,
+) -> None:
+    """Two opposite mistakes, one assertion each (Day 4 T2/T3).
 
-    assert registry._pre_hooks == []
-    assert registry._post_hooks == []
+    Budget enforcement is not optional: a wired registry that forgot its pre-hook would let
+    a run spend without limit, and every caller would have to remember to install it.
+    Tracing is the opposite — it needs somewhere to write, so a registry that started
+    writing spans without being given a tracer would be tracing by accident.
+    """
+    untraced = build_tool_registry(settings)
+
+    assert untraced._pre_hooks == [enforce_run_budget]
+    assert untraced._post_hooks == []
+
+    traced = build_tool_registry(settings, tracer=object())
+
+    assert len(traced._pre_hooks) == 2
+    assert traced._pre_hooks[-1] is enforce_run_budget, (
+        "the span must be opened before the budget can short-circuit the call"
+    )
+    assert len(traced._post_hooks) == 1
 
 
 # --- the registry contracts, over the real tool set ------------------------------------------
