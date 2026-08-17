@@ -1,0 +1,18 @@
+{
+  "query": "postgresql b-tree index page splits and merges documentation",
+  "source_type": "docs",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/btree.html",
+      "title": "Documentation: 18: 65.1. B-Tree Indexes",
+      "snippet": "A page split operation makes room for items that originally belonged on the overflowing page by moving a portion of the items to a new page."
+    },
+    {
+      "url": "https://pganalyze.com/blog/5mins-postgres-hot-updates-vs-bottom-up-index-deletion",
+      "title": "5mins of Postgres E14: HOT Updates vs Bottom-Up Index ...",
+      "snippet": "A page split in a B-tree index occurs when you're adding a new index entry, but there's not enough space in the index page you're trying to add ..."
+    }
+  ]
+}

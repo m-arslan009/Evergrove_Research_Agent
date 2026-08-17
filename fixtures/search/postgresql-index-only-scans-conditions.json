@@ -1,0 +1,23 @@
+{
+  "query": "postgresql index-only scans conditions",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-16.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-index-only-scans.html",
+      "title": "18: 11.9. Index-Only Scans and Covering Indexes",
+      "snippet": "The index type must support index-only scans. B-tree indexes always do. · The query must reference only columns stored in the index. For example, given an index ..."
+    },
+    {
+      "url": "https://wiki.postgresql.org/wiki/Index-only_scans",
+      "title": "Index-only scans - PostgreSQL wiki",
+      "snippet": "Index-only scans are a major performance feature added to Postgres 9.2. They allow certain types of queries to be satisfied just by retrieving ..."
+    },
+    {
+      "url": "https://medium.com/towardsdev/when-postgresql-performs-index-scan-vs-index-only-scan-8000f776181e",
+      "title": "When PostgreSQL Performs Index Scan vs Index-Only Scan",
+      "snippet": "Conditions for Index-Only Scan: · All columns used in the query (SELECT/WHERE) are present in the index. · Visibility Map confirms that all ..."
+    }
+  ]
+}

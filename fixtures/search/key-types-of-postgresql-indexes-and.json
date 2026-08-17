@@ -1,0 +1,23 @@
+{
+  "query": "key types of postgresql indexes and when to use each for optimal query performance",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.percona.com/blog/a-practical-guide-to-postgresql-indexes/",
+      "title": "A Practical Guide to PostgreSQL Indexes",
+      "snippet": "B-tree indexes: The most common type, ideal for equality and range queries. · Hash indexes: Suitable for simple equality comparisons. · GiST ( ..."
+    },
+    {
+      "url": "https://devcenter.heroku.com/articles/postgresql-indexes",
+      "title": "Efficient Use of PostgreSQL Indexes",
+      "snippet": "Partial Indexes Expression Indexes Unique Indexes Multi-Column Indexes B-trees and Sorting Managing and Maintaining Indexes"
+    },
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-types.html",
+      "title": "Documentation: 18: 11.2. Index Types",
+      "snippet": "PostgreSQL provides several index types: B-tree, Hash, GiST, SP-GiST, GIN, BRIN, and the extension bloom. Each index type uses a different algorithm that is"
+    }
+  ]
+}

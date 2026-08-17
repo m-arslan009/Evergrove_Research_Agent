@@ -1,0 +1,23 @@
+{
+  "query": "postgresql b-tree index implementation for ordered data query optimization",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/btree.html",
+      "title": "Documentation: 18: 65.1. B-Tree Indexes",
+      "snippet": "PostgreSQL includes an implementation of the standard btree. Any data type that can be sorted into a well-defined linear order can be indexed by a btree index."
+    },
+    {
+      "url": "https://pganalyze.com/blog/postgresql-vs-sql-server-btree-index-deduplication",
+      "title": "Postgres vs. SQL Server: B-Tree Index Differences & the ...",
+      "snippet": "At a high level, both databases use B-Tree indexes to speed up equality and range queries. B-Trees maintain sorted order and are balanced for ..."
+    },
+    {
+      "url": "https://iniakunhuda.medium.com/b-tree-implementation-in-postgresql-deep-dive-into-database-indexing-b1a34032637d",
+      "title": "B-Tree Implementation in PostgreSQL: Deep Dive into ...",
+      "snippet": "Indexing is one of the core elements of database optimization, allowing quick data retrieval and efficient storage management."
+    }
+  ]
+}

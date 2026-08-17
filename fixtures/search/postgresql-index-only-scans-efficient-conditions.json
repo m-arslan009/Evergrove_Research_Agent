@@ -1,0 +1,13 @@
+{
+  "query": "postgresql index-only scans efficient conditions",
+  "source_type": "general",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-16.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-index-only-scans.html",
+      "title": "18: 11.9. Index-Only Scans and Covering Indexes",
+      "snippet": "PostgreSQL supports index-only scans, which can answer queries from an index alone without any heap access. The basic idea is to return values directly out of ..."
+    }
+  ]
+}

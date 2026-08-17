@@ -1,0 +1,23 @@
+{
+  "query": "key types of postgresql indexes for optimal query performance",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://medium.com/autodesk-tlv/mastering-postgresql-indexes-for-optimal-performance-5e4b0dc293e5",
+      "title": "Mastering PostgreSQL Indexes for Optimal Performance",
+      "snippet": "PostgreSQL spoils you with index types, each tailored to specific scenarios. Let's explore a couple: ... CREATE INDEX idx_multi_column ON ..."
+    },
+    {
+      "url": "https://www.mydbops.com/blog/postgresql-indexing-best-practices-guide",
+      "title": "PostgreSQL Index Best Practices for Faster Queries",
+      "snippet": "Boost PostgreSQL query performance with the right indexing strategies. Learn best practices for using B-Tree, Hash, GIN, and more to Contact ..."
+    },
+    {
+      "url": "https://www.tigerdata.com/learn/postgresql-performance-tuning-optimizing-database-indexes",
+      "title": "PostgreSQL Tuning: Database Indexes",
+      "snippet": "index types, from the default b-tree indexes to more exotic types like hash, GIN, GiST, or BRIN. Only index what you need."
+    }
+  ]
+}
