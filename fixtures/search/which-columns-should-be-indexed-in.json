@@ -1,0 +1,23 @@
+{
+  "query": "which columns should be indexed in postgresql for read-heavy queries",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.reddit.com/r/PostgreSQL/comments/1nte58c/how_do_i_decide_what_columns_need_to_be_indexed/",
+      "title": "How do I decide what columns need to be indexed?",
+      "snippet": "Hi I’m learning postgres and creating a normalized database structure with tables and references but I don’t know how to decide what columns should ..."
+    },
+    {
+      "url": "https://neon.com/blog/if-i-have-read-only-tables-in-postgres-should-i-index-them-heavily",
+      "title": "If I have read-only tables in Postgres, should I index them ...",
+      "snippet": "Therefore, if you have complex queries, you should add indexes to the columns that appear frequently in your WHERE clauses, JOIN conditions, ..."
+    },
+    {
+      "url": "https://medium.com/@hassan-murtaza/to-index-or-not-to-index-a-guide-to-effective-indexing-in-postgresql-1d6559ffb034",
+      "title": "A Guide to Effective Indexing in PostgreSQL",
+      "snippet": "This guide will walk you through how to determine which columns should be indexed ... Read-heavy workloads: Tables where the speed of SELECT ..."
+    }
+  ]
+}

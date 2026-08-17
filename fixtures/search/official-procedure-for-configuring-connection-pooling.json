@@ -1,0 +1,23 @@
+{
+  "query": "official procedure for configuring connection pooling in postgresql to ensure optimal performance and scalability",
+  "source_type": "docs",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://cloud.ibm.com/docs/databases-for-postgresql?topic\\u003ddatabases-for-postgresql-managing-connections\\u0026locale\\u003den",
+      "title": "Managing connections | IBM Cloud Docs",
+      "snippet": "Performance benchmarking in the PostgreSQL community suggests 500 connections or fewer to be optimal for database performance. You need to consult your driver' ..."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/azure/postgresql/connectivity/concepts-connection-pooling-best-practices",
+      "title": "Connection Pooling Strategy Using PgBouncer in Azure ...",
+      "snippet": "This article describes the best practices for connection pooling in an Azure Database for PostgreSQL flexible server."
+    },
+    {
+      "url": "https://www.architecture-weekly.com/p/architecture-weekly-189-mastering",
+      "title": "Mastering Database Connection Pooling - by Oskar Dudycz",
+      "snippet": "Monitor and tune pool settings regularly. This is essential to maintaining optimal performance. Track metrics such as connection usage, wait ..."
+    }
+  ]
+}

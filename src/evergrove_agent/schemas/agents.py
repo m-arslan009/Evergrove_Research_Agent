@@ -139,6 +139,51 @@ class SupervisorDecision(BaseModel):
 # --- stage 2: the research step -----------------------------------------------------------
 
 
+class ResearchAction(BaseModel):
+    """MODEL OUTPUT. One research turn: call one tool, or stop.
+
+    **Day 3's contingency option (2), spent during S14.** The research step originally used
+    free-form tool calling. It worked — `qwen3:4b` chose the right tool with sensible
+    arguments — but unconstrained decoding let the model precede the call with ~4 000
+    characters of reasoning, measured at **361 s per turn against 46 s for a constrained
+    call on the same machine**. Constraining the turn to this schema makes that preamble
+    physically impossible. `dispatch` already takes a `ToolCall`, so the loop constructs one
+    from this and there is no second tool path.
+
+    Deliberately *not* a `Literal` over the tool names: `advertised_tool_names` is both the
+    advertisement and the allow-list, and a second copy of the menu here would drift from it
+    the moment an attachment changes what is offered. An invented name stays what it always
+    was — a `ToolResult(UNKNOWN)` from `dispatch`, before the registry is reached.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(
+        default="",
+        max_length=64,
+        description="The tool to call, named exactly as in the available tools. Leave "
+        "empty when this question has been researched enough.",
+    )
+    arguments: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description="The tool's arguments, exactly as its schema names them.",
+    )
+    """Scalar values only, which is every argument the advertised tools actually take
+    (`query`, `source_type`, `max_results`, `url`, `max_chars`, `excerpt_for`, `path`,
+    `mode`, `section_hint`). Typing it beats `dict[str, Any]` twice: constrained decoding
+    gets a value grammar instead of "any JSON", and the mapping still reaches
+    `registry.call` raw, so `_parse_args` stays the single argument validator."""
+
+    reasoning: str = Field(
+        default="",
+        max_length=400,
+        description="One line on why this call. Read by a human in the trace, never parsed.",
+    )
+    """Bounded on purpose. The model will reason somewhere; a short sanctioned field costs
+    ~100 tokens, while the unconstrained turn this replaced spent ~1 000 on the same thing.
+    It becomes the hop's `notes`, which is what `response.text` used to supply."""
+
+
 class ResearchAssignment(BaseModel):
     """Supervisor → Researcher. Code-assembled from a `SupervisorDecision` and the budget.
 

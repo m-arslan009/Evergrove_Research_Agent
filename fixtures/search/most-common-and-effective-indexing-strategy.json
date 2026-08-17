@@ -1,0 +1,23 @@
+{
+  "query": "most common and effective indexing strategy for optimizing read-heavy postgresql queries without causing excessive overhead",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.percona.com/blog/a-practical-guide-to-postgresql-indexes/",
+      "title": "A Practical Guide to PostgreSQL Indexes",
+      "snippet": "B-tree indexes are the default and most commonly used index type in PostgreSQL. They are well-suited for a wide range of queries, including ..."
+    },
+    {
+      "url": "https://www.mydbops.com/blog/postgresql-indexing-best-practices-guide",
+      "title": "PostgreSQL Index Best Practices for Faster Queries",
+      "snippet": "Indexing Every Column: Creating indexes without a purpose increases storage and write overhead. Ignoring Index Maintenance: Failing to rebuild ..."
+    },
+    {
+      "url": "https://neon.com/blog/if-i-have-read-only-tables-in-postgres-should-i-index-them-heavily",
+      "title": "If I have read-only tables in Postgres, should I index them ...",
+      "snippet": "Therefore, if you have complex queries, you should add indexes to the columns that appear frequently in your WHERE clauses, JOIN conditions, ..."
+    }
+  ]
+}

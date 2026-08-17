@@ -877,3 +877,71 @@ run_id, attempts and issues, so service.py and the CLI can render the errors ins
 sentence. The loop suite's scripted report drops its citation, because those tests prove how the
 loop stops and degrades rather than how citations are checked; grounding is proven separately
 against a URL the run actually fetched.
+
+`Title`: Wire the research agent into the CLI
+
+`User prompt`: We have completed the Day 3 implementation subtasks, but running the command still
+returns "Research mode is not built yet — it is the Day 3 loop...". Verify whether the research
+agent is simply wired into the CLI or not. Make the existing CLI execute the research-agent flow
+when research mode is requested. First inspect then propose the smallest change required. The
+intended architecture should remain approximately: CLI → service/public agent entry point →
+single-agent loop → validated FocusPreparationReport → CLI prints JSON. Verify that --no-research
+or equivalent command still works. Normal research mode no longer prints the old "not built yet"
+message. Command returns a validated FocusPreparationReport. Provider override still works.
+--fully-local still enforces local-only provider selection. Attachment input is passed into the
+research flow correctly when provided. Research failures produce the project's intended graceful
+behaviour rather than falling back to the old placeholder. If the old placeholder/error branch is
+now obsolete, remove or replace it cleanly. Do not leave dead code that still claims research mode
+is unimplemented. When entering the command show some progress and do not halt the screen while
+doing background processing.
+
+`Title`: Offline integration tests for the Day 3 research loop
+
+`User prompt`: Research loop offline using the existing FakeProvider, fixture search backend,
+service entry point, tool registry, schemas, and current agent contracts. Cover these required
+cases: a full offline run produces a valid FocusPreparationReport in under 2 seconds with no
+internet or real model calls; an insufficient sufficiency verdict generates exactly one genuine
+second hop based on information from hop 1; the configured hop cap cannot be exceeded;
+SEARCH_UNAVAILABLE degrades gracefully and still reaches finalisation with the limitation
+reflected honestly; invalid final output retries correctly and three consecutive invalid outputs
+raise PreparationFailed; and a report citing a URL outside the run's allowed evidence set is
+rejected by grounding validation. Keep the tests deterministic, fast, network-free, and focused on
+end-to-end Day 3 behavior rather than re-testing every unit-level detail. Before implementation,
+provide a short plan describing the scenarios, fixtures/scripts required, and how the full loop
+will be exercised, then wait for approval.
+
+`Title`: Day 3 S14 — live end-to-end verification with real Ollama and SerpAPI
+
+`User prompt`: Implement Day 3 Subtask S14 as the final live end-to-end verification using the
+real Ollama provider, SerpAPI, and existing Day 2 tools through the completed CLI/service flow.
+During the same session, record successful live SerpAPI responses into fixtures/search/ using the
+project's existing fixture format so future tests remain offline and reproducible, without
+manually fabricating fixture data. Also close any outstanding Day 1/2 live verification gaps that
+are required for this end-to-end run. Do not change core agent architecture merely to make the
+demo pass; if a live failure reveals a real bug, diagnose it, make only the smallest necessary
+fix, rerun the affected checks, and report it clearly. After verification, run the relevant
+tests/full suite, update docs/research-agent-context.md with S14 results, success rate, verified
+multi-hop behavior, recorded fixtures, and any remaining limitations, then mark Day 3 complete
+only if all Definition-of-Done conditions are satisfied.
+
+`Title`: Contingency option (2) adopted — constrained research decision replaces free-form tool calling
+
+`User prompt`: [Decision taken during S14, on measured evidence] Free-form tool calling produced
+correct tool calls on qwen3:4b but cost 361 s per research turn against 46 s for a constrained
+call, making a full run ~38 minutes against a 900 s deadline. Spend contingency option 2: swap
+free-form tool calling for a structured {action, arguments} decision under a constrained schema
+inside run_research_step.
+
+`Title`: Verify the Day 3 research agent end to end on the real local Ollama flow
+
+`User prompt`: Verify the Day 3 research agent end to end using the real local Ollama flow. Run a
+representative task such as Learn PostgreSQL indexing and confirm planning completes, tool schemas
+are understood, web_search and fetch_url execute without BAD_ARGUMENTS, evidence is gathered,
+sufficiency and multi-hop behavior work correctly, budgets/hop limits are respected, finalisation
+and grounding validation succeed, and the CLI returns a valid FocusPreparationReport. Also run one
+simple task that should stop after one hop. Do not change code initially; if something fails,
+identify the exact stage and root cause, then propose the smallest fix before implementing it.
+
+`Title`: Stop the S14 acceptance runs after the third run
+
+`User prompt`: this is the last run do not run 4 to 5 to check validity. stop after 3rd run

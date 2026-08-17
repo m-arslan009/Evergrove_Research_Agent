@@ -22,6 +22,7 @@ from evergrove_agent.documents.pdf import read_pdf
 from evergrove_agent.documents.reader import (
     READERS,
     read_document_file,
+    resolve_attachment,
     select_section,
 )
 from evergrove_agent.documents.text import read_text
@@ -38,6 +39,7 @@ __all__ = [
     "read_document_file",
     "read_pdf",
     "read_text",
+    "resolve_attachment",
     "select_passages",
     "select_section",
 ]

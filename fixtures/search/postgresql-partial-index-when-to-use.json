@@ -1,0 +1,38 @@
+{
+  "query": "postgresql partial index when to use",
+  "source_type": "general",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-16.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-partial.html",
+      "title": "Documentation: 18: 11.8. Partial Indexes",
+      "snippet": "To be precise, a partial index can be used in a query only if the system can recognize that the WHERE condition of the query mathematically implies the ..."
+    },
+    {
+      "url": "https://atlasgo.io/guides/postgres/partial-indexes",
+      "title": "Partial Indexes in PostgreSQL",
+      "snippet": "Partial indexes are useful in cases where we know ahead of time that a table is most frequently queried with a certain WHERE clause. As applications evolve, ..."
+    },
+    {
+      "url": "https://medium.com/little-programming-joys/unique-partial-indexes-with-postgresql-86e137905c12",
+      "title": "Unique partial indexes with PostgreSQL | by Anderson Dias",
+      "snippet": "Partial indexes are great when you need to filter a specific subset of data. It's an index, like any other, with a scope, and indexes can be ..."
+    },
+    {
+      "url": "https://www.reddit.com/r/Database/comments/od1bb3/are_you_aware_of_partial_indexes_indexing/",
+      "title": "Are you aware of \"Partial Indexes : Indexing selected rows\"?",
+      "snippet": "Partial Indexes is one of the commonly ignored database query optimisation technique. Partial indexing is less discussed but should be incorporated along ..."
+    },
+    {
+      "url": "https://www.datacamp.com/doc/postgresql/partial-indexes",
+      "title": "PostgreSQL Partial Indexes",
+      "snippet": "Partial indexes are used when you want to index a subset of rows in a table, typically those that meet specific criteria, to improve query performance"
+    },
+    {
+      "url": "https://oneuptime.com/blog/post/2026-01-30-partial-index-design/view",
+      "title": "How to Create Partial Index Design",
+      "snippet": "Partial indexes are a powerful tool for optimizing database performance when you consistently query a subset of your data."
+    }
+  ]
+}

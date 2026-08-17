@@ -121,23 +121,29 @@ project is finished: five tools behind one registry, three search backends, PDF/
 text readers, the SQLite caches and the monthly search-quota guard, all usable offline
 from a CLI. The agent loop itself now plans, searches, reads, judges whether it has
 enough, performs a genuine second hop, and writes a report that is checked against the
-run's own evidence and retried when it fails. What is still missing is the entry point
-that ties it together (`service.py`), the research mode on the main CLI, memory, tracing,
-the supervisor/worker split, and the MCP server.
+run's own evidence and retried when it fails — and the main CLI runs it, through
+`service.py`, the one entry point the Day 6 MCP server will also call.
+
+**The loop has now been run live**, against a real local `qwen3:4b` and real SerpAPI: three
+end-to-end runs, three valid reports, every cited URL verified as genuinely fetched, and one run
+performing a second hop whose query came from a page the first hop had read. Day 3 is **not signed
+off**: its criterion is a valid report on ≥4 of 5 attempts and only 3 were run. What is still
+missing is those two runs, memory, tracing, the supervisor/worker split, and the MCP server.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **In progress** — S1–S10 done, S11–S14 remain |
+| 3 | Single research agent — the core loop | **S1–S14 done and live-verified** — sign-off pending 2 more acceptance runs |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server, MCP client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
-Day 3's remaining subtasks are `service.py` (S11), CLI research mode (S12), the offline
-integration suite (S13), and the live end-to-end verification (S14). **No live model or
-live search run has been performed yet** — see *Local model setup* below.
+Day 3's subtasks are all implemented. S14's live verification found and fixed five defects the
+offline suite could not see — the largest being that an unconstrained tool-calling turn cost 361 s
+against 46 s for a constrained one on this CPU-only machine. See
+`docs/research-agent-context.md`, *S14 results*.
 
 What exists today:
 
@@ -145,7 +151,8 @@ What exists today:
 pyproject.toml · uv.lock · .env.example · .gitignore · README.md · prompts.md
 src/evergrove_agent/
   config.py            every tunable value: models, budgets, TTLs, timeouts, paths
-  main.py              CLI — only --no-research works today
+  main.py              CLI — research mode and --no-research
+  service.py           the one entry point: composes a run and calls the loop
   schemas/             task.py · report.py · tools.py · agents.py
                        (Pydantic only, imports nothing from the package)
   llm/                 base.py · ollama_provider.py · hosted_provider.py ·
@@ -302,17 +309,35 @@ else's clone.
 
 ## Running the agent
 
-One mode works today — preparation from model knowledge alone, with no sources:
+Two modes. **Research mode is the default** — it plans, searches, reads pages, judges
+whether it has enough and hops again if it does not:
 
 ```bash
-uv run python -m evergrove_agent.main --task "Learn PostgreSQL indexing" --minutes 25 --no-research
+uv run evergrove-agent --task "Learn PostgreSQL indexing" --minutes 25
 
-# same thing, via the installed console script
+# same thing, without the installed console script
+uv run python -m evergrove_agent.main --task "Learn PostgreSQL indexing" --minutes 25
+```
+
+`--no-research` prepares from model knowledge alone, with no sources and no search:
+
+```bash
 uv run evergrove-agent --task "Learn PostgreSQL indexing" --minutes 25 --no-research
 ```
 
-This prints a validated `FocusPreparationReport` as JSON. It needs Ollama running with
-`qwen3:4b` pulled, **or** `--provider hosted` with a `GOOGLE_API_KEY` set.
+Both print a validated `FocusPreparationReport` as JSON on stdout. Both need Ollama
+running with `qwen3:4b` pulled, **or** `--provider hosted` with a `GOOGLE_API_KEY` set.
+
+A research run on this hardware takes minutes, so it prints a live status line to
+**stderr** while it works — elapsed time and what it has spent of its model-call, search
+and page-read allowances:
+
+```
+/ preparing  1:12   model calls 4/10   searches 2/3   page reads 1/4
+```
+
+That line is terminal-only and suppressible with `--quiet`, so `evergrove-agent … > out.json`
+is byte-identical either way: stdout carries the report and nothing else.
 
 Flags that exist:
 
@@ -321,14 +346,17 @@ Flags that exist:
 | `--task` | The task title, as the user wrote it (required) |
 | `--minutes` | Session length, 5–180. Default 25 |
 | `--description` | Optional extra context |
-| `--no-research` / `--no-search` | Prepare from model knowledge alone. The only mode today |
+| `--no-research` / `--no-search` | Prepare from model knowledge alone. No search, no fetching, no sources |
 | `--provider local\|hosted` | Override the configured provider for this run |
 | `--fully-local` | Refuse to start if any role resolves to `hosted` |
+| `--quiet` | Suppress the progress line. The report is unaffected |
 | `--indent` | JSON indent; `0` for one line |
-| `--attachment` | Accepted but refused with a message. The `read_document` tool exists and works (try it through the tools CLI below); wiring it into this CLI is Day 3 S12 |
+| `--attachment` | A `.txt`/`.md`/`.pdf`/`.docx` to prepare from. A relative path resolves inside `ALLOWED_ATTACHMENT_DIR`, and the path is checked before the run starts. Not available with `--no-research`, because reading it is a tool call and that path makes none |
 
-Running **without** `--no-research` exits with a message saying research mode is the
-Day 3 loop. It does not silently fall back.
+A research run that cannot produce a valid report **exits 1 and prints why**. It is never
+downgraded to a `--no-research` result: the two modes make different promises about what a
+report rests on, and answering one with the other would return a sourceless plan under
+flags that asked for sources.
 
 > **TODO (Days 3, 5):** `--mode single` (the single-agent multi-hop demo) and
 > `--mode multi` (supervisor + two workers, the eventual default), plus `--trace` and
@@ -371,8 +399,9 @@ Attachments are **read** today — `.txt`, `.md`, `.pdf` and `.docx`, in `outlin
 / `section` modes, constrained to `ALLOWED_ATTACHMENT_DIR` — through the `read_document`
 tool and the tools CLI.
 
-> **TODO (Day 3 S12):** `--attachment` on the main CLI, so an attachment reaches the
-> research loop rather than only the tool.
+`--attachment` on the main CLI passes one into the research loop: it is what puts
+`read_document` on the researcher's menu for that run, so the attachment is read alongside
+the sources rather than instead of them.
 
 ## Outputs
 
@@ -399,7 +428,9 @@ research was wrong. If no attempt produces a valid report the run raises
 never returns a partial one.**
 
 > **Note:** this applies to the research loop. The `--no-research` path builds its report
-> without layer three; wiring the two together is Day 3 S12.
+> without layer three — it forces `resources: []` and an `unknowns` entry by construction,
+> but the topic-sizing and goal-narrowing rules go unchecked there. Extending the ladder to
+> that path is an open decision, deliberately left out of the S12 wiring work.
 
 ## Search configuration
 
@@ -420,10 +451,10 @@ default.
 
 All three guards are implemented and the backends work.
 
-> **TODO (Day 3 S14):** **no live SerpAPI call has ever been made.** Every recording in
-> `fixtures/search/` is handwritten — the right shape, but not real knowledge, so no
-> report may cite one. Recording genuine responses in the same session that spends them is
-> what makes the rest of the week free and offline.
+**Live SerpAPI is verified.** S14 spent 13 calls of the 200-call budget and captured 12
+recordings into `fixtures/search/`, one per distinct live query, each in the same session as the
+call. The 5 original `handwritten` recordings remain, and the prohibition applies to those alone:
+no report may cite a handwritten fixture.
 
 ## MCP
 

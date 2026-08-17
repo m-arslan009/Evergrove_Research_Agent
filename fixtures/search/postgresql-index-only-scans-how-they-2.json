@@ -1,0 +1,23 @@
+{
+  "query": "postgresql index-only scans how they work when query only needs indexed columns conditions",
+  "source_type": "technical",
+  "recorded_from": "serpapi",
+  "note": "Captured live during Day 3 S14 acceptance, 2026-08-17.",
+  "results": [
+    {
+      "url": "https://www.postgresql.org/docs/current/indexes-index-only-scans.html",
+      "title": "18: 11.9. Index-Only Scans and Covering Indexes",
+      "snippet": "The query must reference only columns stored in the index. It considers a query to be potentially executable by index-only scan only when all columns needed by ..."
+    },
+    {
+      "url": "https://medium.com/@jramcloud1/15-postgresql-17-performance-tuning-index-scans-vs-index-only-scans-f85bcf0a715c",
+      "title": "15 - PostgreSQL 17 Performance Tuning: Index Scans vs. ...",
+      "snippet": "Index-Only Scans in PostgreSQL are a performance booster that let the database serve results directly from the index without consulting the heap ..."
+    },
+    {
+      "url": "https://stackoverflow.com/questions/29467560/why-this-query-is-not-using-index-only-scan-in-postgresql",
+      "title": "Why this query is not using index only scan in postgresql",
+      "snippet": "PostgreSQL index-only scans require some information about which rows are \"visible\" to current transactions - i.e. not deleted, not old versions ..."
+    }
+  ]
+}

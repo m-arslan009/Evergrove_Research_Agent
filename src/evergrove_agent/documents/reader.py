@@ -68,6 +68,22 @@ def read_document_file(
     return document
 
 
+def resolve_attachment(path: str | Path, *, settings: Settings | None = None) -> Path:
+    """Where `read_document` would look for `path`, or `DocumentReadError` saying why not.
+
+    The guard `read_document_file` already applies, exposed on its own so a caller can ask
+    the question *before* committing to a run. The CLI does exactly that: a mistyped
+    `--attachment` otherwise surfaces as a `NOT_FOUND` tool failure several model calls into
+    a research run, and the user pays for the whole run to be told about a typo.
+
+    Deliberately the same function rather than a second existence check at the call site.
+    The containment rule, the relative-path rule and the error codes have one definition,
+    and a pre-flight that disagreed with the tool would be worse than none.
+    """
+    active = settings if settings is not None else get_settings()
+    return _resolve(path, active.allowed_attachment_dir)
+
+
 def _resolve(path: str | Path, allowed_dir: Path) -> Path:
     """Resolve `path` inside the attachment directory, or refuse it.
 
