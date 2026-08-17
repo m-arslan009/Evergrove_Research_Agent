@@ -41,8 +41,7 @@ from evergrove_agent.agents.single_agent import (
 )
 from evergrove_agent.config import Settings
 from evergrove_agent.llm import FakeProvider
-from evergrove_agent.llm.base import LLMResponse, ToolCall
-from evergrove_agent.schemas import RunState, TaskContext
+from evergrove_agent.schemas import ResearchAction, RunState, TaskContext
 from evergrove_agent.tools import RunBudget, RunContext, ToolRegistry
 from evergrove_agent.tools.wiring import build_tool_registry
 
@@ -142,15 +141,23 @@ def verdict(
     )
 
 
-def tool_turn(*calls: tuple[str, dict[str, Any]]) -> LLMResponse:
-    """A model turn that asks for tools. `FakeProvider` turns a `str` into plain text, so a
-    tool call has to be scripted as a whole `LLMResponse`."""
-    return LLMResponse(
-        text="",
-        model="fake-model",
-        provider="fake",
-        tool_calls=[ToolCall(name=name, arguments=args) for name, args in calls],
-    )
+def tool_turn(*calls: tuple[str, dict[str, Any]]) -> str:
+    """A model turn that asks for a tool, as S14's constrained `ResearchAction`.
+
+    The research step stopped using free-form tool calling when S14 measured it at 361 s a
+    turn against 46 s for a constrained call, so a turn is now a JSON reply rather than a
+    whole `LLMResponse` — and `FakeProvider` returns a `str` as the reply text, which is
+    exactly what `run_research_step` parses.
+
+    Still varargs so the call sites read unchanged, but the loop dispatches **one** call per
+    turn now: more than one here is a scripting mistake, not a second dispatch.
+    """
+    if len(calls) != 1:
+        raise ValueError("a research turn is one tool call since the S14 contingency swap")
+    name, arguments = calls[0]
+    return ResearchAction(
+        tool=name, arguments=arguments, reasoning="scripted turn"
+    ).model_dump_json()
 
 
 @pytest.fixture
