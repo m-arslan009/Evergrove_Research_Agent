@@ -172,6 +172,16 @@ class Settings(BaseSettings):
         description="Attempts at a schema-valid report before failing loudly (plan 17).",
     )
 
+    # --- Tracing (plan 13) ---------------------------------------------------------------
+    trace_summary_chars: int = Field(
+        default=200,
+        ge=40,
+        description="Ceiling on a span's input_summary / output_summary. A trace is a "
+        "diagnostic, not a second copy of the evidence: the page text a fetch returned "
+        "already lives in source_cache, so a span records enough to recognise the call "
+        "and nothing more.",
+    )
+
     # --- Expiry (plan 12) ---------------------------------------------------------------
     cache_ttl_days: int = Field(default=7, ge=1)
     search_cache_ttl_days: int = Field(
