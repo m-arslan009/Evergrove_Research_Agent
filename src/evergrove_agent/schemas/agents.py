@@ -349,6 +349,19 @@ class RunState(BaseModel):
     model driving the run forever."""
 
     task: TaskContext
+    previous: PreviousPreparation | None = None
+    """What an earlier run prepared for this same task, when one was recalled (T5).
+
+    Additive and defaulted, so no construction site moved — the shape T1's `span_stack`
+    addition took. It sits here rather than being threaded through two stage signatures
+    because both stages that read it already receive this object, and because "what this run
+    knows" has one home: `run_agent` recalls once, before the loop, and every later stage
+    reads the same answer.
+
+    **`None` is the ordinary case and must stay indistinguishable from today.** A first run,
+    a task nobody has prepared, an aged-out row and a memory outage all arrive here as `None`,
+    and the renderers answer all four with an empty block.
+    """
     hop: int = Field(default=0, ge=0, le=3)
     """Hops completed. 0 before any research; the ceiling matches
     `FocusPreparationReport.hops_used`. `MAX_HOPS` is config and is enforced by the loop —

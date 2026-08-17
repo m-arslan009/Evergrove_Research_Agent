@@ -1018,3 +1018,30 @@ existing tool and tracing contracts, avoid unnecessary changes to the research l
 redesign the database or agent architecture unless a minimal compatibility change is required. Do
 not implement memory-aware prompting, the trace renderer, or multi-agent behavior in this task.
 Add tests only for the core memory functionality introduced here.
+
+`Title`: Memory-aware agent integration
+
+`User prompt`: Implement Memory-Aware Agent Integration for the Evergrove Research Agent. Build on
+the existing persistent and session memory layer so recalled preparation actually influences the
+agent's task interpretation, research decisions, and final preparation. When a relevant previous
+preparation is recalled, provide the agent with the useful memory needed for continuation,
+especially the previous interpreted goal, `topics_covered`, and `topics_deferred`. Update the
+task-understanding or planning behavior so the agent is instructed not to repeat topics that were
+already covered, to prefer useful deferred topics where appropriate, and to explicitly acknowledge
+the continuation in the new `interpreted_goal`. The memory should guide the agent rather than
+rigidly dictate its output: if a deferred topic no longer fits the current task or session length,
+the agent may choose another appropriate next topic, but it should not silently restart from
+previously completed material. When no previous memory is found, preserve the existing behavior
+exactly so a fresh task is handled normally. Memory should remain an optional enhancement; a recall
+failure or missing memory must not prevent the research run from continuing. Reuse the existing
+memory retrieval mechanism rather than adding another memory lookup path, and keep the integration
+focused on supplying relevant memory to the existing agent decisions. Do not redesign the research
+loop, persistent memory schema, tracing system, budget system, or tool registry unless a minimal
+compatibility change is required. Ensure session memory also continues to influence later hops
+within the same run so previously gathered findings, seen queries, and seen URLs are reused rather
+than unnecessarily repeated. Do not create a second parallel state mechanism if the current run
+state already provides this information. Keep cross-run memory and within-run memory conceptually
+distinct: persistent memory helps continue previous preparation, while session memory prevents the
+current run from forgetting its own earlier hops. Do not implement the trace renderer or
+multi-agent Supervisor/Researcher/Appraiser behavior in this task. Add tests only for the core
+behavior introduced by this task.

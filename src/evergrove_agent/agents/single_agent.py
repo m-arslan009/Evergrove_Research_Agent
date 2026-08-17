@@ -32,12 +32,19 @@ call and tool call by the ledger.
 `MAX_OUTPUT_RETRIES` times, quoting back exactly what was wrong. A run that cannot produce a
 valid report raises `PreparationFailed`; it never returns an invalid one.
 
-**Memory is written, never consulted (Day 4 T4).** Two best-effort calls sit in this loop: one
-mirrors each finished hop into `run_memory`, and one saves the validated report to
-`prep_memory`. Neither changes a decision, and neither is read back here — `RunState` is still
-the only session memory this loop runs on. Both go through the registry, so both are traced
-and neither can raise; a memory outage costs a row, never a run. Making a *recalled*
-preparation influence what the agent decides is the next task's work, not this module's.
+**Memory is written best-effort, and read exactly once (Day 4 T4/T5).** Three registry calls
+sit in this loop. Two write: one mirrors each finished hop into `run_memory`, one saves the
+validated report to `prep_memory`. Neither changes a decision. The third *reads* — a single
+`recall_previous_preparation` before the loop starts, whose answer rides on `RunState.previous`
+into the planner's prompt and into `finalise`'s, so a second session for a task continues the
+first instead of repeating it. All three go through the registry, so all three are traced and
+none can raise; **a memory outage costs a row or a continuation, never a run**, and a run with
+nothing to recall behaves exactly as it did before T5.
+
+**Cross-run and within-run memory stay separate.** `RunState.previous` is what an *earlier*
+run prepared; `RunState`'s findings, `used_queries` and `evidence_urls` are what *this* run has
+seen, and they are still the only session memory the loop runs on. Nothing here reads a
+decision back out of SQLite.
 """
 
 from __future__ import annotations
@@ -55,6 +62,8 @@ from evergrove_agent.agents.prompt_context import (
     render_already_covered,
     render_attachment,
     render_available_tools,
+    render_continuation_note,
+    render_previous_preparation,
     render_progress,
     render_research_context,
     render_sources,
@@ -78,6 +87,7 @@ from evergrove_agent.schemas import (
     AppraisalVerdict,
     FocusPreparationReport,
     GatheredSource,
+    PreviousPreparation,
     ResearchAction,
     ResearchAssignment,
     ResearchFindings,
@@ -90,6 +100,8 @@ from evergrove_agent.search.normalize import canonicalize_url
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.fetch_url import FetchUrlOutput
 from evergrove_agent.tools.memory_tools import (
+    RecallInput,
+    RecallOutput,
     RecordRunMemoryInput,
     SavePreparationInput,
 )
@@ -327,6 +339,12 @@ async def decide_next_step(
     the whole of what stops hop 2 repeating hop 1 — the spent queries, the gathered sources,
     and the appraiser's follow-up.
 
+    **Two memories reach this stage, and they answer different questions (T5).**
+    `render_progress` says what *this* run has already done; `render_previous_preparation`
+    says what an *earlier* run prepared, so a hop is not spent re-establishing material a
+    previous session settled. The second block is empty whenever nothing was recalled, which
+    is what keeps a fresh task's prompt the one it has always been.
+
     `None` when the budget refused or the model drifted twice; the loop finalises.
     """
     settings = settings or get_settings()
@@ -338,6 +356,7 @@ async def decide_next_step(
         progress=render_progress(
             state, hops_remaining=ctx.budget.hops_remaining(state.hop)
         ),
+        previous_preparation=render_previous_preparation(state.previous),
     )
     decision = await _decode(
         provider,
@@ -649,6 +668,12 @@ async def finalise(
     into `unknowns` in its own words, and once as bookkeeping, because a model may ignore the
     message and a degraded run must never read like a confident one.
 
+    **A recalled preparation travels once, and only as a request (T5).** It reaches the model
+    as a further extra message and is never enforced afterwards: `_apply_bookkeeping`
+    overwrites provenance, never `interpreted_goal` or `topics_to_cover`. A continuation the
+    model declined is a decision worth reading in the trace, and a report we rewrote would
+    hide it — the same reason `resources` is left exactly as the model wrote it.
+
     Raises `PreparationFailed` rather than returning a partial report: when the ledger
     refuses an attempt, when the alternate provider cannot be reached, and when every attempt
     was spent without a valid report.
@@ -672,6 +697,12 @@ async def finalise(
     ]
     if note:
         opening.append(Message(role="user", content=note))
+    # The same extra-message mechanism, for the same reason: `finalise.md`'s five
+    # placeholders are frozen. It rides in the *opening* turns so every rung of the retry
+    # ladder argues with a model that was told about the earlier session (T5).
+    continuation = render_continuation_note(state.previous)
+    if continuation:
+        opening.append(Message(role="user", content=continuation))
 
     messages = list(opening)
     attempts = settings.max_output_retries
@@ -892,12 +923,22 @@ async def run_agent(
     Every exit lands on the same `finalise` call, carrying a `StopReason`. There is no path
     that returns nothing, no path that loops without a bound, and no path that lets a
     limitation go unmentioned in the report.
+
+    **Memory is recalled once, here, before anything is decided (T5).** One lookup for the
+    whole run: the planner and the report must not be able to disagree about what the last
+    session did, and a per-stage lookup would also charge a 9-15 minute run several database
+    reads to answer one question. It happens before the first `decide_next_step` because the
+    very first decision — what this session is even about — is the one a continuation changes
+    most.
     """
     settings = settings or get_settings()
     providers = providers or AgentProviders.from_settings(settings)
     ctx = ctx or RunContext(budget=RunBudget.from_settings(settings))
     budget = ctx.budget
-    state = RunState(task=task)
+    state = RunState(
+        task=task,
+        previous=await _recall_previous_preparation(registry, ctx, task, settings),
+    )
     stop: StopReason
 
     while True:
@@ -979,6 +1020,51 @@ async def run_agent(
     # somebody has to follow.
     await _remember_preparation(registry, ctx, report)
     return report
+
+
+async def _recall_previous_preparation(
+    registry: ToolRegistry,
+    ctx: RunContext,
+    task: TaskContext,
+    settings: Settings,
+) -> PreviousPreparation | None:
+    """What an earlier run prepared for this task, or `None` — and `None` is never a failure.
+
+    **The one lookup path.** It goes through the registered tool rather than
+    `prep_memory.recall_previous_preparation`, for the same reason the writes do: the tool is
+    the guard that turns a `sqlite3.Error` into a `ToolResult`, and the registry is what makes
+    the call a span in the trace. A `SELECT` of our own here would be a second path that has
+    to re-implement both.
+
+    **Four outcomes, one answer.** A miss (`found=False`), a storage failure (`ok=False`
+    carrying `UNKNOWN`), a payload of an unexpected type, and no recent row all degrade to
+    `None`, and `None` means the run proceeds exactly as it did before this existed. That is
+    the whole guarantee memory rests on: `registry.call` never raises and the tool never
+    raises, so there is no path from a broken database to a failed run.
+
+    `found` is checked rather than inferred from `previous is not None`: the tool's contract
+    makes `found` the field that distinguishes "nothing recent matches" from a failure, and
+    reading the payload around it would quietly re-couple the two.
+
+    `max_age_days` is passed explicitly so the *run's* settings decide the recall window.
+    Leaving it `None` is documented as "use `MEMORY_RECALL_MAX_AGE_DAYS`", but the default is
+    resolved inside `prep_memory` through the process-wide `get_settings()`, which ignores a
+    `settings` override this loop was handed.
+
+    Costs no budget: `TOOL_BUDGET` has no entry for a local SQLite read, and a name absent
+    from that map is free.
+    """
+    result = await registry.call(
+        "recall_previous_preparation",
+        RecallInput(
+            task_title=task.task_title,
+            max_age_days=settings.memory_recall_max_age_days,
+        ),
+        ctx,
+    )
+    if not result.ok or not isinstance(result.data, RecallOutput):
+        return None
+    return result.data.previous if result.data.found else None
 
 
 async def _mirror_session_memory(
