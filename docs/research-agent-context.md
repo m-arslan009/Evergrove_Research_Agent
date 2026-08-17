@@ -22,9 +22,9 @@ anything.
 | | |
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
-| **Current milestone** | **Day 3 — Single research agent (the core loop)** |
-| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** |
-| **Next task** | **Day 3 Subtask 13 — offline integration tests** |
+| **Current milestone** | **Day 3 — Single research agent (the core loop)** — S1–S14 implemented and live-verified; **not signed off**, see *S14 results* |
+| **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
+| **Next task** | **Two more S14 acceptance runs** to satisfy "valid report on ≥4 of 5 attempts", then Day 4 |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -42,7 +42,7 @@ exists. Do not describe or assume any other Day 3 capability as present.
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **Current — S1–S12 done, S13–S14 remain** |
+| 3 | Single research agent — the core loop | **Current — S1–S14 done and live-verified; sign-off pending 2 more acceptance runs** |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server and client, hardening | Not started |
@@ -198,8 +198,9 @@ is the one flag that is not a tool argument — it is `settings.model_copy(updat
 0 success, 1 the tool returned a `ToolError` (code and message on stderr, never a traceback),
 2 argparse.
 
-**Fixtures** (`fixtures/`) — 5 search recordings covering all four `source_type` values plus an
-empty result, 2 document attachments, 1 HTML page. Self-describing format
+**Fixtures** (`fixtures/`) — 6 search recordings covering all four `source_type` values plus an
+empty result (5 `handwritten`, plus one real `serpapi` capture added by S14), 2 document
+attachments, 1 HTML page. Self-describing format
 (`query`, `source_type`, `recorded_from`, `results`); the backend indexes the directory, so the
 filename is not the key. `ALLOWED_ATTACHMENT_DIR` defaults to `fixtures/`, so a fresh clone
 answers with no configuration. No committed binaries — PDFs and DOCX files are built in memory
@@ -837,8 +838,14 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**~356 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
-`test_llm_provider.py`). The newest are the 11 in `tests/unit/test_single_agent.py` (S5–S8) —
+**400 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
+`test_llm_provider.py`; the count was previously recorded as ~356 and had drifted). The newest are
+the 8 in `tests/integration/test_single_loop.py` (S13) — the whole run driven through
+`prepare_focus_session` against the **committed** `fixtures/search/` tree and the real SQLite file,
+proving what no unit suite structurally can: that the composition holds, that the shipped offline
+default never moves the live-search counter, that a second hop is genuinely derived from what the
+first one read, and that the run finishes well inside the 2-second acceptance budget (0.87 s for the
+file). Before them, the 11 in `tests/unit/test_single_agent.py` (S5–S8) —
 which assert every exit from the loop, the finalise reserve, and that a guessed tool name, a
 refused budget and an unavailable search all stay recoverable — after the 13 in
 `tests/unit/test_run_budget.py` (S4), after the
@@ -960,7 +967,111 @@ future session damages the project.
 
 ## Known limitations and not yet implemented
 
-**Missing (Day 3 still builds these):** the S13 integration suite and the S14 live run.
+**Missing (Day 3 still builds these):** nothing — S14 ran. **Two more acceptance runs are owed**
+before Day 3 can be signed off; see below.
+
+## S14 results — the first live runs (2026-08-16/17)
+
+**Hardware reality, which shapes everything here:** 8 CPU cores, **no GPU**. `qwen3:4b` measures
+**~4.5 tok/s generation, ~15–50 tok/s prefill**. A full run is **9–15 minutes**. That is this
+machine's measurement, and it is the number to plan Day 4–7 against — not the plan's estimates.
+
+**Success rate: 3 valid reports from 3 runs on the final code.** The criterion is *≥4 of 5*, so
+**it is not yet satisfied — the sample is smaller than the criterion specifies**, by instruction
+rather than by failure. Two more runs settle it. Do not record Day 3 as accepted until they pass.
+
+| Criterion | Result |
+| --- | --- |
+| Valid report on ≥4 of 5 attempts | **3/3 valid — sample incomplete** |
+| A second hop with a query derived from hop 1's content | **Met** |
+| Every cited URL actually fetched in that run | **Met — 3 of 3 citations, audited against `source_cache`** |
+| Offline `FakeProvider` suite under 2 s | **Met — 1.63 s** |
+| No budget can be exceeded | **Met** |
+
+**The multi-hop evidence, because it is the one nobody could assert from a unit test.** Run 3
+(`Learn what a PostgreSQL B-tree index is`, 923 s, `hops_used=2`) read
+`postgresql.org/docs/current/btree.html` in hop 1 — a page containing "page split" **9 times** —
+and hop 2 then searched `postgresql b-tree index page splits and merges documentation`. The
+follow-up came from what the run *read*, not from a reworded task title.
+
+**Observed model behaviour worth keeping:** hops are triggered by *a source raising a question the
+model cannot answer*, not by topic breadth. The broad task (`Learn PostgreSQL indexing`) stopped
+at one hop; the narrow one took two. Sizing a task's expected hops by how big it sounds is wrong.
+
+### The five defects S14 found — all fixed, none found by the offline suite
+
+1. **The thinking tax.** `qwen3` reasons into `message.thinking`, which `format=` does not
+   constrain and `OllamaProvider` discards. One trivial prompt: **173.9 s with thinking, 5.1 s
+   without**, and prefill fell 547 → 16 tokens because the scaffolding leaves the template with
+   it. Fixed by `"think": False` in the payload.
+2. **A timeout reported as unreachable.** `httpx.TimeoutException` fell into the generic
+   `HTTPError` branch and stringifies to `""`, so a 900 s timeout printed *"could not reach Ollama
+   at http://localhost:11434: "* while the server was demonstrably healthy. Now a separate branch
+   naming `TOTAL_RUN_TIMEOUT_S`.
+3. **Free-form tool calling cost 8× a constrained call** — 361 s vs 46 s. The calls were
+   *correct*; nothing bounded the ~4 000 characters of prose in front of them. **Contingency
+   option (2) spent** — see *The research decision* below.
+4. **Tool argument schemas stopped reaching the model** — a regression introduced by (3), since
+   `generate(tools=specs)` was what put them on the wire. Every `fetch_url` came back
+   `BAD_ARGUMENTS` and a run cited a page it never opened. Fixed in `render_available_tools`.
+5. **The model re-issued a byte-identical `web_search` until its search budget was gone**, never
+   reaching `fetch_url`. The prompt is rendered *once*, so `{allowance}` and `{already_covered}`
+   described the hop's opening state forever; the model decided turn 3 with turn 1's facts. The
+   cache answered the repeats, so it cost no SerpAPI quota and stayed invisible in the ledger while
+   still losing the hop its evidence. Fixed by `render_turn_state`.
+
+**Every one of these was found by a live run. The 401-case offline suite was green throughout.**
+That is the standing lesson: this suite proves the loop's *decisions*, not its *cost* or what a
+real model does with an unconstrained turn.
+
+### The research decision (`ResearchAction`) — contingency option (2), spent
+
+A research turn is now one constrained `ResearchAction{tool, arguments, reasoning}` instead of
+free-form tool calling. `dispatch` still takes a `ToolCall` and arguments still travel as a raw
+mapping, so `registry.call` remains the only argument validator and there is **no second tool
+path** — which is exactly why the plan called this contingency free. Invariants:
+
+- **`tool` is a plain `str`, never a `Literal` of the tool names.** `advertised_tool_names` stays
+  both the advertisement and the allow-list; a second copy of the menu would drift the moment an
+  attachment changes what is offered. An invented name is still a `ToolResult(UNKNOWN)` from
+  `dispatch`, before the registry.
+- **`arguments` is `dict[str, str | int | float | bool]`** — every argument the advertised tools
+  take is a scalar, so nothing is lost and constrained decoding gets a real value grammar.
+- **A drifted reply ends the hop** rather than re-asking: `_decode`'s retry belongs to stages whose
+  answer steers control flow, and a hop that stops early still returns its findings.
+- **One tool call per turn.** A claim has to sit between one call and the next.
+
+### `render_available_tools` now renders arguments, not just names
+
+Its old contract said names only, because "the descriptions and argument schemas already travel
+with the specs". **That premise died with `generate(tools=specs)`** — see defect (4). It now emits
+each tool's description, its arguments with types, required first, and enum values spelled out
+(`source_type: one of docs, technical, academic, general`). This is **not** a second
+tool-selection mechanism: `advertise()` is still the only source and `dispatch`'s allow-list still
+decides what may run.
+
+### `render_turn_state` — state that moves as the hop moves
+
+Appended to each turn's observation, carrying searches/page-reads left and the queries already run,
+plus a nudge to open a result when fetches remain. It travels as part of the observation message —
+the same mechanism `render_stop_reason` uses — so **the frozen placeholder sets are untouched**.
+Counts are passed in as ints, keeping `prompt_context.py` free of `tools/` and the renderer pure.
+
+### Degradations seen, all handled correctly
+
+- A **malformed URL** from the model (`https://www.post:postgresql.org/...`) was rejected and
+  reported in `unknowns`. The tool contract working as designed, not a defect.
+- A **planner drift** ended one run's loop early; it finalised honestly with what it had.
+- `authority="unknown"` is a **domain-classification** label, not a fetch-status label. A cited
+  page can be `unknown` *and* fully read — percona.com is simply not in `domains.json`. Do not
+  read it as "never opened"; the fetch audit is `source_cache`.
+
+### Quota
+
+**13 live SerpAPI calls of 200** across all of S14, including the failed and killed runs.
+**12 recordings captured into `fixtures/search/`**, one per distinct live query. Reservation is
+before the call with no refund path, so a killed or retried run spends quota without leaving a
+cached row — that, not a leak, is why `search_budget` runs slightly ahead of the row count.
 
 **Still owed by later subtasks:**
 
@@ -968,11 +1079,15 @@ future session damages the project.
   above): `too_many_topics`, `topic_overlap` and `goal_not_narrowed` go unchecked on that path.
   It is now one of two modes rather than the only one a user can run, which lowers the urgency but
   does not settle it.
-- **S13 replaces none of `tests/unit/test_single_agent.py`.** That suite proves the loop's own
-  decisions with `FakeProvider`; S13's integration suite proves the composition end to end,
-  under 2 s, through `service.py`. It also does not replace `tests/unit/test_service.py`, which
+- **S13 replaced none of `tests/unit/test_single_agent.py`** — as planned. That suite proves the
+  loop's own decisions with `FakeProvider`; S13's integration suite proves the composition end to
+  end, under 2 s, through `service.py`. It also does not replace `tests/unit/test_service.py`, which
   covers only the three ways a thin composition layer can be wrong, or the CLI routing tests in
-  `tests/unit/test_main.py`, which substitute the flow rather than driving it.
+  `tests/unit/test_main.py`, which substitute the flow rather than driving it. **The script builders
+  (`plan`, `verdict`, `tool_turn`) are deliberately duplicated in the S13 file rather than promoted
+  to `conftest.py`:** sharing them would mean editing a passing suite, and the integration file's
+  report builder differs anyway — those runs cite pages they actually fetched, while the unit runs
+  cite nothing.
 
 **Settled during S11–S12:**
 
@@ -1015,27 +1130,65 @@ future session damages the project.
 server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo
 (Day 7).
 
-**Outstanding Day 1/Day 2 validation — not Day 3 work, and not yet done:**
+**Outstanding Day 1/Day 2 validation — partially cleared during S14 (2026-08-16):**
 
-- **The Ollama model bake-off has never been run** (`qwen3:4b` vs `qwen3:1.7b`, five structured
-  calls each, valid-JSON rate / tokens-per-second / time-to-first-token / wall clock). Ollama is not
-  installed on the development machine, **no local run has ever been performed, and no
-  tokens-per-second figure has been measured**. `qwen3:4b` is the plan's recommendation, not this
-  machine's measurement. Day 3's first live run is where this bites.
-- **No live SerpAPI call has ever been made.** All five recordings in `fixtures/search/` are
-  `handwritten` — right shape, not knowledge. **No report may cite one.** The live acceptance run
-  (one real query, recorded in the same session, behind `@pytest.mark.live`) is still outstanding.
-- **No live Gemini/hosted call has been verified** either; `HOSTED_MODEL` defaults to
-  `gemini-3.6-flash` and free-tier model ids change — confirm against the AI Studio console before
-  relying on it. **S10 raised the stakes on this:** the retry ladder's final attempt is the hosted
-  provider, so a stale model id fails at exactly the moment the run was already in trouble.
-  Checking the id is a console lookup, not a live call, so it costs nothing — do it before S14.
+- **Ollama is installed and `qwen3:4b` is pulled.** *Corrected during S14 — this document
+  previously claimed Ollama was not installed on the development machine, and a session planning
+  around that would have been planning around a fact that had stopped being true.* Verified:
+  `http://localhost:11434` answers, `qwen3:4b` (2.5 GB) is present, and it loads and generates.
+  **The development machine is CPU-only** — 8 cores, no NVIDIA GPU — so `ollama ps` reports
+  `100% CPU`, and every model call in this project is CPU-bound. `num_ctx=4096` and the 60-minute
+  `keep_alive` both reach the server as configured.
+- **The model bake-off is still not run.** `qwen3:1.7b` is **not** pulled, and the
+  `qwen3:4b` vs `qwen3:1.7b` comparison (valid-JSON rate / tokens-per-second / time-to-first-token
+  / wall clock) remains outstanding **by decision, not by omission**: S14 measures `qwen3:4b` alone,
+  from the acceptance runs themselves, at no extra cost. `qwen3:4b` is therefore this machine's
+  measured model but still not its *chosen* one — the plan's recommendation has not been tested
+  against the smaller alternative. Pull `qwen3:1.7b` and run the comparison if 4b ever misses the
+  acceptance bar.
+- **The first live SerpAPI call was made during S14** and the response was recorded in the same
+  session as `fixtures/search/postgresql-partial-index-when-to-use.json` (`recorded_from:
+  "serpapi"`). The backend's field mapping, authority classification and quota guard are confirmed
+  against the real API, not only against a `respx` mock built from an assumed response shape.
+  `search_budget` was empty beforehand, which is what proves it was genuinely the first.
+  **The other five recordings remain `handwritten` and no report may cite one.**
+- **`HOSTED_MODEL=gemini-3.6-flash` exists for this key** — confirmed during S14 by one free
+  ListModels GET, which returned it among 53 models. **This is not proof the ladder works.**
+  `config.py`'s own docstring documents the trap: ListModels still advertises `gemini-2.5-flash`
+  while `generateContent` answers "no longer available to new users". No hosted *generation* has
+  been verified, so **the retry ladder's third rung remains unproven** — and S10's stake still
+  stands, that a stale id fails at exactly the moment a run was already in trouble. Verifying it
+  costs one free-tier generation; it was deliberately not spent.
 - **S14 must measure whether the ladder has room to run.** `_FINALISE_RESERVE` guarantees the
   first attempt only, so a greedy three-hop run reaches finalise with roughly one model call left
-  and gets no retry at all. S14's criterion is a valid report on ≥4 of 5 attempts; if `qwen3:4b`
+  and gets no retry at all. **S13 measured the two-hop case offline and it is tighter than that
+  estimate:** a run of two fully-researched hops (plan + 3 turns + appraisal, then plan + 2 turns +
+  appraisal) spends exactly all 10 calls including the report, leaving the ladder **zero** attempts
+  in reserve — pinned by `test_an_insufficient_verdict_buys_exactly_one_more_hop_drawn_from_hop_one`.
+  A run that both researches twice and needs a correction is currently unaffordable. S14's criterion is a valid report on ≥4 of 5 attempts; if `qwen3:4b`
   cites ungrounded URLs with any regularity, the ladder will be unavailable on precisely the runs
   that need it. `MAX_MODEL_CALLS` is the dial to turn, not the reserve — raising the reserve takes
   calls away from research to buy retries nobody may need.
+
+**Untested behaviour S14 exposed — three live-critical things nothing pins:**
+
+Each of these can be deleted or broken with the **entire offline suite still green**, and each
+costs a live run when it breaks. Defect (4) above shipped precisely through the second one.
+
+- **`"think": False` in the Ollama payload.** Remove it and every run gets ~34× slower. No test
+  asserts the payload carries it.
+- **`render_available_tools` rendering arguments.** No test asserts it emits anything at all — it
+  had none before S14 either, which is why the names-only regression reached a live run.
+- **`render_turn_state`.** New in S14, zero coverage.
+
+One assertion each, in the suites that already exist (`test_llm_provider.py`,
+`test_prompt_context.py`). **Not added during S14** — the subtask authorised fixes and re-running
+affected tests, not new coverage. This is the highest-value coverage work outstanding.
+
+**Never exercised, live or offline:** the **retry ladder** (no live run has yet produced an invalid
+report, so `MAX_OUTPUT_RETRIES` has never fired against a real model) and the **hosted fallback**
+(`gemini-3.6-flash` is confirmed to exist for this key by ListModels, but no `generateContent` call
+has ever been made). S10's stake stands: the ladder's final rung is unproven.
 
 **Known defects and rough edges:**
 
@@ -1117,8 +1270,8 @@ Each subtask is planned, approved, implemented and tested independently.
 | **S10** | **Structured finalisation and the retry ladder** — `finalise()`; attempt 1 primary model, attempt 2 primary with the validation errors quoted back, attempt 3 the second provider *when one is genuinely configured*, then fail loudly. A drifted schema takes a rung of the same ladder. A run that cannot produce a valid report **never returns a partial one** | `agents/single_agent.py`, `tests/unit/test_single_agent.py` | S9 | **Done** |
 | **S11** | **`service.py`** — the one entry point the CLI and the Day 6 MCP server both call. Thin: resolves settings once, defaults registry / providers / `RunContext` from it, calls `run_agent`. `PreparationFailed` and `LLMError` pass through unwrapped. `RunState.validation_errors` handed to Day 4 tracing | `service.py`, `tests/unit/test_service.py` | S8, S10 | **Done** |
 | **S12** | **CLI integration** — research mode replaces the Day 1 refusal; `--attachment` wired through `TaskContext` and pre-flighted with `documents.resolve_attachment`; a live progress line on stderr reading the run's own `RunBudget`; `--quiet`. **Flat flags kept** — the subcommand question is settled. A failed run is never downgraded to `--no-research` | `main.py`, `documents/reader.py`, `tests/unit/test_main.py` | S11 | **Done** |
-| **S13** | **Offline integration tests** — full loop on `FakeProvider` + fixture search, valid report, **under 2 s** · a scripted "insufficient" verdict triggers exactly one second hop · the hop cap holds · a `SEARCH_UNAVAILABLE` degrades the report rather than crashing · three invalid outputs raise `PreparationFailed` · grounding rejects a report citing an unfetched URL | `tests/integration/test_single_loop.py` | S12 | Not started |
-| **S14** | **Live end-to-end verification** — Ollama + SerpAPI: a valid report on ≥4 of 5 attempts, one visible second hop, every cited URL actually fetched. **Every live search response recorded into `fixtures/search/` in the same session.** Also clears the outstanding Day 1/2 live gaps | `fixtures/search/`, `prompts.md` | S13 | Not started |
+| **S13** | **Offline integration tests** — full loop on `FakeProvider` + fixture search, valid report, **under 2 s** · a scripted "insufficient" verdict triggers exactly one second hop · the hop cap holds · a `SEARCH_UNAVAILABLE` degrades the report rather than crashing · three invalid outputs raise `PreparationFailed` · grounding rejects a report citing an unfetched URL. Driven through `prepare_focus_session` against the **committed** fixture tree; 8 cases, 0.87 s | `tests/integration/test_single_loop.py` | S12 | **Done** |
+| **S14** | **Live end-to-end verification** — Ollama + SerpAPI. Found and fixed 5 defects the offline suite could not see, spent contingency option (2), and proved the second hop and the grounding rule live. **3/3 valid reports — the ≥4-of-5 sample is incomplete.** 12 live searches recorded into `fixtures/search/` | `llm/ollama_provider.py`, `schemas/agents.py`, `agents/single_agent.py`, `agents/prompt_context.py`, `fixtures/search/`, `prompts.md` | S13 | **Done — sign-off pending 2 runs** |
 
 ```
 S1 ─┬─► S2 ─┐

@@ -122,23 +122,28 @@ text readers, the SQLite caches and the monthly search-quota guard, all usable o
 from a CLI. The agent loop itself now plans, searches, reads, judges whether it has
 enough, performs a genuine second hop, and writes a report that is checked against the
 run's own evidence and retried when it fails — and the main CLI runs it, through
-`service.py`, the one entry point the Day 6 MCP server will also call. What is still
-missing is the offline integration suite, the live end-to-end verification, memory,
-tracing, the supervisor/worker split, and the MCP server.
+`service.py`, the one entry point the Day 6 MCP server will also call.
+
+**The loop has now been run live**, against a real local `qwen3:4b` and real SerpAPI: three
+end-to-end runs, three valid reports, every cited URL verified as genuinely fetched, and one run
+performing a second hop whose query came from a page the first hop had read. Day 3 is **not signed
+off**: its criterion is a valid report on ≥4 of 5 attempts and only 3 were run. What is still
+missing is those two runs, memory, tracing, the supervisor/worker split, and the MCP server.
 
 | Day | Area | Status |
 | --- | --- | --- |
 | 1 | Project, config, schemas, `LLMProvider` + three providers, first structured round trip | **Done** |
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
-| 3 | Single research agent — the core loop | **In progress** — S1–S12 done, S13–S14 remain |
+| 3 | Single research agent — the core loop | **S1–S14 done and live-verified** — sign-off pending 2 more acceptance runs |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
 | 6 | MCP server, MCP client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
-Day 3's remaining subtasks are the offline integration suite (S13) and the live end-to-end
-verification (S14). **No live model or live search run has been performed yet** — see
-*Local model setup* below.
+Day 3's subtasks are all implemented. S14's live verification found and fixed five defects the
+offline suite could not see — the largest being that an unconstrained tool-calling turn cost 361 s
+against 46 s for a constrained one on this CPU-only machine. See
+`docs/research-agent-context.md`, *S14 results*.
 
 What exists today:
 
@@ -446,10 +451,10 @@ default.
 
 All three guards are implemented and the backends work.
 
-> **TODO (Day 3 S14):** **no live SerpAPI call has ever been made.** Every recording in
-> `fixtures/search/` is handwritten — the right shape, but not real knowledge, so no
-> report may cite one. Recording genuine responses in the same session that spends them is
-> what makes the rest of the week free and offline.
+**Live SerpAPI is verified.** S14 spent 13 calls of the 200-call budget and captured 12
+recordings into `fixtures/search/`, one per distinct live query, each in the same session as the
+call. The 5 original `handwritten` recordings remain, and the prohibition applies to those alone:
+no report may cite a handwritten fixture.
 
 ## MCP
 

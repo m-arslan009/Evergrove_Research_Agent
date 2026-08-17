@@ -31,9 +31,18 @@ a fact about the world. The URLs are real pages, the titles and snippets are pla
 paraphrases — that combination is exactly enough to test ranking, dedup, authority
 classification and passage selection, and not enough to answer a question.
 
-Everything here today is `handwritten`. Real captures land in `search/` during the
-live-acceptance step, one file per live query, in the same session as the call — an
-uncaptured live search burns SerpAPI quota twice.
+**12 recordings are `serpapi`** — captured live during the Day 3 S14 acceptance step, each in
+the same session as the call it came from, including the calls spent by runs that later failed
+or were killed. The remaining 5 are the original `handwritten` seeds, and the prohibition above
+still applies to those alone: no report may cite a handwritten fixture.
+
+Further real captures land in `search/` the same way, one file per live query, in the same
+session as the call — an uncaptured live search burns SerpAPI quota twice.
+
+Recordings are written from the `search_cache` table, whose `results_json` already holds exactly
+what the backend returned as `RawSource`, so a recording is a re-serialisation and never a
+reconstruction. A `(query, source_type)` already on disk is skipped rather than duplicated —
+two files claiming one key is a loud `SearchBackendError` that breaks every offline run.
 
 ## Search fixture format
 
