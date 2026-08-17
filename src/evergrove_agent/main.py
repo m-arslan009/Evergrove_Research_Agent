@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from evergrove_agent.agents.prompt_context import max_topics_for
 from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm import LLMError, LLMProvider, Message, build_provider
 from evergrove_agent.llm.prompts import render_prompt
@@ -31,11 +32,6 @@ NO_RESEARCH_CONTEXT = (
 )
 NO_RESEARCH_ASSUMPTION = "No sources were consulted; this plan rests on model knowledge alone."
 NO_RESEARCH_UNKNOWN = "Whether current documentation agrees with this plan — nothing was read."
-
-
-def max_topics_for(minutes: int) -> int:
-    """The session-sizing rule from plan section 17: `max(3, minutes // 5)`, capped at 8."""
-    return min(8, max(3, minutes // 5))
 
 
 def build_parser() -> argparse.ArgumentParser:

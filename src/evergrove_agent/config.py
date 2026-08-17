@@ -115,7 +115,14 @@ class Settings(BaseSettings):
     )
 
     # --- Per-run budgets (plan 14.4, revised for this hardware) ------------------------
-    max_hops: int = Field(default=2, ge=1, le=3)
+    max_hops: int = Field(
+        default=3,
+        ge=1,
+        le=3,
+        description="Research hops allowed per run. Raised from the plan's 2 on request. "
+        "3 is the ceiling, not a coincidence: FocusPreparationReport.hops_used is le=3, "
+        "so going higher means changing the most expensive schema in the project.",
+    )
     max_search_calls: int = Field(default=3, ge=0)
     max_fetch_calls: int = Field(default=4, ge=0)
     max_sources_kept: int = Field(default=3, ge=0)

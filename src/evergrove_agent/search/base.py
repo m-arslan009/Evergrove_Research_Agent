@@ -12,14 +12,20 @@ this line.
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
+from evergrove_agent.schemas import SearchSourceType
 from evergrove_agent.search.normalize import RawSource
 
-SearchSourceType = Literal["docs", "technical", "academic", "general"]
-"""What kind of source a query is after — `web_search`'s one routing enum (plan section
-9.2). A backend maps it onto whatever its own API calls a query strategy: a site filter,
-a different index, a different endpoint, or nothing at all."""
+__all__ = [
+    "SearchBackend",
+    "SearchBackendError",
+    "SearchSourceType",
+]
+"""`SearchSourceType` is defined in `schemas/tools.py` and re-exported here, so every
+existing importer keeps its import unchanged. It moved because `schemas/agents.py` needs
+the same four values for the Supervisor's `source_preference`, and `schemas/` may not
+import from the package — the definition had to go to the one layer both sides can see."""
 
 
 class SearchBackendError(RuntimeError):

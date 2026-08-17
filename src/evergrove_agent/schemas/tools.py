@@ -9,11 +9,23 @@ below is written on Day 1 because everything else is shaped around it.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 T = TypeVar("T")
+
+SearchSourceType = Literal["docs", "technical", "academic", "general"]
+"""What kind of source a query is after — `web_search`'s one routing enum (plan section
+9.2). A backend maps it onto whatever its own API calls a query strategy: a site filter,
+a different index, a different endpoint, or nothing at all.
+
+It lives here rather than in `search/base.py` because two layers need the same four
+values and only one of them may own it: the Supervisor's `source_preference` is handed
+straight to `web_search` as `source_type`, and `schemas/` is the only package both the
+search layer and `schemas/agents.py` are allowed to import. A second copy in `agents.py`
+would be a contract that can drift into a runtime bug.
+"""
 
 
 class ErrorCode(str, Enum):

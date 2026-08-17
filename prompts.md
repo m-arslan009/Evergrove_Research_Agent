@@ -689,3 +689,191 @@ MAX_HOPS, in-memory Day 3 budgets, validate_report and grounding, structured fin
 retries, service.py, CLI integration, integration tests, and live end-to-end verification. Keep
 the subtasks small enough that each can be planned, approved, implemented and tested
 independently.
+
+`Title`: Day 3 Subtask 1 — agent schema design principles
+
+`User prompt`: Design and implement the typed contracts/schemas needed by the Day 3 single-agent
+reasoning flow, primarily in schemas/agents.py, supporting the logical boundaries around
+decide_next_step(), run_research_step(), judge_sufficiency() and finalise(). Do not assume the
+exact schemas, fields, enums, or number of models in advance — analyze the existing architecture
+and decide the minimum clean design that best fits this project. Reuse existing Day 1/2 schemas
+and contracts wherever possible; do not duplicate models that already represent the required data.
+Prefer the minimum necessary schemas. Use Pydantic v2 and existing project conventions. Keep these
+schemas independent from Ollama, Gemini, SerpAPI, CLI, or any provider-specific implementation.
+Keep schemas focused on data contracts; do not put orchestration/business logic inside them. Avoid
+loosely typed dictionaries when a meaningful typed contract is justified. Use constrained
+values/enums only where they genuinely improve correctness. Think about Day 5 compatibility so
+today's contracts do not require a rewrite later. Do not redesign stable Day 1/2 contracts unless
+there is a strong project-specific reason — flag such a need in the plan instead. Scope is only
+the agent schemas/contracts and their focused tests: no loop, prompts, LLM calls, tool
+integration, tool dispatch, validate_report, multi-hop execution, budget enforcement, service.py,
+CLI changes, or Day 4/5 work. If something required for a later subtask is discovered, record it
+as a dependency or follow-up rather than implementing it now. After implementation, update
+docs/research-agent-context.md — only the relevant sections, keeping it concise rather than an
+implementation diary.
+
+`Title`: SearchSourceType gets one definition, in schemas/
+
+`User prompt`: [Decision on a design question raised during Day 3 S1] Move SearchSourceType into
+schemas/ rather than duplicating the literal in schemas/agents.py, and have search/base.py import
+it. One definition, even though it edits a stable Day 2 contract.
+
+`Title`: Raise the hop cap from 2 to 3
+
+`User prompt`: Increase the hops from 2 to 3 and continue implementation.
+
+`Title`: Never run the test suite
+
+`User prompt`: Create tests only. I already configured the pre-push hook.
+
+`Title`: Day 3 Subtask 2 — the LLM ↔ tool-system bridge
+
+`User prompt`: Build the missing integration layer that allows the LLM/agent layer to use the
+existing tools safely. Conceptually, we need this flow: Existing registered Tool → model can
+understand the tool → model requests a tool call → arguments are validated → existing ToolRegistry
+executes it → ToolResult is returned for later agent reasoning. Explain the complete tool-calling
+flow. For each logical component you propose, explain what is it, why is it, what it produce, what
+is recieved, what conditions effect it, tech and its alternates. Reuse the existing ToolRegistry.
+Reuse existing input/output Pydantic models. Keep provider-specific details out of this
+integration where possible. Keep tool advertisement separate from actual tool implementation.
+Invalid model requests should be recoverable structured outcomes where appropriate, not
+uncontrolled crashes. Do not let the model bypass registry validation or execution. Preserve
+offline testability using existing test infrastructure. Keep the design small enough to remain
+understandable when Day 4 hooks/tracing wrap the registry and Day 5 splits the agent roles. Avoid
+unnecessary abstraction layers. This subtask is only the LLM ↔ tool-system bridge and its focused
+tests.
+
+`Title`: S2 design decisions — module home, bridge scope, conditional attachment tool
+
+`User prompt`: [Decisions taken on the S2 plan] Put the bridge in agents/tool_calling.py rather
+than in tools/. The bridge stops at returning the ToolResult — rendering a result back into a
+prompt or Message stays with S3/S6. Advertise read_document only when the task actually has an
+attachment.
+
+`Title`: Day 3 Subtask 3 — the four reasoning-stage prompts
+
+`User prompt`: Design the prompts required by single-agent reasoning stages. The expected logical
+stages are decide_next_step(), run_research_step(), judge_sufficiency(), finalise(). Likely prompt
+files belong under the existing llm/prompts/. Do not assume exact prompt contents or structure in
+advance. Analyze the schemas, tool bridge, existing finalise.md, and project requirements, then
+propose the smallest clean prompt design. Before implementation, explain each reasoning stage in
+simple non-technical. The prompts should: produce outputs compatible with the typed schemas;
+clearly separate the responsibilities of the four reasoning stages; keep task scope constrained by
+session_minutes; prevent the agent from turning one focus session into a large curriculum; tell the
+research stage how to use only the tools exposed; avoid inventing tools, URLs, evidence, or
+unsupported facts; make tool failures recoverable rather than encouraging hallucinated
+replacements; make the sufficiency stage explicitly identify missing information when evidence is
+incomplete; allow a follow-up research question to be derived from the evidence collected in the
+previous hop; keep the finalisation stage focused on producing the existing FocusPreparationReport;
+preserve assumptions and unknowns when information is incomplete; avoid duplicating deterministic
+validation rules that belong in later validate_report logic; stay provider-independent where
+possible. Do not over-engineer prompts with excessive instructions that small/local models may
+struggle to follow. Prefer concise, explicit constraints and structured outputs. Respect the
+tool-advertisement rules established. The prompt itself should not invent a second tool-selection
+mechanism. If prompt design reveals a requirement for one of those later subtasks, record it as a
+dependency instead of implementing it now.
+
+`Title`: S3 design decisions — compact finalise evidence, renderers in agents/
+
+`User prompt`: [Decisions taken on the S3 plan] With NUM_CTX at 4096, sufficiency.md carries the
+full excerpts and finalise.md carries a compact block instead (title, url, authority, read/unread,
+snippet, plus the researcher's notes, the judge's missing_information and any tool failures) — no
+new tunable and no config change. Put the placeholder renderers in agents/prompt_context.py rather
+than in llm/prompts/, so the prompt loader keeps its independence from schemas/ and config.
+
+`Title`: Day 3 Subtask 4 — minimum runtime state for the single-agent loop
+
+`User prompt`: Build the minimum runtime state needed for the single-agent loop to remember what has
+happened during one research run and enforce its limits in memory. This state will later allow the
+agent to: remember the narrowed goal, preserve findings between research hops, avoid repeating
+searches/fetches, retain gathered sources and tool failures, know the current hop and latest
+sufficiency result, track search/fetch/model usage, stop safely when a configured limit is reached.
+Do not assume the exact classes, fields, helper functions, or file locations in advance. Analyze the
+existing architecture and propose the smallest clean design. When a limit is reached, the future
+loop should be able to detect it and finalise honestly with the information already collected
+instead of continuing indefinitely or crashing. Reuse existing schemas and settings. Keep state
+strongly typed where useful. Avoid duplicating information already owned by another canonical
+object. Keep state separate from prompt rendering. Keep provider-specific details out of state. Do
+not put the entire agent orchestration inside state methods. Prefer simple state mutation/update
+helpers only when they reduce duplication or protect invariants. Preserve information needed for
+later grounding and multi-hop research. Keep Day 4 compatibility in mind, but do not implement Day 4
+prematurely. Avoid introducing database persistence for session state in this subtask.
+
+`Title`: S4 design decisions — ledger only, and a refusal is a boolean
+
+`User prompt`: [Decisions taken on the S4 plan] RunState already owns everything the run has seen
+(narrowed goal, findings, sources, failures, dedupe sets, hop, verdict), so S4 adds only the spend
+ledger and leaves schemas/agents.py untouched. When the budget has nothing left, claim() returns
+False rather than raising or building a ToolResult — the ledger stays free of the tool envelope, and
+Day 4's pre-hook turns the same False into ToolResult(BUDGET_EXCEEDED).
+
+`Title`: Day 3 S5–S8 — the single-agent orchestration loop
+
+`User prompt`: Implement the single-agent orchestration loop that connects the components
+already built. Conceptually, the agent should be able to: understand/narrow task → research →
+observe results → judge sufficiency → optionally research again → stop/finalise. Also give one
+practical example showing the state transitions for a task. Inspect the existing schemas/prompts
+and decide how these should be wired in the single-agent implementation. The loop must support
+early stopping: hop 1 → sufficiency check; if sufficient → finalise; if insufficient and a
+meaningful follow-up exists, and hop/budgets allow it → next narrower research hop; repeat only
+until sufficient or the configured maximum is reached. A later-hop question must be derived from
+previously gathered evidence/requested_followup, not from a pre-written fixed sequence. Use budget
+ledger. A failed budget.claim(...) is normal control flow. The loop should decide how to
+degrade/stop appropriately; RunBudget itself should remain unaware of prompts, tools, or error
+envelopes. Plan graceful behaviour for: unknown/malformed model tool request; tool argument
+validation failure; ToolResult containing a tool error; search/fetch failure; model/provider
+failure where recoverable; hop limit reached; budget exhausted; insufficient evidence after the
+final allowed hop. Expected limitations should lead toward an honest final result rather than
+uncontrolled looping or fabricated evidence.
+
+`Title`: S5–S8 design decisions — two reserves, and where the sizing rule lives
+
+`User prompt`: [Decisions taken on the S5–S8 plan] Scope is S5–S8 plus a single-attempt finalise();
+grounding (S9) and the retry ladder (S10) stay the next subtask. A research hop takes up to three
+model turns, so the model can open the pages search actually returned rather than guessing a URL.
+max_topics_for() moves from main.py into agents/prompt_context.py, where finalise.md's {max_topics}
+placeholder belongs, so one definition serves both the --no-research path and the loop.
+
+`Title`: Reliable final report generation — deterministic validation and a bounded retry ladder
+
+`User prompt`: Make final report generation reliable when the LLM produces an invalid report. The
+intended high-level flow is: generate report → validate deterministically → return if valid →
+otherwise retry using validation feedback → fail clearly after the configured attempts are
+exhausted. The retry mechanism should correct the report, not restart the research run. Across
+retries keep stable: user task, interpreted/narrowed goal, gathered sources/evidence, research
+findings, sufficiency result, tool failures/limitations, and the grounding evidence set. Only the
+final report generation should be retried. Do not search or fetch additional evidence merely
+because final report validation failed — a validation failure means the report does not satisfy
+our deterministic contract, not that the research must be redone. Use the structured S9 validation
+result. Reuse the existing configuration such as max_output_retries; clarify during planning
+whether that value means total attempts or retries after the initial attempt, do not silently
+change its semantics, keep one canonical interpretation and test it explicitly. Every retry is
+another model call and must respect the S4 RunBudget — do not bypass the model-call budget because
+the retry mechanism wants another attempt; if no model-call capacity remains, stop retrying and
+fail according to the approved failure design, treating budget exhaustion as normal control flow
+rather than an uncontrolled exception from RunBudget. After all allowed attempts are exhausted the
+system must not return an invalid report as if it were valid, silently discard validation errors,
+loop indefinitely, or fabricate corrected evidence. Design a clear terminal failure, likely using
+an existing or new PreparationFailed domain error only if consistent with current conventions,
+preserving enough information for debugging such as the final validation errors and relevant run
+identity/context. Do not couple it prematurely to Day 4 tracing if tracing does not exist yet.
+
+`Title`: Scope and design decisions for the report-validation work
+
+`User prompt`: [Decisions taken on the plan] Cover S9 and S10 in one plan as two separately
+approved phases. max_output_retries means total attempts (3 = one initial attempt plus two
+retries); keep the existing setting name and document the mismatch in place. The last attempt
+switches provider only when an alternate is genuinely configured; otherwise it repeats on the
+primary with the accumulated errors, and any LLMError from the alternate is folded into
+PreparationFailed rather than propagating.
+
+`Title`: S10 design decisions — one ladder, a structured failure, and citation-free loop scripts
+
+`User prompt`: [Decisions taken on the S10 plan] A reply that fails model_validate_json consumes a
+ladder attempt and is re-asked with the Pydantic errors quoted, exactly as a rule failure is
+re-asked with as_lines() — one ladder for "this report is not acceptable", whatever made it so,
+rather than raising on the first drift. PreparationFailed keeps its message and also carries
+run_id, attempts and issues, so service.py and the CLI can render the errors instead of parsing a
+sentence. The loop suite's scripted report drops its citation, because those tests prove how the
+loop stops and degrades rather than how citations are checked; grounding is proven separately
+against a URL the run actually fetched.

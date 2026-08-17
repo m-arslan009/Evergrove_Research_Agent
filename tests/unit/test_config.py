@@ -12,7 +12,9 @@ from evergrove_agent.config import Settings
 
 
 def test_default_budgets_match_the_plan(settings: Settings) -> None:
-    assert settings.max_hops == 2
+    # Raised from the plan's 2 on request (Day 3). 3 is also the ceiling
+    # FocusPreparationReport.hops_used allows, so this is as high as it goes for free.
+    assert settings.max_hops == 3
     assert settings.max_search_calls == 3
     assert settings.max_fetch_calls == 4
     assert settings.max_sources_kept == 3
