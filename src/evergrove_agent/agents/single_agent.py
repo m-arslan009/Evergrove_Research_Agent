@@ -31,6 +31,13 @@ call and tool call by the ledger.
 `validate_report` against the run's own gathered URLs and asks again, up to
 `MAX_OUTPUT_RETRIES` times, quoting back exactly what was wrong. A run that cannot produce a
 valid report raises `PreparationFailed`; it never returns an invalid one.
+
+**Memory is written, never consulted (Day 4 T4).** Two best-effort calls sit in this loop: one
+mirrors each finished hop into `run_memory`, and one saves the validated report to
+`prep_memory`. Neither changes a decision, and neither is read back here — `RunState` is still
+the only session memory this loop runs on. Both go through the registry, so both are traced
+and neither can raise; a memory outage costs a row, never a run. Making a *recalled*
+preparation influence what the agent decides is the next task's work, not this module's.
 """
 
 from __future__ import annotations
@@ -65,6 +72,7 @@ from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm import LLMError, LLMProvider, Message, build_provider
 from evergrove_agent.llm.base import ToolCall
 from evergrove_agent.llm.prompts import render_prompt
+from evergrove_agent.memory.run_memory import entries_from
 from evergrove_agent.schemas import (
     AppraisalRequest,
     AppraisalVerdict,
@@ -81,6 +89,10 @@ from evergrove_agent.schemas import (
 from evergrove_agent.search.normalize import canonicalize_url
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.fetch_url import FetchUrlOutput
+from evergrove_agent.tools.memory_tools import (
+    RecordRunMemoryInput,
+    SavePreparationInput,
+)
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tools.validate_report import ReportIssue, validate_report
 from evergrove_agent.tools.web_search import WebSearchOutput
@@ -931,10 +943,18 @@ async def run_agent(
             ctx=ctx,
             settings=settings,
         )
+        if verdict is not None:
+            state.verdict = verdict
+
+        # The hop is mirrored whether or not it was judged: a hop that gathered evidence and
+        # then lost its appraiser is exactly the run someone will want the history of.
+        await _mirror_session_memory(
+            registry, ctx, decision=decision, findings=findings, verdict=verdict
+        )
+
         if verdict is None:
             stop = "appraiser_unavailable"
             break
-        state.verdict = verdict
 
         if verdict.sufficient:
             stop = "sufficient"
@@ -946,7 +966,7 @@ async def run_agent(
             stop = "no_followup"
             break
 
-    return await finalise(
+    report = await finalise(
         state,
         provider=providers.supervisor,
         ctx=ctx,
@@ -954,6 +974,84 @@ async def run_agent(
         settings=settings,
         fallback_provider=providers.fallback,
     )
+    # The one place a validated report exists: `finalise` returns one or raises, so this line
+    # is what makes "an invalid preparation is never remembered" structural rather than a rule
+    # somebody has to follow.
+    await _remember_preparation(registry, ctx, report)
+    return report
+
+
+async def _mirror_session_memory(
+    registry: ToolRegistry,
+    ctx: RunContext,
+    *,
+    decision: SupervisorDecision,
+    findings: ResearchFindings,
+    verdict: AppraisalVerdict | None,
+) -> None:
+    """Write one finished hop into `run_memory`, and carry on regardless of the outcome.
+
+    **`RunState` remains the session memory this loop runs on.** It already carries the goal,
+    the findings and the seen queries and URLs from hop to hop, and nothing here is ever read
+    back to make a decision — reading state out of SQLite would be the second, competing state
+    mechanism `memory/run_memory.py` exists not to be. This is durability: `RunState` dies with
+    the process, and a nine-to-fifteen-minute run deserves to leave a record of how it got
+    where it did.
+
+    Best-effort by construction. `registry.call` never raises and the memory tool turns a
+    storage failure into a `ToolResult`, so the result is deliberately not inspected: there is
+    nothing this loop could usefully do about a mirror that did not write, and stopping a run
+    over it would be the exact failure the tool's guard exists to prevent.
+    """
+    await registry.call(
+        "record_run_memory",
+        RecordRunMemoryInput(
+            hop=findings.hop,
+            entries=entries_from(
+                goal=findings.research_question,
+                decision=f"{decision.action}: {decision.reasoning}",
+                findings=findings.notes or f"{len(findings.sources)} sources gathered",
+                appraisal=_appraisal_line(verdict),
+                queries=findings.queries_used,
+                urls=[source.url for source in findings.sources],
+            ),
+        ),
+        ctx,
+    )
+
+
+def _appraisal_line(verdict: AppraisalVerdict | None) -> str:
+    """The verdict as one remembered line, or `""` when the hop was never judged.
+
+    Empty means `entries_from` records no `appraisal` row at all, which is the honest shape:
+    a missing row reads as "this hop was not judged", where a row saying nothing would read as
+    a judgement that found nothing.
+    """
+    if verdict is None:
+        return ""
+    line = f"sufficient={verdict.sufficient}: {verdict.reasoning}"
+    if verdict.missing_information:
+        line += f" | missing: {'; '.join(verdict.missing_information)}"
+    if verdict.requested_followup:
+        line += f" | follow-up: {verdict.requested_followup}"
+    return line
+
+
+async def _remember_preparation(
+    registry: ToolRegistry, ctx: RunContext, report: FocusPreparationReport
+) -> None:
+    """Store the finished preparation so a later session can continue it.
+
+    Called with the report `finalise` returned, which is the only report that exists: every
+    other outcome is a `PreparationFailed`. That is why no `validated=` flag is passed and no
+    grounding is re-checked here — the guarantee comes from *where* this is called, not from
+    something the caller promises.
+
+    Best-effort, for the same reason as the mirror above: a run that produced a valid report
+    has already succeeded, and failing it because the report could not be filed away would
+    throw away the fifteen minutes that produced it.
+    """
+    await registry.call("save_preparation", SavePreparationInput(report=report), ctx)
 
 
 def _assign(

@@ -1,5 +1,11 @@
-"""Persistent storage: the single SQLite file today, the caches, budget counters and
-memory that sit in it later. Nothing in this package calls a network or a model.
+"""Persistent storage: the single SQLite file, the caches, the budget counter and the two
+memories that sit in it. Nothing in this package calls a network or a model.
+
+Two of these are memory in the plan's sense and are deliberately separate:
+`prep_memory` survives runs and is found by a normalised task key, while `run_memory` belongs
+to one `run_id` and records that run's hops. Every module here raises on a `sqlite3.Error`;
+deciding what a storage failure *means* belongs to the caller — `tools/memory_tools.py` for the
+memories, `tracing/tracer.py` for the trace, `fetch_url` for the cache.
 """
 
 from __future__ import annotations
@@ -25,6 +31,21 @@ from evergrove_agent.memory.db import (
     open_database,
     transaction,
 )
+from evergrove_agent.memory.prep_memory import (
+    normalize_task_key,
+    recall_previous_preparation,
+    save_preparation,
+)
+from evergrove_agent.memory.run_memory import (
+    RunMemoryEntry,
+    RunMemoryKind,
+    RunMemoryRecord,
+    entries_from,
+    get_run_memory,
+    record_entries,
+    seen_queries,
+    seen_urls,
+)
 from evergrove_agent.memory.search_cache import (
     CachedSearch,
     get_cached_search,
@@ -40,17 +61,28 @@ __all__ = [
     "BudgetReservation",
     "CachedSearch",
     "CachedSource",
+    "RunMemoryEntry",
+    "RunMemoryKind",
+    "RunMemoryRecord",
     "connect",
     "consumes_quota",
     "current_month",
+    "entries_from",
     "get_cached_search",
     "get_cached_source",
+    "get_run_memory",
     "get_search_usage",
     "initialize_schema",
     "normalize_query",
+    "normalize_task_key",
     "open_database",
+    "recall_previous_preparation",
+    "record_entries",
     "reserve_search_call",
+    "save_preparation",
     "search_cache_key",
+    "seen_queries",
+    "seen_urls",
     "store_cached_search",
     "store_cached_source",
     "transaction",

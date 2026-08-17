@@ -27,6 +27,11 @@ import sqlite3
 from evergrove_agent.config import Settings
 from evergrove_agent.tools.fetch_url import FetchUrlTool
 from evergrove_agent.tools.hooks import install_registry_hooks
+from evergrove_agent.tools.memory_tools import (
+    RecallPreviousPreparationTool,
+    RecordRunMemoryTool,
+    SavePreparationTool,
+)
 from evergrove_agent.tools.normalize_sources import NormalizeSourcesTool
 from evergrove_agent.tools.read_document import ReadDocumentTool
 from evergrove_agent.tools.registry import ToolRegistry
@@ -38,6 +43,9 @@ TOOL_NAMES: tuple[str, ...] = (
     "fetch_url",
     "normalize_sources",
     "read_document",
+    "recall_previous_preparation",
+    "record_run_memory",
+    "save_preparation",
     "validate_report",
     "web_search",
 )
@@ -49,7 +57,10 @@ silently lost. `normalize_sources` is a pipeline step rather than a model-facing
 registered so a run's trace shows what normalisation discarded, and which subset is
 *advertised* to a model is the tool-spec layer's decision, not the registry's.
 `validate_report` is registered on the same terms and for the same reason: the trace should
-show what grounding rejected, but whether a report passes is not the model's call.
+show what grounding rejected, but whether a report passes is not the model's call. The three
+memory tools (T4) join that group: recall happens once at the start of a run and a save once
+after validation, both decided by our own code, which is the only way "never save an invalid
+preparation" can be structurally true.
 """
 
 
@@ -86,6 +97,9 @@ def build_tool_registry(
         ValidateReportTool(),
         FetchUrlTool(settings, connection=connection),
         WebSearchTool(settings, connection=connection),
+        RecallPreviousPreparationTool(settings, connection=connection),
+        SavePreparationTool(settings, connection=connection),
+        RecordRunMemoryTool(settings, connection=connection),
     ):
         registry.register(tool)
     install_registry_hooks(registry, tracer=tracer)

@@ -987,3 +987,34 @@ compatibility change is required. Do not implement persistent memory, memory-awa
 trace rendering, or multi-agent tracing in this task. Keep the implementation deterministic,
 centralized, and reusable by all current and future registry-managed tools. Add tests only for
 the core functionality introduced here.
+
+`Title`: Build persistent and session memory
+
+`User prompt`: Implement Persistent & Session Memory for the Evergrove Research Agent. Build the
+memory layer that allows the system to retain useful information during a research run and recall
+validated preparation from previous runs. Implement persistent preparation memory so that after a
+preparation has been successfully validated, a compact summary can be stored and retrieved later.
+The stored memory should use a normalized `task_key` so semantically equivalent continuation
+requests can match prior work; for example, the architecture expects `"Learn PostgreSQL indexing"`
+to normalize in a way that can match `"postgresql indexing"`. Store only the information needed to
+support future preparation, such as the previous interpreted goal, topics already covered, topics
+deferred, relevant summary information, associated run ID, and creation time. Do not save invalid
+or failed preparations to persistent memory. Implement `recall_previous_preparation` with the
+planned default 30-day recall window and return a clear "not found" result when there is no recent
+matching preparation. Memory lookup failures must degrade safely: a database or memory-layer error
+must not fail the overall research run. Also implement session/run memory for information that
+must survive across hops inside the same research run. Reuse the existing run state where
+appropriate instead of creating a second competing state model. The memory should support
+retaining the current narrowed goal, findings gathered so far, appraisal/sufficiency information,
+decisions, previously seen queries, and previously seen URLs so later hops can reuse earlier work
+rather than forgetting or repeating it. Keep session memory logically separate from persistent
+cross-run preparation memory even if both use the same SQLite database. The goal of this task is
+to provide reliable storage and retrieval only; do not yet change the agent's prompts or
+decision-making so that it actively avoids previously covered topics or prefers deferred topics —
+that behavior belongs to the next task. Integrate memory through the existing architecture rather
+than bypassing it. Add the required memory tool or service functions in a way that can later be
+called through the registry and traced using the infrastructure already implemented. Preserve the
+existing tool and tracing contracts, avoid unnecessary changes to the research loop, and do not
+redesign the database or agent architecture unless a minimal compatibility change is required. Do
+not implement memory-aware prompting, the trace renderer, or multi-agent behavior in this task.
+Add tests only for the core memory functionality introduced here.

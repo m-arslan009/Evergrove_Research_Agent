@@ -283,6 +283,50 @@ class AppraisalVerdict(BaseModel):
     # follow-up would turn that into a retry loop and invite an invented question.
 
 
+# --- what survives between runs -----------------------------------------------------------
+
+
+class PreviousPreparation(BaseModel):
+    """A validated preparation from an earlier run, compactly enough to reuse (plan 12.2).
+
+    Code-assembled: built from a `FocusPreparationReport` that already passed
+    `validate_report`, and never handed to a model as a schema. It lives here rather than
+    beside the storage that writes it because it is a *message* — `memory/prep_memory.py`
+    produces it, the recall tool returns it, and the memory-aware prompting task puts it in
+    front of the planner. `schemas/` is the one layer all three can import.
+
+    **A summary, not a second copy of the report.** Only the fields a later session needs to
+    continue rather than restart: what the previous run aimed at, what it covered, what it
+    deliberately deferred, and where it read. The full report is not stored — nothing needs
+    it, and `FocusPreparationReport` is the most expensive schema in the project to change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_key: str = Field(min_length=1, max_length=500)
+    """The normalised form the recall lookup matches on — `normalize_task_key`'s output.
+    Carried on the record so a caller can see *why* a preparation was recalled."""
+    original_task: str = Field(min_length=1, max_length=500)
+    """The title as the user actually typed it. The key is for matching; this is for reading."""
+    interpreted_goal: str = Field(default="", max_length=400)
+    session_objective: str = Field(default="", max_length=300)
+    """Both, because they answer different questions: the goal is the slice the previous run
+    narrowed the task down to, the objective is what that session was to achieve."""
+    topics_covered: list[str] = Field(default_factory=list, max_length=8)
+    """`topics_to_cover` from the previous report — the material a continuation must not
+    repeat. Bounded as the report bounds it."""
+    topics_deferred: list[str] = Field(default_factory=list, max_length=10)
+    """`topics_to_skip` — the neighbouring material the previous run left out on purpose,
+    which is the most likely place a continuation should start."""
+    source_urls: list[str] = Field(default_factory=list, max_length=5)
+    """Where the previous session read. Not evidence for this run: a citation must still be
+    grounded in what *this* run gathered (S9), so these are context only."""
+    run_id: str = Field(min_length=1, max_length=64)
+    created_at: datetime
+    """When the preparation was saved, timezone-aware UTC. What the recall window compares
+    against."""
+
+
 # --- the run's working state -------------------------------------------------------------
 
 
