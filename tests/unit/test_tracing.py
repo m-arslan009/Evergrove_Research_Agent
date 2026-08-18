@@ -19,7 +19,7 @@ from evergrove_agent.config import Settings
 from evergrove_agent.memory import db
 from evergrove_agent.schemas import TaskContext
 from evergrove_agent.tools.base import RunBudget, RunContext
-from evergrove_agent.tracing import Tracer, get_run, get_spans, store
+from evergrove_agent.tracing import Tracer, agent_span, get_run, get_spans, store
 
 STARTED_AT = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
 TASK = TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25)
@@ -277,3 +277,69 @@ def test_an_oversized_summary_is_truncated_and_marked(
     assert len(span.input_summary) == 40
     assert span.input_summary.endswith("…")
     assert span.output_summary == "short enough"
+
+
+# --- the agent boundary (Day 5 T6) -------------------------------------------------------
+
+
+def test_a_stage_that_raises_still_closes_its_span_and_unwinds(
+    tracer: Tracer, connection: sqlite3.Connection, ctx: RunContext
+) -> None:
+    """The failure path, which is the one that has to hold.
+
+    A stage span is opened and closed in one frame, so the success path is hard to get
+    wrong. The expensive case is an `LLMError` or a `PreparationFailed` mid-run: a span left
+    open re-parents every operation that follows it for the rest of a nine-to-fifteen minute
+    run, and a trace read at that moment is a trace read precisely because something already
+    went wrong. Three claims in one test because they fail together — the exception
+    propagates untouched, the row is closed as a failure naming what raised, and the stack
+    is left empty so a later span is top-level again rather than buried under a dead one.
+    """
+    with pytest.raises(RuntimeError, match="the model went away"):
+        with agent_span(tracer, ctx, "researcher.loop", input_summary="b-tree indexes"):
+            raise RuntimeError("the model went away")
+
+    assert ctx.span_stack == []
+    span = get_spans(connection, ctx.run_id)[0]
+    assert (span.name, span.kind, span.ok) == ("researcher.loop", "agent", False)
+    assert span.error_code == "RuntimeError"
+    assert span.ended_at is not None
+    assert ctx.begin_span()[1] is None
+
+
+def test_a_summary_written_during_the_stage_reaches_the_closed_span(
+    tracer: Tracer, connection: sqlite3.Connection, ctx: RunContext
+) -> None:
+    """What a role *answered* is only knowable inside the stage, so the handle carries it.
+
+    Without this the manager could record when a stage ran but never what it decided, and
+    the trace would show an appraisal with no verdict in it — the one line a reader opens
+    the trace for. Asserted through storage rather than off the handle, because the failure
+    to catch is a summary collected and then dropped on the way to `close_span`.
+    """
+    with agent_span(tracer, ctx, "appraiser.judge") as span:
+        span.summarise("sufficient=True, accepted=2")
+
+    assert span.span_id is not None
+    written = get_spans(connection, ctx.run_id)[0]
+    assert written.output_summary == "sufficient=True, accepted=2"
+    assert written.ok is True
+
+
+def test_without_a_tracer_the_boundary_changes_no_nesting(ctx: RunContext) -> None:
+    """An untraced run must nest exactly as it did before agent spans existed.
+
+    `service.py` proceeds with `tracer=None` whenever the database could not be opened, and
+    that run still calls tools. If the no-op branch pushed anything onto the stack, every
+    tool span in it would be parented to an id no row exists for — turning a run with a
+    storage problem into a run with a corrupt trace. `span_id is None` is the same
+    guarantee stated for a caller that wants to log or correlate.
+    """
+    with agent_span(None, ctx, "supervisor.run") as span:
+        assert span.span_id is None
+        assert ctx.span_stack == []
+        nested, parent = ctx.begin_span()
+        assert parent is None, "a tool span opened here is still top-level"
+        ctx.end_span(nested)
+
+    assert ctx.span_stack == []

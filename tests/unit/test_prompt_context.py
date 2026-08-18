@@ -39,10 +39,12 @@ from evergrove_agent.config import Settings
 from evergrove_agent.llm.base import ToolCall
 from evergrove_agent.llm.prompts import render_prompt
 from evergrove_agent.schemas import (
+    AcceptedSource,
     AppraisalVerdict,
     ErrorCode,
     GatheredSource,
     PreviousPreparation,
+    RejectedSource,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -157,6 +159,21 @@ def _researched_state() -> RunState:
             missing_information=["partial index syntax"],
             requested_followup="What does EXPLAIN print for a partial index?",
             reasoning="One page is thin for the question asked.",
+            accepted=[
+                AcceptedSource(
+                    source="PostgreSQL: Indexes",
+                    supports="B-tree indexes answer equality lookups",
+                    does_not_support="the syntax for a partial index",
+                    authority="official",
+                )
+            ],
+            rejected=[
+                RejectedSource(
+                    source="Indexing explained",
+                    reason="a blog with nothing sourced and no version stated",
+                )
+            ],
+            disagreements=["the two pages disagree on the default index type"],
         ),
     )
 
@@ -200,6 +217,82 @@ def test_research_context_reports_what_failed_and_what_is_still_missing(
     assert "the backend answered 503 twice" in text
     assert "partial index syntax" in text
     assert "Only the official index page was readable." in text
+
+
+def test_research_context_carries_the_appraisers_semantic_judgement(
+    settings: Settings,
+) -> None:
+    """T2's three fields are only worth adding if the report can act on them.
+
+    `disagreements` is the load-bearing one: a contradiction the Appraiser actually saw in
+    the sources is exactly what the report owes its reader in `unknowns`, and a `finalise`
+    prompt that never mentions it produces a report that quietly picks a side. `accepted`
+    and `rejected` are the Appraiser's reading of the same sources listed above — they tell
+    the report which evidence survived scrutiny, which is the difference between citing a
+    page and citing the page that mattered.
+
+    Without this test the fields validate, serialize and reach `run_memory` while never
+    reaching the one stage that could use them — defined and wired to nothing, which is the
+    failure mode the whole task exists to avoid.
+
+    T4 made the entries structured, and the same claim now has three more halves: the report
+    must be told what an accepted source *supports*, what it leaves open, and how far up the
+    authority ladder it sits. A report told only that a source was accepted will present it
+    as having settled the whole question.
+    """
+    text = render_research_context(_researched_state(), settings=settings)
+
+    assert "the two pages disagree on the default index type" in text
+    assert "PostgreSQL: Indexes (official)" in text
+    assert "B-tree indexes answer equality lookups" in text
+    assert "the syntax for a partial index" in text, (
+        "the relevant gap is unknowns material; a report that never hears it overclaims"
+    )
+    assert "Indexing explained" in text
+    assert "a blog with nothing sourced and no version stated" in text
+
+
+def test_research_context_tells_the_report_not_to_cite_a_rejected_source(
+    settings: Settings,
+) -> None:
+    """The rejection has to arrive as a consequence, not as a neutral list (T4).
+
+    T2 listed rejected sources under a heading that said only that they existed, which left
+    the report free to cite one anyway — and citing it is the one outcome that makes the
+    Appraiser pointless: the stage that actually read the page judged it not worth trusting,
+    and the deliverable then sends the user to it as a trusted resource.
+
+    Guidance rather than enforcement is deliberate (`_REJECTED_HEADING`), so this is the
+    check that the guidance is actually given. Both places carry it, because a model that
+    skims the evidence block still reads the rules: the heading here, and the citation rule
+    in `finalise.md`.
+    """
+    text = render_research_context(_researched_state(), settings=settings)
+
+    assert "do not cite any of these in resources" in text
+    assert "must not appear in `resources`" in render_prompt(
+        "finalise", **PROMPT_PLACEHOLDERS["finalise"]
+    )
+
+
+def test_research_context_omits_a_judgement_the_appraiser_never_made(
+    settings: Settings,
+) -> None:
+    """An empty list contributes no heading at all.
+
+    A 4B model will routinely leave T2's fields empty, and an empty "Where the sources
+    contradict each other:" heading reads to the next model as a section it failed to fill
+    — inviting exactly the invented contradiction the honest empty case exists to avoid.
+    It also spends the 4096-token window on nothing.
+    """
+    state = _researched_state()
+    state.verdict = AppraisalVerdict(sufficient=True, reasoning="enough to start")
+
+    text = render_research_context(state, settings=settings)
+
+    assert "contradict each other" not in text
+    assert "judged to support" not in text
+    assert "Still missing after the research" not in text
 
 
 def test_progress_starts_empty_and_then_carries_what_was_already_spent(

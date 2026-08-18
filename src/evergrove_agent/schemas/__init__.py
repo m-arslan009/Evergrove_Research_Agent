@@ -5,11 +5,13 @@ and schemas depends on nothing (plan section 19).
 """
 
 from evergrove_agent.schemas.agents import (
+    AcceptedSource,
     AgentAction,
     AppraisalRequest,
     AppraisalVerdict,
     GatheredSource,
     PreviousPreparation,
+    RejectedSource,
     ResearchAction,
     ResearchAssignment,
     ResearchFindings,
@@ -32,6 +34,7 @@ from evergrove_agent.schemas.tools import (
 )
 
 __all__ = [
+    "AcceptedSource",
     "AgentAction",
     "AppraisalRequest",
     "AppraisalVerdict",
@@ -40,6 +43,7 @@ __all__ = [
     "GatheredSource",
     "PracticeExercise",
     "PreviousPreparation",
+    "RejectedSource",
     "ResearchAction",
     "ResearchAssignment",
     "ResearchFindings",

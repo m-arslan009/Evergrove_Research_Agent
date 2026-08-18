@@ -120,9 +120,12 @@ class ResearchFlow:
     def __init__(self, outcome: Any) -> None:
         self.outcome = outcome
         self.tasks: list[TaskContext] = []
+        self.kwargs: list[dict[str, Any]] = []
+        """What each call was handed besides the task — `mode` is the one a flag decides."""
 
     async def __call__(self, task: TaskContext, **kwargs: Any) -> Any:
         self.tasks.append(task)
+        self.kwargs.append(kwargs)
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
@@ -170,6 +173,28 @@ class TestResearchMode:
         assert flow.tasks, "research mode never reached the research flow"
         assert json.loads(captured.out)["original_task"] == "Learn PostgreSQL indexing"
         assert "not built yet" not in captured.err
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [((), "multi"), (("--mode", "multi"), "multi"), (("--mode", "single"), "single")],
+    )
+    async def test_the_mode_flag_reaches_the_research_flow(
+        self, argv: tuple[str, ...], expected: str, research: Any
+    ) -> None:
+        """`--mode` has to arrive at `service.prepare_focus_session`, and default to multi.
+
+        The same shape as the bug this class was written for: a flag can parse cleanly, be
+        documented in `--help`, and never be passed on — and because both topologies produce a
+        valid report, nothing downstream would notice. The default is asserted from *no flag*
+        rather than from the parser's `default=`, because what matters is the value the service
+        actually receives.
+        """
+        flow = research()
+
+        code = await run_cli("--task", "Learn PostgreSQL indexing", *argv)
+
+        assert code == 0
+        assert [call["mode"] for call in flow.kwargs] == [expected]
 
     async def test_the_attachment_reaches_the_research_flow(
         self, research: Any, settings: Settings

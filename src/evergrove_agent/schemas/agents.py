@@ -8,10 +8,16 @@ rewrite: the Supervisor, Researcher and Appraiser already speak this vocabulary.
 Two families live here, and the distinction matters to every caller:
 
 **Model output** — `SupervisorDecision` and `AppraisalVerdict` are handed to
-`LLMProvider.generate(schema=...)` for constrained decoding. They stay small and flat,
-because a 4B local model's schema adherence degrades as the target grows, and every field
-must survive `to_gemini_schema` for the hosted retry. `extra="forbid"` is what turns model
-drift into a retry instead of a silently dropped field.
+`LLMProvider.generate(schema=...)` for constrained decoding. They stay small, because a 4B
+local model's schema adherence degrades as the target grows, and every field must survive
+`to_gemini_schema` for the hosted retry. `extra="forbid"` is what turns model drift into a
+retry instead of a silently dropped field.
+
+`AppraisalVerdict`'s two per-source lists are the one place that shape nests (Day 5 T4), and
+they nest exactly one level — the depth `FocusPreparationReport.resources` has driven
+through both providers since Day 1, so `$defs` inlining in `to_gemini_schema` and Ollama's
+`format=` are both already proven at it. Every added field is defaulted and a bare string
+still coerces, so widening the target could not narrow what a small model may answer with.
 
 **Code assembled** — everything else is built by our own code from tool results. A model
 never sees their schema, so they may be as rich as the loop needs.
@@ -252,14 +258,131 @@ class AppraisalRequest(BaseModel):
     sources: list[GatheredSource] = Field(default_factory=list, max_length=64)
 
 
+class AcceptedSource(BaseModel):
+    """MODEL OUTPUT (nested). One source the Appraiser judged to genuinely help (Day 5 T4).
+
+    T2 made `accepted` a list of names; that answered *which* sources helped and nothing
+    about *how*. T4 keeps the same list and gives each entry the three facts a reader — the
+    finalise stage, or a human reading the trace back — actually needs: what the source
+    establishes, what it leaves open, and how far up the authority ladder it sits.
+
+    **`supports` and `does_not_support` are not opposites.** The first is a claim about the
+    text; the second is a *relevant* gap in it, not an inventory of every topic the page
+    never mentions. `sufficiency.md` says so in words, because no schema can express it.
+
+    A bare string coerces to `{"source": …}` — see `_a_bare_name_is_still_a_source`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(
+        max_length=200,
+        description="The source, named by its title or URL exactly as it is written in "
+        "the evidence above.",
+    )
+    supports: str = Field(
+        default="",
+        max_length=160,
+        description="What this source actually establishes about the question, in one "
+        "short phrase. Only what its own text says.",
+    )
+    does_not_support: str = Field(
+        default="",
+        max_length=160,
+        description="What this source leaves open that the question needs. Leave empty "
+        "when it has no relevant gap.",
+    )
+    authority: SourceAuthority = Field(
+        default="unknown",
+        description="Where this source sits on the authority ladder. Use unknown for "
+        "anything that was found but never opened.",
+    )
+    """Reuses `report.SourceAuthority` rather than a second vocabulary. The judgement and
+    the citation then classify a page the same way, so `finalise.md`'s authority rule and
+    S9's overclaim check are arguing about the same word — and `unknown` keeps the meaning
+    it has everywhere else: nobody opened it, so nobody gets to call it authoritative."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _a_bare_name_is_still_a_source(cls, value: object) -> object:
+        """A plain string becomes an entry with only its name filled in.
+
+        Leniency bought deliberately. The alternative is that a 4B model answering T2's
+        shape — a list of names, which is exactly what `sufficiency.md` asked for until this
+        task — fails `model_validate_json`, spends `_decode`'s one re-ask, and returns
+        `None`; and `None` is read by `_stop_after_hop` as "the appraiser could not answer",
+        which ends the run. Losing the detail costs a thinner prompt. Losing the whole
+        verdict costs the hop that produced it.
+
+        **The coercion carries more weight since T5**, because the length of this list is now
+        part of the stop condition: a bare name still counts towards the two accepted sources
+        a `sufficient` verdict needs, so a model that names its sources without describing
+        them is not penalised for the shape of its answer.
+        """
+        return {"source": value} if isinstance(value, str) else value
+
+
+class RejectedSource(BaseModel):
+    """MODEL OUTPUT (nested). One source the Appraiser judged not to help, and why (T4).
+
+    The reason is the entire content of a rejection. "This one does not help" is a verdict
+    nobody downstream can act on or argue with; "a personal blog with no version stated" is
+    a fact the report can put in `unknowns` and a reader can check against the page.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(
+        max_length=200,
+        description="The source, named by its title or URL exactly as it is written in "
+        "the evidence above.",
+    )
+    reason: str = Field(
+        default="",
+        max_length=200,
+        description="Why this source does not help: what is wrong with it, or what it is "
+        "about instead. Never leave this to be guessed.",
+    )
+    """No `min_length`, for `SupervisorDecision.reasoning`'s reason: a terse model must not
+    fail validation and burn a retry over brevity. The rule that a rejection needs a stated
+    reason is enforced where it belongs — in the prompt, and in what a reader sees."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _a_bare_name_is_still_a_source(cls, value: object) -> object:
+        """As `AcceptedSource`: a plain string is a rejection with its reason missing."""
+        return {"source": value} if isinstance(value, str) else value
+
+
 class AppraisalVerdict(BaseModel):
     """MODEL OUTPUT. `judge_sufficiency()` → do these sources support a useful session?
 
-    Four fields, and every one of them steers control flow or explains it. Day 5 adds the
-    richer judgement fields (`accepted[]`, `rejected[]`, `disagreements[]`) as optional
-    extras — an additive change, not a rewrite, which is why they are not here today: a
-    fatter constrained-decoding target costs reliability on a 4B local model, and Day 3
-    exists to find out whether that model can drive the loop at all.
+    The first four fields steer control flow or explain it; the last three are the
+    Appraiser's *semantic* judgement of the evidence, added by Day 5 T2 and given their
+    per-source detail by T4.
+
+    **T2's three fields are additive, not a rewrite.** Every one defaults to an empty list,
+    so a reply written against the Day 3 shape still validates and the loop behaves exactly
+    as it did — which is what lets a 4B model that ignores them cost nothing. That default
+    matters more here than anywhere else in the file: this is a constrained-decoding target,
+    and the wider it gets the worse a small model's adherence to it becomes. **T4 widened
+    two of them and kept that property intact**: the entries are objects now, but a reply
+    that lists bare names still validates (see `AcceptedSource`), and a reply that omits the
+    lists entirely still validates exactly as it did on Day 3.
+
+    **Three fields steer the run, and `accepted` became one of them (T5).** `_stop_after_hop`
+    reads `sufficient`, `requested_followup` and `len(accepted)`: the plan's stop condition is
+    `sufficient` **with at least two accepted sources**, so a "yes" backed by one source or
+    none finalises honestly instead of counting as success. That supersedes T2's narrower
+    "they inform, they never decide" — deliberately, because the alternative is a run that
+    reports a confident session plan built on a single page the judge itself only half
+    endorsed. `rejected` and `disagreements` still only inform.
+
+    **The defaults are what keep that safe.** A reply that omits `accepted` still validates and
+    still produces a report; it produces a *cut-short* one, whose `unknowns` say why. Nothing
+    about this makes a small model's reply invalid — it only stops an unsupported "yes" from
+    reading like a supported one. Whether a follow-up is affordable remains the Supervisor's
+    call.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -277,10 +400,55 @@ class AppraisalVerdict(BaseModel):
     rather than a scripted retry. Never drop this field (plan section 8.3)."""
     reasoning: str = Field(max_length=400)
 
+    # --- the semantic judgement (Day 5 T2) ------------------------------------------------
+
+    accepted: list[AcceptedSource] = Field(
+        default_factory=list,
+        max_length=8,
+        description="The sources above that genuinely help answer the question, one entry "
+        "each. Empty when none do.",
+    )
+    rejected: list[RejectedSource] = Field(
+        default_factory=list,
+        max_length=8,
+        description="The sources above that do not help, one entry each with its reason. "
+        "Empty when all of them help.",
+    )
+    """`accepted` and `rejected` are what turn "sufficient: false" from a bare flag into a
+    reading of the evidence. Bounded at 8 because `MAX_SOURCES_KEPT` is the ceiling on what
+    a run reads, and a judgement listing more sources than the run gathered is drift.
+
+    **The per-entry text is bounded tightly, and the arithmetic is the reason.** Eight
+    accepted entries at 200 + 160 + 160 characters is ~4 100 characters ≈ 1 000 tokens, and
+    this list travels into the same 4096-token finalise window as the evidence, the
+    `FocusPreparationReport` schema and the generated report. A judgement that crowds out
+    the evidence it is a judgement of would be the expensive kind of overflow.
+
+    `source` is deliberately not typed as a URL. These are prompt material and a trace line,
+    never a citation menu: a cited URL must still be in `RunState.evidence_urls` (S9), so an
+    invented name here is caught by the grounding check exactly as it always was, and typing
+    it as a URL would only invite the model to produce one."""
+
+    disagreements: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Where two of the sources above contradict each other, one short "
+        "phrase each. Empty when they agree or never overlap.",
+    )
+    """The field with the clearest downstream job: a contradiction the appraiser saw is
+    exactly what the report owes its reader in `unknowns` or `assumptions`. Bounded as
+    `missing_information` is, and for the same reason — this travels into a 4096-token
+    finalise window."""
+
     # There is deliberately no validator requiring a follow-up when `sufficient` is
     # false. "Not enough, and nothing specific would help" is a real, honest verdict, and
     # the loop's answer to it is to finalise with populated `unknowns`. Forcing a
     # follow-up would turn that into a retry loop and invite an invented question.
+    #
+    # Nor is there one tying `accepted`/`rejected` to `sufficient`. A verdict may accept
+    # two sources and still judge the set insufficient, or reject every one and still find
+    # the question answerable from the snippets — both are real readings, and a validator
+    # would turn either into a retry the model cannot diagnose.
 
 
 # --- what survives between runs -----------------------------------------------------------

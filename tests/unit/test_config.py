@@ -7,6 +7,7 @@ this test is ever proposed, the plan is what has to change first.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from evergrove_agent.config import Settings
 
@@ -38,6 +39,35 @@ def test_environment_overrides_a_budget(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("MAX_SEARCH_CALLS", "1")
 
     assert Settings(_env_file=None).max_search_calls == 1
+
+
+def test_each_role_selects_its_provider_independently() -> None:
+    """One role moving to hosted must move that role and no other (Day 5 T3).
+
+    `provider_for` is what `build_provider` routes on, so a shared or transposed field here
+    would point a role at a model nobody configured for it — and the run would still succeed,
+    which is what makes it worth pinning. `roles_using_hosted` is asserted alongside because
+    `--fully-local` is the control that has to see the same answer.
+    """
+    settings = Settings(_env_file=None, appraiser_provider="hosted")
+
+    assert settings.provider_for("supervisor") == "local"
+    assert settings.provider_for("researcher") == "local"
+    assert settings.provider_for("appraiser") == "hosted"
+    assert settings.roles_using_hosted == ("appraiser",)
+
+
+def test_an_unknown_provider_value_is_refused_rather_than_defaulted() -> None:
+    """A typo in `*_PROVIDER` must fail loudly, not quietly run local.
+
+    This is the normal configuration validation the project relies on: `ProviderName` is a
+    `Literal`, so the run stops before a model is ever built. Without it a misspelled
+    `APPRAISER_PROVIDER=hostd` would reach `build_provider`, which has to answer with
+    *something* — and an operator who believed a role was hosted would get a local run that
+    looks exactly like a correct one.
+    """
+    with pytest.raises(ValidationError, match="appraiser_provider"):
+        Settings(_env_file=None, appraiser_provider="hostd")
 
 
 def test_fully_local_accepts_an_all_local_configuration(settings: Settings) -> None:

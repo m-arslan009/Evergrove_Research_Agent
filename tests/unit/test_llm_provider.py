@@ -257,3 +257,17 @@ class TestBuildProvider:
 
     def test_override_wins_over_configuration(self, settings: Settings) -> None:
         assert isinstance(build_provider("supervisor", settings, override="hosted"), HostedProvider)
+
+    def test_an_unvalidated_provider_name_is_refused(self, settings: Settings) -> None:
+        """The seam `Settings`' own validation cannot cover (Day 5 T3).
+
+        `ProviderName` catches a typo when `Settings` is constructed, but `model_copy(update=)`
+        and `setattr` both skip validation — and those are precisely how `tools/cli.py` and
+        `main.py` apply their overrides. This is the factory refusing to invent a default for a
+        value nobody configured, so the failure surfaces here rather than as a local run that
+        the operator believed was hosted.
+        """
+        unvalidated = settings.model_copy(update={"appraiser_provider": "hostd"})
+
+        with pytest.raises(ValueError, match="hostd"):
+            build_provider("appraiser", unvalidated)

@@ -26,6 +26,16 @@ development cost no SerpAPI quota (plan section 10)."""
 
 AgentRole = Literal["supervisor", "researcher", "appraiser"]
 
+AgentMode = Literal["single", "multi"]
+"""Which reasoning topology a run uses (Day 5 T1). `multi` is the Supervisor coordinating a
+Researcher and an Appraiser and is the default; `single` is the Day 3 loop running the same
+four stages as one agent, kept because it is a deliverable in its own right.
+
+A type alias only, with **no `Settings` field behind it**: the mode is a per-run choice the
+CLI makes and `service.prepare_focus_session` takes as a parameter, not a deployment tunable.
+Giving it an `.env` value would create a second place the default lives and let a stale
+environment silently decide which topology a demo runs."""
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 

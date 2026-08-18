@@ -22,23 +22,30 @@ anything.
 | | |
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
-| **Current milestone** | **Day 4 — Memory, hooks and tracing** — **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
+| **Current milestone** | **Day 5 — Supervisor + Researcher + Appraiser** — **T1–T6 done**: `single_agent.py`'s four stage functions now live in `supervisor.py` / `researcher.py` / `appraiser.py` over a shared `runtime.py`, `service.py` takes a `mode` (`multi` default, `single` retained), each role calls the provider its configuration names, the Appraiser returns a per-source reading of the evidence rather than a sufficiency flag, and the trace now carries the topology as `agent` spans. 577 offline tests pass |
+| **Day 4** | **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
 | **Day 3** | S1–S14 implemented and live-verified. **Implementation complete; sign-off deferred to Day 7** — two acceptance runs are owed and banked there, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
-| **Next task** | **Day 5 — the Supervisor / Researcher / Appraiser split.** Day 4 is implementation complete, and its acceptance run is **not** a blocker: by standing decision (*Engineering decisions* 12) every live run in this project is Day 7's. Three are banked and owed there — two S14 runs for Day 3, and the Day 4 pair that proves run 2 differs from run 1 |
+| **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts · **T3 — per-role provider selection**: the wiring was found **already complete** — the three `*_PROVIDER` settings, `build_provider`, `AgentProviders.from_settings` and the `providers.<role>` argument at every stage were built by Day 1 and Day 5 T1 — so T3 added no mechanism. Its content is the proof and one guard: `build_provider` now **raises** on an unrecognised name instead of falling through to local, and a wire-level test drives three provider combinations (all-local, hosted Appraiser, local Researcher only) through `prepare_focus_session` with **nothing injected**, asserting from the HTTP endpoints that each role's calls reached the provider its configuration names · **T4 — Appraiser judgement quality**: `AcceptedSource` / `RejectedSource`, the rewritten `sufficiency.md`, the per-source rendering into the finalise prompt and the `run_memory` row, `finalise.md`'s do-not-cite-a-rejected-source rule, and `tests/unit/test_appraiser.py`. The rejection is guidance to the report, never a narrowed grounding set |
+| **Next task** | **Day 6 — MCP server and client, hardening.** Day 5 is implementation-complete. Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
 `agents/prompt_context.py` is the only place a run's state becomes prompt text,
 `RunContext.budget` is the only ledger of what a run has spent, and
-`agents/single_agent.py` is the loop that drives all four, and
+**there are now two loops that drive the four stages** — `agents/supervisor.py`'s
+`run_supervised` (multi, the default) and `agents/single_agent.py`'s `run_agent` (single,
+retained as a deliverable), chosen by `service.prepare_focus_session(mode=…)` and identical in
+behaviour by design, and
 `tools/validate_report.py` is the only place a finished report is checked against the evidence,
 and `finalise()` is the only caller of it — up to `MAX_OUTPUT_RETRIES` **total attempts**, each
 one validated, the errors quoted back, the last attempt on the alternate provider when one is
 configured, then `PreparationFailed`. `service.py` is the only place a surface starts a run from,
-and `main.py` is now a surface rather than a second composition root. Nothing else in `agents/`
-exists. Do not describe or assume any other Day 3 capability as present.
+and `main.py` is now a surface rather than a second composition root. `agents/` holds exactly
+eight modules — `__init__`, `tool_calling`, `prompt_context`, `runtime`, `supervisor`,
+`researcher`, `appraiser`, `single_agent`. Do not describe or assume any other capability as
+present.
 
 | Day | Area | Status |
 | --- | --- | --- |
@@ -46,7 +53,7 @@ exists. Do not describe or assume any other Day 3 capability as present.
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
 | 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
 | 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
-| 5 | Supervisor + Researcher + Appraiser | Not started |
+| 5 | Supervisor + Researcher + Appraiser | **T1–T6 done — the split, the `--mode` switch, the typed message contracts, per-role provider selection, the Appraiser's per-source judgement and the evidence-driven multi-hop decision, and the cross-agent `agent` spans. Implementation complete** |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
@@ -76,10 +83,18 @@ is organised, not how many services are deployed.
                     CLI  ·  MCP server            ← surfaces   (CLI: BUILT · MCP: Day 6)
                           │
                      service.py                   ← BUILT (S11). Composition only:
-                          │                          registry + providers + RunContext
-       Supervisor ──► Researcher ──► Appraiser     ← BUILT (S5-S8) as four functions in
-                          │                          agents/single_agent.py; split into
-                          │                          three agents on Day 5
+                          │                          registry + providers + RunContext,
+                          │                          and `mode` picks one of two loops
+        ┌─────────────────┴─────────────────┐
+        ▼                                   ▼
+   supervisor.run_supervised          single_agent.run_agent
+   (multi · default)                  (single · retained demo)
+        │                                   │
+   Supervisor ──► Researcher              one agent runs
+        └──────► Appraiser                all four stages
+                          │              ← BUILT (Day 5 T1). Same four stage functions,
+                          │                 same tools/budgets/memory/validation; only
+                          │                 the topology differs
               agents/tool_calling.py               ← BUILT (S2). Advertise → dispatch;
                           │                          the only way a model reaches a tool
                    tool registry                  ← BUILT. The only path to a tool.
@@ -116,12 +131,12 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/schemas/` | `task.py`, `report.py`, `tools.py`, `agents.py` — Pydantic only, imports nothing from the package |
 | `src/evergrove_agent/config.py` | Every tunable value: models, budgets, TTLs, timeouts, paths |
 | `src/evergrove_agent/llm/` | `base.py` (contract), `ollama_provider.py`, `hosted_provider.py`, `fake_provider.py`, `prompts/` (`__init__.py` loader + `plan.md`, `research_step.md`, `sufficiency.md`, `finalise.md`) |
-| `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3); `single_agent.py` — the four stage functions and the loop (S5–S8) |
+| `src/evergrove_agent/agents/` | `tool_calling.py` — the model ↔ tool bridge (S2); `prompt_context.py` — the placeholder renderers (S3); `runtime.py` — what more than one role needs, plus the orchestration mechanics both loops use (Day 5 T1); `supervisor.py` — `decide_next_step`, `finalise`, `run_supervised`; `researcher.py` — `run_research_step`; `appraiser.py` — `judge_sufficiency`; `single_agent.py` — `run_agent`, the one-agent loop, retained |
 | `src/evergrove_agent/tools/` | `base.py` (contract · `RunContext` · `RunBudget`), `registry.py` (the only call path), `hooks.py` (span + budget hooks, T2/T3), `wiring.py` (composition root), `cli.py`, and the eight tools — the four Day 2 ones, `validate_report.py` (S9), and the three in `memory_tools.py` (T4) |
 | `src/evergrove_agent/search/` | `base.py`, `normalize.py`, `domains.py` + `domains.json`, `fixture.py`, `serpapi.py`, `academic.py` |
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py`, `prep_memory.py` (cross-run preparation memory, T4), `run_memory.py` (the session-memory mirror, T4) |
-| `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls), `render.py` (the read side, T6 — pure, writes nothing). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call |
+| `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls, plus `agent_span` — the context manager an agent boundary uses, Day 5 T6), `render.py` (the read side, Day 4 T6 — pure, writes nothing). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call, and the two loops write one per agent boundary |
 | `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested |
 | `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
 | `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
@@ -363,6 +378,54 @@ Invariants later work must preserve:
   in the same `finally` that writes `finish_run`. A connection that cannot be opened is logged
   and the run proceeds untraced, the same stance `Tracer` takes over each individual write.
 
+**The cross-agent trace** (`tracing/tracer.py` + `agents/supervisor.py` + `agents/single_agent.py`,
+Day 5 T6) — the topology, as rows someone can read back.
+
+```python
+# tracing/tracer.py — the manager Day 4 deferred to "the work that adds them".
+AgentSpan(span_id: str | None)        # .summarise(text) sets the span's output_summary
+@contextmanager
+agent_span(tracer, ctx, name, *, input_summary=None) -> Iterator[AgentSpan]
+```
+
+| Mode | Spans, outermost first |
+| --- | --- |
+| `multi` | `supervisor.run` → `supervisor.decide` · `researcher.loop` · `appraiser.judge` · `supervisor.finalise` |
+| `single` | `agent.run` |
+
+Invariants later work must preserve:
+
+- **Parenting is `RunContext.span_stack` and nothing else.** `Tracer.open_span` reads the parent
+  before it pushes, so a tool call made while a role's span is open nests under that role with
+  **no parent id passed down and no change to `tools/hooks.py`**. Never thread a parent through a
+  stage function, and never derive one at a call site — that is the rule Day 4 wrote and T6 is
+  the proof it was worth writing.
+- **The spans open at the call sites in the loops, never inside the stage functions.**
+  `decide_next_step`, `run_research_step` and `judge_sufficiency` are shared by both loops; a
+  span opened inside one of them would appear in `single` too, and a single-agent trace that
+  claims a Supervisor delegated to a Researcher describes a topology that did not happen.
+- **`single` gets one span on purpose.** One agent performs all four stages, so there is no
+  delegation to record; the mode difference is then readable straight off the tree, which is the
+  distinction T6 exists to create.
+- **The three memory tool calls sit under `supervisor.run` / `agent.run`, not under a worker.**
+  Recalling and filing away is the coordinator's bookkeeping. A `record_run_memory` span under
+  `researcher.loop` would mean the mirror moved inside a delegation.
+- **`appraiser.judge` has no children, and that is an assertion, not an observation.** The module
+  imports neither the registry nor `dispatch`, so there is no path from that stage to a tool; the
+  empty child list is where the structural rule becomes checkable on a recorded run.
+- **A raising stage still closes its span** — `ok=False`, `error_code=type(exc).__name__` — and
+  the exception propagates untouched. `BaseException` is caught and re-raised, because a
+  cancelled run is exactly the run whose trace is wanted. A span left open re-parents everything
+  after it for the rest of a fifteen-minute run.
+- **`tracer=None` pushes nothing.** An untraced run nests exactly as it did before T6, which is
+  what keeps `service.py`'s "the run proceeds untraced" literally true.
+- **The `Tracer` travels as an argument**, from `service.py` into `run_supervised` / `run_agent`.
+  Not on `RunContext`, which holds identifiers and never I/O; not off the registry, which
+  dispatches tools and does not own the run.
+- **A span summary is a line, never a second copy of the evidence.** `_verdict_summary` records
+  the three fields the loop acts on; the full semantic judgement already reaches `run_memory`
+  through `runtime._appraisal_line`, and `TRACE_SUMMARY_CHARS` bounds this at 200 either way.
+
 **The memory contract** (`memory/prep_memory.py` + `memory/run_memory.py` + `tools/memory_tools.py`,
 Day 4 T4) — two memories that share one SQLite file and nothing else.
 
@@ -552,8 +615,20 @@ Invariants later work must preserve:
   question.
 - **`ResearchAssignment.max_searches` / `max_fetches` are an allowance, not a ledger.** The live
   counters are `RunContext`'s (S4), in one place, so Day 4 can lift enforcement into hooks.
-- **`AppraisalVerdict` is lean by design.** Day 5 adds `accepted[]`, `rejected[]` and
-  `disagreements[]` as optional fields — additive, not a rewrite.
+- **`AppraisalVerdict` carries the semantic judgement, and it informs without deciding (T2).**
+  `accepted[]`, `rejected[]` and `disagreements[]` were added additively, every one defaulting
+  to `[]`, so a Day 3-shaped reply is still a valid verdict — which matters because this is a
+  constrained-decoding target and a 4B model routinely fills only the fields it understands. A
+  lost default would fail `model_validate_json`, spend `_decode`'s one re-ask, and return
+  `None`, which the loop reads as "the appraiser could not answer" and **stops the run on**.
+  `_stop_after_hop` reads `sufficient`, `requested_followup` and **`len(accepted)`** (T5
+  widened it by one field; `rejected` and `disagreements` still only inform), so a verdict that
+  names the wrong sources cannot redirect a run — it can only make the report and the trace
+  more honest, and make a thin "yes" read as the `thin_evidence` stop it is. Both consumers render only populated lists: `_appraisal_line` omits an
+  empty segment, `render_research_context` omits the whole heading, because an empty heading in
+  front of the next model invites the invented contradiction the honest empty case exists to
+  avoid. They are `list[str]`, deliberately not URLs — prompt material and a trace line, never a
+  citation menu, since a cited URL must still be in `RunState.evidence_urls` (S9).
 - **`PreviousPreparation` is a summary, not a stored report** (T4). Only what a later session needs
   to continue: the previous goal and objective, `topics_covered`, `topics_deferred`, the source
   URLs, the run id and when it was saved. It lives here rather than in `memory/` because
@@ -700,9 +775,10 @@ Invariants later work must preserve:
   also no longer charged, since `dispatch` refuses it before the registry is reached.
 - **`dispatch_all` is not used by the loop** — the counters are claimed one call at a time, so
   `dispatch` is called per tool call, still strictly in the model's own order.
-- **A later hop's question is never written by our code.** `requested_followup` →
-  `state.verdict` → `render_progress` → `plan.md`'s "prefer the suggested follow-up" clause.
-  The loop only carries it. A null follow-up ends the run (`"no_followup"`); never invent one.
+- **A later hop's question is never written by our code.** Still true, but the path changed in
+  T5: `requested_followup` → `state.verdict` → `_outstanding_followup` → `_followup_decision`
+  → `ResearchAssignment.research_question`, with **no planner turn in between**. The loop only
+  carries it. A null follow-up ends the run (`"no_followup"`); never invent one.
 - **`RunState.findings` is reassigned, never appended to.** `validate_assignment=True` does not
   see an in-place `append`, and the `max_length=3` bound is what the hop cap rests on.
 - **When no hop remains the planner is skipped entirely**, before `decide_next_step` — `plan.md`
@@ -827,6 +903,139 @@ no clock.
   reached for *because* the run was already failing must not replace the real reason with a
   connection error.
 
+**The role split** (`agents/runtime.py` + `supervisor.py` + `researcher.py` + `appraiser.py`,
+Day 5 T1) — the same four stage functions, in four files instead of one, plus a second loop.
+
+```python
+# agents/runtime.py — what more than one role needs. Imports no sibling in agents/.
+StopReason · PreparationFailed · AgentProviders · _alternate_provider
+_claim_reasoning_call · _FINALISE_RESERVE · _RESEARCH_RESERVE · _MAX_DECODE_ATTEMPTS
+_decode · _RETRY_INSTRUCTION · _errors
+_assign · _recall_previous_preparation · _mirror_session_memory · _appraisal_line
+_remember_preparation
+
+# agents/supervisor.py — decides, coordinates, reports.
+async decide_next_step(state, *, provider, ctx, settings=None) -> SupervisorDecision | None
+async finalise(state, *, provider, ctx, stop_reason, settings=None, fallback_provider=None)
+async run_supervised(task, *, registry, providers=None, ctx=None, settings=None)
+async _delegate_hop(decision, state, *, registry, providers, ctx, settings)
+_stop_before_planning(state, budget) · _stop_after_hop(verdict)
+
+# agents/researcher.py — gathers. The only role with a tool menu.
+async run_research_step(assignment, *, provider, registry, ctx, settings=None,
+                        attachment_path=None) -> ResearchFindings
+
+# agents/appraiser.py — judges. Imports neither the registry nor the dispatcher.
+async judge_sufficiency(request, *, provider, ctx, settings=None) -> AppraisalVerdict | None
+```
+
+Invariants later work must preserve:
+
+- **The import graph is a DAG, and siblings are reached by module path.** `runtime` → the
+  three roles → `single_agent` → `__init__`. **No module inside `agents/` may import
+  `evergrove_agent.agents`** — that makes the package re-enter itself. A test in
+  `tests/integration/test_multi_agent.py` parses the sources and pins this.
+- **The workers never import each other, and never import the supervisor.** That is what
+  "Researcher and Appraiser do not communicate directly" means operationally, and
+  `supervisor._delegate_hop` is structurally the entire channel between them: it is the one
+  place a `ResearchFindings` becomes an `AppraisalRequest`. Pinned by the same test.
+- **`appraiser.py` imports neither `tool_calling` nor `tools.registry`**, so "the Appraiser
+  performs no research" is a property of what it can reach, not of what one scripted run
+  happened to do. `advertise` already gives it an empty menu; this is the second lock.
+- **The Researcher never finalises and never decides the run is over.** Neither function
+  exists in its module. It answers one `ResearchAssignment` with one `ResearchFindings`.
+- **Both loops behave identically, and that is the contract, not a coincidence.**
+  `run_supervised` and `run_agent` produce the same stop reasons, spend the same budget, make
+  the same three memory calls and return the same report. A change to one that alters
+  behaviour must be made to both, or it is a divergence rather than a refactor. What is
+  written twice is only the ~25-line control skeleton; every per-hop mechanic is a single
+  `runtime.py` function.
+- **`single_agent.py` re-exports the moved names through `__all__`.** `main.py` and three test
+  modules import `PreparationFailed`, `finalise`, `AgentProviders` and the stage functions from
+  there. The `__all__` entry is also what tells ruff those imports are intentional.
+- **The four prompts were not renamed and no schema changed.** `plan.md`,
+  `research_step.md`, `sufficiency.md` and `finalise.md` already were one prompt per stage;
+  the plan's `supervisor_decide.md` / `researcher.md` / `appraiser.md` naming would be churn
+  against `finalise.md`'s frozen placeholder set. `AppraisalVerdict`'s
+  `accepted[]` / `rejected[]` / `disagreements[]` fields were added by Day 5 T2 and given
+  their per-source shape by T4.
+
+- **The stop/continue decision is the Appraiser's, and it has exactly one definition (T5).**
+  `supervisor._stop_after_hop` names a `StopReason` or returns `None` to continue;
+  `supervisor._outstanding_followup` returns the question to spend, and is non-`None`
+  **exactly** when the first returned `None`. The two are two readings of one verdict and a
+  gap between them either strands the run or lets a stale verdict reach the planner, so the
+  equivalence is pinned by `tests/unit/test_supervisor.py`. `single_agent.py` **imports** both
+  from `supervisor` rather than restating them: it plays all three roles, but it must not
+  answer a verdict differently from the way the Supervisor answers it.
+  - **A hop the Appraiser asked for does not go past the planner at all.** `_followup_decision`
+    builds the `SupervisorDecision` in code from `requested_followup`, so there is no model
+    call in which a `FINALISE` could be produced over the top of an insufficient verdict.
+    That is what "depends entirely on the Appraiser's verdict" (plan §8.3) means structurally
+    rather than as a prompt instruction. The question is still never *written* by our code —
+    it is the Appraiser's own text, verbatim; only `source_preference` (the schema default)
+    and `reasoning` (a trace line) are supplied.
+  - **The planner still owns the first question**, because there is no verdict to defer to
+    before any evidence exists. `plan.md`'s "prefer the suggested follow-up" clause and
+    `render_progress`'s verdict block are therefore now unreachable in a live run. Both are
+    left in place deliberately: they are still correct, still covered by
+    `test_prompt_context.py`, and removing them is a decision of its own rather than a side
+    effect of this one.
+  - **Every bound still applies to a forced hop.** `_stop_before_planning` runs *first*, so
+    `MAX_HOPS` and the search/fetch ceilings cap a hop the Appraiser demanded exactly as they
+    cap one the planner chose — which matters more now, since a verdict that always asks for
+    more has no planner in between to decline it. `_can_afford_a_hop` is the replacement for
+    the one guard skipping the planner removed: `decide_next_step` used to answer `None` when
+    the ledger refused it, and without a substitute a forced hop would spend real searches and
+    fetches and then have nothing left to judge them with.
+  - **`sufficient` alone no longer stops a run.** The plan's condition is `sufficient` **and
+    at least two accepted sources** (`_MIN_ACCEPTED = 2`); a thinner "yes" is the new
+    `thin_evidence` stop — still a stop, because the verdict named no follow-up to spend a hop
+    on, but a *cut-short* one whose reason reaches `unknowns`. This **supersedes T2's "the
+    semantic lists inform, they never decide"** for `accepted` only; `rejected` and
+    `disagreements` still only inform. `AcceptedSource`'s bare-string coercion carries more
+    weight because of it — a model that names its sources without describing them still
+    clears the bar.
+
+- **The Appraiser judges; it never validates and never decides (T4).** The verdict is
+  semantic — what a source supports, what it leaves open, its authority, why one was
+  rejected — and nothing deterministic moved into it: Pydantic still checks shape,
+  `validate_report` (S9) still checks the finished report against the URLs the run really
+  gathered, and `_stop_after_hop` still reads only `sufficient` and `requested_followup`. A
+  rejection reaches the report as an instruction in the finalise prompt, **not** as a
+  narrowed grounding set: letting a model's reading delete a genuinely fetched URL from
+  `evidence_urls` would spend the retry ladder undoing a true citation. If that guidance ever
+  needs teeth, it is a new `ValidationCode` and a decision of its own, not an edit here.
+
+- **The two per-source lists are the only nesting in a model-output schema**, one level deep
+  — the depth `FocusPreparationReport.resources` has driven through both providers since Day
+  1. Every field is defaulted and a bare string coerces to `{"source": …}`, because the
+  failure being bought off is expensive: a reply that does not validate spends `_decode`'s
+  one re-ask and then returns `None`, which `_stop_after_hop` reads as "the appraiser could
+  not answer" and ends the run on.
+- **`agent` spans exist as of Day 5 T6**, and this is where the loop first learns a trace
+  exists. See *The cross-agent trace* below for the five span names, the parenting rule and
+  what may not be added to them.
+
+**The mode switch** (`config.AgentMode` + `service.py` + `main.py`, Day 5 T1):
+
+- **`AgentMode = Literal["single", "multi"]` is a type alias with no `Settings` field.** The
+  mode is a per-run choice a surface makes, not a deployment tunable; an `.env` value would be
+  a second place the default lives and would let a stale environment decide which topology a
+  demo runs.
+- **`multi` is the default**, in `prepare_focus_session`'s signature and in `--mode`'s
+  argparse default, and the two must agree.
+- **Picking the loop is composition, so it lives in `service.py`.** Everything else — the
+  connection, the `Tracer`, `build_tool_registry`, the providers, the budget, the `finally`
+  that closes the run out — is assembled once *above* the choice and handed to whichever loop
+  runs. That is what makes "only the reasoning topology differs" structural.
+- **`--no-research` is unaffected.** It is a single round trip with no loop, so it has no
+  topology and ignores `--mode`.
+- **Both modes stay demonstrable.** `single` is a Week 4 deliverable in its own right and is
+  the mode nothing else exercises by default, which is why
+  `test_multi_agent.py::test_both_modes_produce_a_valid_report_from_the_same_inputs` is
+  parameterized over both rather than testing only the new path.
+
 **The entry point** (`service.py`, S11) — the one function a surface starts a run from. The CLI
 calls it today and the Day 6 MCP server calls the same function; two surfaces each assembling
 their own registry, providers and budget would be two places for composition to drift.
@@ -911,6 +1120,23 @@ implementations:
 `build_provider(role, settings=None, *, override=None)` is the only construction path;
 `role ∈ {supervisor, researcher, appraiser}` resolves through `Settings.provider_for`. Adding a
 provider is a branch here plus a class — never a change at a call site.
+
+**Per-role selection is the whole mechanism (Day 5 T3), and it is configuration only.**
+`SUPERVISOR_PROVIDER`, `RESEARCHER_PROVIDER` and `APPRAISER_PROVIDER` each resolve
+independently through this one factory into `AgentProviders`, which `service.py` builds and
+hands to whichever loop `mode` selects; a stage receives `providers.<role>` as an argument.
+**No agent module reads a `*_PROVIDER` setting or constructs a client**, so pointing the
+Appraiser at a different model — the independent semantic judgement the split exists for — is
+an `.env` edit and nothing else. `single` mode uses the same three fields for the same three
+stages: it inherits per-role selection from the identical composition path rather than
+carrying a setting of its own, which is what keeps the two modes comparable. There is exactly
+one override seam, the CLI's `--provider`, which writes all three settings *before*
+composition, so precedence never becomes a question at resolution time.
+
+**An unrecognised provider name raises here rather than defaulting to local.** `ProviderName`
+catches a typo when `Settings` is built, but `model_copy(update=…)` and `setattr` — how
+`tools/cli.py` and `main.py` apply overrides — bypass that, and a silent fall-through would
+give an operator a local run they believed was hosted.
 
 **`LLMError` is an exception, `ToolError` is a value.** Deliberate: an unreachable model is a
 broken run, not something the agent can reason around. Preserve the asymmetry.
@@ -1093,9 +1319,9 @@ change it to make a test pass.
 
 ## Testing and offline strategy
 
-**458 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
+**577 offline test cases, plus 1 `live`-marked test** (a real-Ollama round trip in
 `test_llm_provider.py`; this count drifts — it has been recorded as ~356, 400, 420 and 432 before,
-so re-measure rather than trusting it). The newest are T4's 26: 15 in `tests/unit/test_memory.py`
+so re-measure rather than trusting it; 577 is the Day 5 T6 measurement). The newest are T4's 26: 15 in `tests/unit/test_memory.py`
 (the round trip, the task-key equivalence class and its negative, both sides of the age window, the
 config default, newest-wins, a corrupt row degrading to a miss, hop-1 rows surviving hop 2, the
 seen-query/URL sets, and one run never seeing another's memory), 8 in
@@ -1236,7 +1462,9 @@ future session damages the project.
 | Show a model the sources a run gathered | `agents.render_sources` (full, for judging) / `agents.render_research_context` (compact, for finalising) |
 | Show a model what a tool answered | `agents.render_tool_outcome` — code, message and retryability included |
 | Start a run from a surface (CLI, MCP) | `service.prepare_focus_session(task)` — never assemble a registry, providers and a budget at a surface |
-| Run the whole agent | `agents.run_agent(task, registry=…)` — never call the four stages in sequence yourself |
+| Run the whole agent | `agents.run_supervised(task, registry=…)` (multi) or `agents.run_agent(task, registry=…)` (single) — never call the four stages in sequence yourself, and never write a third loop |
+| Start a run in a specific topology | `service.prepare_focus_session(task, mode="single" \| "multi")` — never import a loop at a surface |
+| Hand one worker's output to the other | `supervisor._delegate_hop` — the only channel between the Researcher and the Appraiser; never let a worker import its sibling |
 | Check an attachment path before using it | `documents.resolve_attachment` — never a second existence or containment check |
 | One reasoning stage | `agents.decide_next_step` / `run_research_step` / `judge_sufficiency` / `finalise` |
 | A model for a role, in a test or a run | `agents.AgentProviders` — `.from_settings()` in production, the three-argument constructor in tests |
@@ -1252,6 +1480,7 @@ future session damages the project.
 | "What has this run spent?" / may it spend one more? | `RunContext.budget` — `claim(kind)` / `remaining(kind)` / `exhausted_limits`; never a counter of your own |
 | A span id, and what it nests under | `RunContext.begin_span()` / `end_span()` — never mint an id or derive a parent at a call site |
 | Write a run or a span to the trace | `tracing.Tracer` — `start_run` / `finish_run` / `open_span` / `close_span`; never call `tracing.store` from a hook, and never guard a trace write yourself |
+| Trace an operation a single frame opens and closes | `tracing.agent_span(tracer, ctx, name)` — it closes on the failure path too, and is a no-op without a tracer. Never pair `open_span`/`close_span` by hand outside a hook |
 | Read a run's trace back | `tracing.get_run` / `tracing.get_spans` |
 | Show a run's trace to a person | `scripts/show_trace.py <run_id>`, or `tracing.render_trace(run, spans)` for the lines — never a second tree builder, and never a `SELECT` of your own |
 | Log what a tool call did | nothing to add — `TracingHooks.after` already emits the JSON line for every call. Never log a tool call from inside a tool |
@@ -1263,10 +1492,12 @@ future session damages the project.
   hook chains, budget enforcement in the pre-hook, both memories with their three tools, the
   recalled preparation reaching the planner and the report, and the trace renderer plus the JSON
   log line. **Still to do:** the acceptance run, which is live-model work.
-- **Day 5** splits Day 3's four functions into `agents/supervisor.py`, `agents/researcher.py`,
-  `agents/appraiser.py`. **This is why Day 3 must be written as four separately-prompted functions
-  exchanging Pydantic models** — Day 5 then becomes a file move, not a rewrite. Workers reuse the
-  Day 2 tools unchanged; a tool is never re-implemented inside a worker.
+- **Day 5** — **T1 done.** Day 3's four functions now live in `agents/supervisor.py`,
+  `agents/researcher.py` and `agents/appraiser.py` over a shared `agents/runtime.py`, and it was
+  a file move rather than a rewrite exactly as planned, because each stage already took and
+  returned a Pydantic model. Workers reuse the Day 2 tools unchanged through the registry; no
+  tool is re-implemented inside a worker. `single_agent.py` is retained and `--mode` selects.
+  **Still to do:** cross-agent `agent` spans (T6).
 - **Day 6** (MCP) wraps `service.py`. The MCP tool's return type is `FocusPreparationReport` and its
   input mirrors `TaskContext`.
 - **Day 7** runs five evaluations over all of the above.
@@ -1447,16 +1678,17 @@ cached row — that, not a leak, is why `search_budget` runs slightly ahead of t
   bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
   the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
-**Missing (later days):** the supervisor/worker split (Day 5) · the MCP server, client and
-`.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7). Everything
-Day 4 specified is now built.
+**Missing (later days):** the MCP server, client and `.mcp.json` (Day 6) · `evals/`, the
+requirement audit, the `--offline` demo (Day 7). Everything Day 4 and Day 5 specified is now
+built.
 
-**Only *tool* spans exist so far.** T2 wired the run header and one span per tool call. There are
-no `agent` or `llm` spans yet, so a trace is currently one flat level of tool calls under the run
-— the parenting is already derived from `RunContext`'s stack, so those spans nest correctly the
-day something opens them, with no change to `tools/hooks.py`. **T6's renderer is already proven at
-depth** against synthesised multi-level spans, so Day 5's agent spans need no renderer change
-either.
+**`tool` and `agent` spans exist; `llm` spans do not.** Day 4 T2 wired the run header and one
+span per tool call; Day 5 T6 added the agent boundaries, and the prediction held exactly — the
+parenting came free from `RunContext`'s stack and neither `tools/hooks.py` nor `render.py`
+changed. There is still no span around an individual model call, so a stage's own `generate`
+turns are invisible: `supervisor.decide` shows that the planner ran and what it decided, not
+that it re-asked once after a schema drift. `SpanKind` already allows `llm` and `agent_span`
+generalises to it in a line, but nothing opens one and no work depends on it.
 
 **No live run has been rendered.** `scripts/show_trace.py` and the JSON log line are proven
 against synthesised rows and against the real registry with the fixture search backend — every
@@ -1552,7 +1784,30 @@ has ever been made). S10's stake stands: the ladder's final rung is unproven.
 
 ---
 
-## Current milestone — Day 4: memory, hooks and tracing
+## Current milestone — Day 5: Supervisor + Researcher + Appraiser
+
+**Goal (plan §25):** convert the proven single-agent loop into Supervisor + Researcher +
+Appraiser. Splitting a loop that works is a refactor; building three agents from scratch is a
+rewrite — which is why this day comes after Day 3 rather than instead of it.
+
+| # | Subtask | Primary targets | Status |
+| --- | --- | --- | --- |
+| **T1** | **Split, do not rewrite — and keep the single agent runnable.** The four Day 3 stage functions moved into three role modules over a shared `runtime.py`; `service.py` gained `mode`, `main.py` gained `--mode` (default `multi`). No schema changed, no prompt was renamed, no tool was re-implemented, no `agent` span was added. Every one of the 470 pre-existing tests passes untouched | `agents/{runtime,supervisor,researcher,appraiser,single_agent,__init__}.py`, `config.py`, `service.py`, `main.py`, `tests/integration/test_multi_agent.py`, `tests/unit/test_service.py`, `tests/unit/test_main.py` | **Done** |
+| **T2** | **Typed inter-agent messages** — `AppraisalVerdict` gains `accepted[]`, `rejected[]`, `disagreements[]`; additive, never a rewrite | `schemas/agents.py` | **Done** |
+| **T3** | **Per-role provider selection** — `SUPERVISOR_PROVIDER` / `RESEARCHER_PROVIDER` / `APPRAISER_PROVIDER` already exist and already route; needs verifying rather than building | `config.py`, `llm/__init__.py` | **Done** |
+| **T4** | **Appraiser judgement quality** — the verdict became a reading of the evidence rather than a flag. `AppraisalVerdict.accepted`/`rejected` now hold one object per source: `AcceptedSource(source, supports, does_not_support, authority)` and `RejectedSource(source, reason)`, both defaulted and both coercing a bare string, so a Day 3/T2-shaped reply still validates. `sufficiency.md` rewritten to judge per source, reject only with a stated reason, and leave `disagreements` empty when none exist. Consumed by `render_research_context` (the finalise prompt now names an accepted source's authority, what it supports and what it leaves open, and heads the rejected list with "do not cite any of these in resources") and by `_appraisal_line` (the `run_memory` row, and therefore the trace). `finalise.md` gained the matching citation rule | `schemas/agents.py`, `schemas/__init__.py`, `llm/prompts/{sufficiency,finalise}.md`, `agents/{prompt_context,runtime,appraiser}.py`, `tests/unit/test_appraiser.py` | **Done** |
+| **T5** | **Evidence-driven multi-hop** — the stop/continue decision became the Appraiser's alone. `_stop_after_hop` now applies the plan's full stop condition (`sufficient` **and** `len(accepted) >= _MIN_ACCEPTED`, else the new `thin_evidence` reason), and when it says to continue the planner is **skipped entirely**: `_outstanding_followup` reads the verdict and `_followup_decision` turns `requested_followup` into the next `ResearchAssignment`, so no model call exists in which the Supervisor could answer FINALISE over the judgement. `_can_afford_a_hop` replaces the budget guard that the skipped planner used to provide. Both loops share the four helpers (`single_agent.py` imports them) so they cannot answer one verdict two ways | `agents/{supervisor,single_agent,runtime,prompt_context}.py`, `schemas/agents.py`, `tests/unit/test_supervisor.py`, `tests/integration/test_multi_agent.py`, `tests/integration/test_single_loop.py`, `tests/unit/test_single_agent.py` | **Done** |
+| **T6** | **Cross-agent tracing** — `tracing.agent_span`, the context manager Day 4 deferred, plus five `agent` spans opened at the call sites in `run_supervised` (`supervisor.run` → `supervisor.decide` · `researcher.loop` · `appraiser.judge` · `supervisor.finalise`) and one, `agent.run`, in `run_agent`. The `Tracer` reaches a loop as an argument from `service.py`; parenting is `RunContext.span_stack` and nothing else, so `tools/hooks.py`, `render.py` and `store.py` are untouched. The renderer's Day 4 prediction held exactly: proven at depth against synthesised rows, it displayed a genuine run's tree with no change | `tracing/{tracer,__init__}.py`, `agents/{supervisor,single_agent}.py`, `service.py`, `tests/unit/test_tracing.py`, `tests/integration/test_multi_agent.py` | **Done** |
+
+**What T1 deliberately did not do**, so a later session does not read the absence as an
+oversight: it renamed nothing (`decide_next_step` / `run_research_step` / `judge_sufficiency`
+keep their exported names, the four prompts keep their filenames), changed no schema, added no
+`agent` span, and left `single_agent.run_agent`'s body byte-identical. Each of those is a
+separate Day 5 feature or an explicit non-goal; see *The role split* under *Core contracts*.
+
+---
+
+## Previous milestone — Day 4: memory, hooks and tracing
 
 **Goal (plan §24):** the system remembers across runs, and every tool call is timestamped, traced and
 budget-checked.

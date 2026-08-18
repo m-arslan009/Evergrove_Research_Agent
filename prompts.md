@@ -1076,3 +1076,232 @@ than introducing a new tracing path.
 
 `User prompt`: Keep all the testing for day 7 such as live run. First we complete the
 implementation, later we will focus on testing.
+
+---
+
+`Title`: Day 5 Task 1 — refactor the single-agent loop into Supervisor, Researcher and Appraiser
+
+`User prompt`: Implement Day 5 Task 1 by refactoring the existing working single-agent research
+loop into a multi-agent structure consisting of a Supervisor, Researcher, and Appraiser, while
+preserving the current behavior and reusing the implementation that already works. This is a
+structural refactor, not a rewrite and not an opportunity to redesign unrelated parts of the
+system. The existing decision logic belongs to the Supervisor, the research-step logic belongs to
+the Researcher, the sufficiency/judgement logic belongs to the Appraiser, and final report
+generation belongs to the Supervisor. Create appropriate modules under `agents/` for these three
+roles, but decide the exact class/function structure, imports, abstractions, and internal
+organization based on the existing codebase rather than forcing a new architecture unnecessarily.
+The Supervisor must own the overall orchestration and run state, decide what happens next,
+coordinate worker outputs, and produce the final report; the Researcher must perform research
+using the existing Day 2 tools and return research findings without deciding that the overall run
+is complete or generating the final report; and the Appraiser must evaluate the gathered evidence
+and determine its sufficiency without performing research tool calls or producing the final
+report. Researcher and Appraiser must not communicate directly; coordination should remain
+controlled by the Supervisor. Do not reimplement web search, URL fetching, document reading,
+memory, validation, tracing, budget enforcement, retries, grounding, or any other existing
+capability inside the new agents; all tool execution must continue through the existing shared
+registry so that the hooks, tracing, budgets, and other Day 4 behavior remain intact. Retain
+`agents/single_agent.py` and keep the existing single-agent multi-hop flow runnable because it
+remains a required demonstration; the application should support both single-agent and
+multi-agent reasoning through the existing service entry point, with `--mode single` selecting the
+existing single-agent path and `--mode multi` selecting the Supervisor/Researcher/Appraiser path,
+with multi intended to be the default. Both modes should share the same tools, registry, memory,
+tracing, validation, persistence, schemas where applicable, and surrounding infrastructure,
+differing only in their reasoning topology. Avoid unnecessary schema redesign in this task because
+detailed typed inter-agent message work belongs to the next Day 5 task; make only minimal schema
+changes if they are genuinely required to complete this refactor safely. Do not introduce
+LangGraph, LangChain, MCP work, new providers, a new tracing architecture, changes to
+`FocusPreparationReport`, or unrelated cleanup. Preserve all existing Day 3 and Day 4 behavior and
+tests, and add or adjust only the tests necessary to prove that the refactor did not break the
+existing single-agent path and that the new multi-agent path is correctly wired through the same
+infrastructure. In particular, verify that both modes can produce a schema-valid report with the
+existing offline/FakeProvider setup, that agents do not bypass the registry to execute tools
+directly, and that the existing test suite remains green.
+
+---
+
+`Title`: Keep both loops rather than sharing one parameterized loop body
+
+`User prompt`: [Decision taken during planning, in answer to how the two modes should relate.]
+Keep both loops, share helpers: `run_agent` stays verbatim as the Day 3 demonstration;
+`supervisor.py` gets its own coordinator that delegates to researcher/appraiser. Shared per-hop
+mechanics are extracted so only the ~25-line control skeleton appears twice. Zero regression risk
+to single mode. The `--mode` default lives in the CLI flag and the service parameter only — no
+`AGENT_MODE` setting in `config.Settings` or `.env.example`.
+
+---
+
+`Title`: Day 5 Task 2 — formalize typed inter-agent message contracts
+
+`User prompt`: Implement Day 5 Task 2 by formalizing the communication contracts between the
+Supervisor, Researcher, and Appraiser using typed Pydantic models in `schemas/agents.py`. The
+required inter-agent message concepts are `SupervisorDecision`, `ResearchAssignment`,
+`ResearchFindings`, `AppraisalRequest`, and `AppraisalVerdict`. Their purpose is to make every
+transition between agents explicit, validated, serializable, and traceable rather than relying on
+free-form dictionaries, loosely structured JSON, or agent-specific ad hoc payloads. Preserve the
+architectural rule that the Researcher and Appraiser never communicate directly: the Supervisor
+owns orchestration and must be the component that converts its decision into a
+`ResearchAssignment`, receives `ResearchFindings`, constructs the `AppraisalRequest`, receives the
+`AppraisalVerdict`, and then decides whether to continue or finalize. Reuse existing models or
+fields wherever they already express the required information correctly instead of creating
+duplicate representations. Do not redesign `FocusPreparationReport`, tool I/O schemas, memory
+schemas, tracing schemas, or other unrelated contracts. Add sensible Pydantic validation only
+where it protects a real contract; do not add arbitrary restrictions. Update the three agent
+modules and Supervisor orchestration so these models are actually used at agent boundaries rather
+than merely defined and left unused. LLM structured-output parsing should validate against the
+appropriate message model, and invalid output should continue through the existing retry/error
+handling. Keep all existing tool execution, tracing, memory, budget enforcement, report
+validation, and single-agent behavior intact. The single-agent path may continue using its
+existing internal flow. Add focused tests proving that the message schemas accept valid
+representative payloads, reject materially malformed payloads, and are actually passed between
+Supervisor, Researcher, and Appraiser in the multi-agent flow; verify that no direct
+Researcher-to-Appraiser call path is introduced and that the existing suite remains green.
+
+---
+
+`Title`: Wire the Appraiser's semantic judgement into its consumers, not just the schema
+
+`User prompt`: [Decision taken during planning, in answer to whether T2 should add
+`AppraisalVerdict.accepted[]` / `rejected[]` / `disagreements[]`, given that the five message
+models already existed and were already used at every agent boundary.] Add all three, fully
+wired — the fields go on `AppraisalVerdict` **and** into their consumers (`runtime._appraisal_line`
+for `run_memory`, `prompt_context.render_research_context` for `finalise`), so they are not dead
+fields. Accepted cost: a wider constrained-decoding target for the 4B local model.
+
+
+---
+
+`Title`: Day 5 Task 3 — independent LLM provider selection per agent role
+
+`User prompt`: Implement Day 5 Task 3 by wiring independent LLM provider selection for the
+Supervisor, Researcher, and Appraiser while reusing the provider abstractions and
+implementations that already exist in the project. Add or use configuration values named
+`SUPERVISOR_PROVIDER`, `RESEARCHER_PROVIDER`, and `APPRAISER_PROVIDER`, with each role
+independently supporting the existing `local` and `hosted` provider choices. This task is
+provider wiring only: do not create new provider implementations, duplicate Ollama or
+hosted-provider code, introduce a second local model, or redesign the existing LLM abstraction.
+Resolve each configured role to an existing provider instance through the project's established
+provider factory or equivalent shared construction path, and inject the resolved provider into
+the appropriate agent so that the Supervisor, Researcher, and Appraiser do not read environment
+settings or construct provider clients themselves. The architecture must support an entirely
+local run as well as mixed configurations such as a local Supervisor and Researcher with a hosted
+Appraiser; changing a role's provider should require configuration only and must not require
+modifying agent logic. Preserve the current single-agent mode and determine from the existing
+design how its provider should continue to be selected rather than unnecessarily forcing the
+three new role settings into the single-agent path. Avoid introducing ambiguous configuration
+precedence or additional provider-selection mechanisms beyond what the existing configuration
+architecture requires. The primary architectural reason for independent role selection is that
+the Appraiser can be configured to use a genuinely different provider from the Researcher for an
+independent semantic judgement, while still allowing all-local execution on the target machine;
+therefore ensure that a mixed-provider multi-agent run actually routes each role's model calls
+through its configured provider rather than merely storing the settings. Keep prompts, message
+schemas, tool execution, memory, tracing, budgets, report validation, and multi-hop logic
+unchanged unless a minimal adaptation is required to pass the selected provider into an agent.
+Add focused tests using fakes or stubs that prove each role receives and calls the provider
+selected for that role, that different provider combinations can coexist within one multi-agent
+run, that the all-local configuration remains supported, and that an invalid provider value fails
+through the project's normal configuration validation rather than silently falling back. Do not
+make real hosted API calls in the normal test suite.
+
+---
+
+`Title`: Day 5 Task 4 — make the Appraiser a genuine evidence judge
+
+`User prompt`: Implement Day 5 Task 4 by strengthening the Appraiser so that it performs real
+semantic judgement over the Researcher's gathered evidence rather than returning only a shallow
+sufficiency decision. First inspect the current `AppraisalVerdict` schema, Appraiser prompt,
+Appraiser implementation, source models, finalisation flow, and the changes already made in Task
+2 for `accepted`, `rejected`, and `disagreements`. Preserve the existing architecture and extend
+the current implementation rather than creating a parallel appraisal mechanism. The Appraiser
+should evaluate each supplied source in the context of the research question and produce
+structured judgement that includes which sources are accepted, what each accepted source actually
+supports, what it does not establish, its authority classification using the existing authority
+model or enum, which sources are rejected and the reason for rejection, what information is still
+missing, any meaningful disagreement between sources, whether the available evidence is
+sufficient, and a specific `requested_followup` when further research is needed. These fields
+must represent evidence-based semantic judgement rather than deterministic schema validation; do
+not move Pydantic validation, URL grounding, business-rule validation, or other responsibilities
+owned by `validate_report` into the Appraiser. Likewise, the Appraiser must not search the web,
+fetch URLs, call research tools, decide the final report itself, or communicate directly with the
+Researcher. It receives an `AppraisalRequest` through the Supervisor and returns an
+`AppraisalVerdict` to the Supervisor. Review the Appraiser prompt carefully so it tells the model
+to judge only from the supplied source content, avoid inventing unsupported facts, distinguish
+between what a source supports and what it merely does not cover, reject evidence for an explicit
+reason rather than arbitrarily, and request follow-up research only when the missing information
+materially affects the research goal. Do not add fake disagreements just to populate the field; an
+empty list is valid when sources do not genuinely conflict. Similarly, `does_not_support` should
+capture relevant gaps in a source rather than every topic the source fails to mention. Wire the
+richer verdict into existing consumers where there is a real architectural need: accepted versus
+rejected evidence should be available to finalisation so rejected sources cannot appear as trusted
+final resources, missing information and requested follow-up should remain available for the
+Supervisor's later stop/continue decision, and the structured appraisal should be traceable using
+the existing tracing system. Do not invent new orchestration behavior in this task beyond what is
+required to make the Appraiser's judgement usable. Add focused tests using `FakeProvider` or
+scripted outputs that prove the Appraiser can accept an authoritative source with meaningful
+`supports` and `does_not_support`, reject a low-authority or irrelevant source with a concrete
+reason, preserve genuine disagreements when supplied, return empty disagreements when none exist,
+identify missing information, and produce a specific follow-up question when the evidence is
+insufficient. Also add or preserve an integration assertion that a source rejected by the
+Appraiser does not appear in the final report's trusted resources. Verify that the Appraiser
+performs no tool calls and that existing single-agent, multi-agent, tracing, validation, and
+offline tests remain green.
+
+---
+
+`Title`: Day 5 Task 5 — evidence-driven multi-hop
+
+`User prompt`: Implement Day 5 Task 5, **Evidence-driven multi-hop**, using the existing
+multi-agent implementation and the architecture document as the source of truth. First inspect the
+current Supervisor, Researcher, Appraiser, `AppraisalVerdict`, run state, budgets, and multi-hop
+implementation and preserve anything that already satisfies the requirements. The required
+architectural change is that the Supervisor's decision about whether more research is needed must
+be driven by the Appraiser's verdict rather than by the Supervisor independently assessing the
+research. `AppraisalVerdict.sufficient` and `requested_followup` are the relevant control signals,
+and `requested_followup` must remain the mechanism by which the Appraiser generates new research
+work from gaps discovered in the evidence. Preserve the document's termination rules: successful
+sufficiency requires `sufficient == true` with at least two accepted sources; research must not
+exceed `MAX_HOPS`; budget ceilings for searches, fetches, model calls, and wall-clock time must
+still stop further work; and an insufficient verdict may cause another hop only when
+`requested_followup` is non-empty and another hop is allowed. If the system cannot continue despite
+insufficient evidence, it must finalise honestly using `unknowns` and `assumptions` rather than
+guessing. Do not redesign the agent roles, message schemas, provider architecture, tools,
+validation, memory, or tracing as part of this task unless the existing implementation requires a
+minimal change to satisfy these requirements. Decide the cleanest implementation based on the
+current code rather than introducing a prescribed new control-flow structure. Successful
+implementation must demonstrate that a scripted `sufficient=false` verdict with
+`requested_followup` causes exactly one additional hop and that the next query contains the
+follow-up subject; `sufficient=true` causes immediate finalisation; repeated insufficient verdicts
+never bypass `MAX_HOPS`; the multi-hop decision is demonstrably derived from the Appraiser's
+verdict; and the multi-hop evaluation can show that the second-hop query contains information
+derived from hop-1 content through `AppraisalVerdict.requested_followup`, rather than being a query
+that could have been generated from the original task alone. Keep the existing offline
+`FakeProvider` tests green and add or update focused tests needed to prove these behaviors.
+
+`Title`: Day 5 Task 5 — decisions settled during planning
+
+`User prompt`: A `sufficient=true` verdict with fewer than two accepted sources is a degraded stop:
+finalise honestly with a new `thin_evidence` stop reason rather than hopping again. When a
+follow-up is outstanding, skip the planner entirely and build the assignment straight from
+`AppraisalVerdict.requested_followup`. Do not run the test suites; write the specs and let the
+configured pre-push hook run them.
+
+`Title`: Day 5 Task 6 — cross-agent tracing as a parent-child span tree
+
+`User prompt`: Implement Day 5 Task 6 by extending the existing Day 4 tracing system so the
+multi-agent execution is visible as a parent-child span tree. Reuse the current tracing,
+`RunContext`, registry hooks, span storage, and trace rendering; do not introduce a second tracing
+mechanism. Add agent-level spans for the Supervisor, Researcher, and Appraiser, using the
+architecture's expected span concepts such as `supervisor.decide`, `researcher.loop`, and
+`appraiser.judge`, and ensure tool spans created during an agent's work are parented under the
+correct agent span. Preserve the existing rule that all tool calls go through the registry so tool
+tracing remains automatic. The trace must make the multi-agent topology verifiable: Researcher tool
+calls should appear beneath the Researcher span, the Appraiser must have no research tool-call
+children, workers must not invoke each other directly, and the Supervisor must remain the
+coordination point. Keep the existing single-agent mode and Day 4 tracing behavior working. Decide
+the exact span lifecycle, helper placement, context propagation, and implementation details after
+inspecting the current code rather than duplicating tracing logic inside each agent. Successful
+implementation requires an offline multi-agent run whose trace contains the Supervisor, Researcher,
+and Appraiser spans with correct parenting; tool spans are nested under the agent that triggered
+them; the Appraiser has no tool-call spans; the existing trace renderer can display the resulting
+hierarchy; and the current tracing, registry, single-agent, and multi-agent tests remain green. Add
+or update focused tests to prove these properties and report the files changed, how parent span
+propagation is handled, and the tests executed with their results.

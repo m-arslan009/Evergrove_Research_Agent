@@ -1,10 +1,13 @@
 """`service.py` composes a run and hands it to the loop (Day 3 S11).
 
-Deliberately narrow. What the loop *decides* is proven in `test_single_agent.py` and the
-composition end to end is S13's integration suite; these three tests exist for the ways a
-thin composition layer can be wrong without either of those noticing — it can build the
-right collaborators and never call the loop, it can ignore the ones it was given, and it
-can resolve its own settings behind a caller's back.
+Deliberately narrow. What a loop *decides* is proven in `test_single_agent.py` and the
+composition end to end is S13's integration suite; these tests exist for the ways a thin
+composition layer can be wrong without either of those noticing — it can build the right
+collaborators and never call the loop, it can ignore the ones it was given, it can resolve
+its own settings behind a caller's back, and since Day 5 T1 it can pick the wrong loop.
+
+That last one is invisible everywhere else: the two topologies are behaviourally identical
+by design, so a `mode` that is never read would leave the whole rest of the suite green.
 
 Offline and model-free: `FakeProvider` is injected, and the registry is the real wired one
 with `SEARCH_BACKEND=fixture`, because no test here reaches a tool.
@@ -23,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from evergrove_agent import service
 from evergrove_agent.agents import AgentProviders
 from evergrove_agent.agents.single_agent import PreparationFailed
 from evergrove_agent.config import Settings
@@ -209,3 +213,51 @@ async def test_a_run_that_ran_out_of_allowance_says_so_rather_than_just_failing(
     assert run is not None
     assert run.status == "budget_exhausted"
     assert run.ended_at is not None
+
+
+# --- the mode switch (Day 5 T1) ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, "run_supervised"),
+        ({"mode": "multi"}, "run_supervised"),
+        ({"mode": "single"}, "run_agent"),
+    ],
+)
+async def test_mode_selects_the_loop_and_defaults_to_multi(
+    kwargs: dict[str, Any],
+    expected: str,
+    settings: Settings,
+    report_json: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Which topology a run uses, and what happens when nobody says.
+
+    Two failures a passing integration suite would still hide. A `mode` that parses, threads
+    through and is then never read leaves both flags running the same loop — and since the two
+    loops are behaviourally identical by design, every other test in the project would still
+    pass. And the default is a promise to the CLI: `--mode` defaults to `multi` there, so a
+    service defaulting to `single` would make the documented default depend on which surface
+    asked.
+
+    Both loops are stubbed rather than run: the subject is the choice, and letting either one
+    execute would re-prove the composition that S13 and `test_multi_agent.py` already own.
+    """
+    reached: list[str] = []
+
+    def spy(name: str) -> Callable[..., Any]:
+        async def _loop(task: TaskContext, **_: Any) -> FocusPreparationReport:
+            reached.append(name)
+            return FocusPreparationReport.model_validate_json(report_json())
+
+        return _loop
+
+    monkeypatch.setattr(service, "run_supervised", spy("run_supervised"))
+    monkeypatch.setattr(service, "run_agent", spy("run_agent"))
+
+    report = await prepare_focus_session(TASK, settings=settings, **kwargs)
+
+    assert reached == [expected]
+    assert isinstance(report, FocusPreparationReport)
