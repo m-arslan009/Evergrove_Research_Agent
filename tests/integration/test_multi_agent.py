@@ -114,13 +114,22 @@ def plan(action: str, question: str | None = None, preference: str = "docs") -> 
     )
 
 
-def verdict(sufficient: bool, followup: str | None = None) -> str:
+def verdict(
+    sufficient: bool, followup: str | None = None, **judgement: list[Any]
+) -> str:
+    """A scripted `AppraisalVerdict`.
+
+    T4's `accepted` / `rejected` arrive through `**judgement` and are omitted when unset, so
+    every existing call site keeps scripting the Day 3 payload — which is what keeps those
+    runs proving that a verdict without the semantic judgement is still a valid verdict.
+    """
     return json.dumps(
         {
             "sufficient": sufficient,
             "missing_information": [],
             "requested_followup": followup,
             "reasoning": "because",
+            **judgement,
         }
     )
 
@@ -445,6 +454,90 @@ async def test_each_hand_off_is_the_typed_message_its_role_is_defined_by(
     assert seen["assignment"].hop == 1
     assert seen["assignment"].source_preference == "docs"
     assert seen["assignment"].max_searches > 0
+
+
+# --- 5b. the Appraiser's judgement reaches the report (Day 5 T4) -----------------------------
+
+LEAD_URL = "https://use-the-index-luke.com/sql/anatomy/the-tree"
+"""A third hit in the same recording — discovered by the search, never opened. The
+low-authority source T4's acceptance criterion is written about."""
+
+
+@respx.mock
+async def test_a_source_the_appraiser_rejected_does_not_reach_the_reports_resources(
+    workspace: Settings, report
+) -> None:
+    """T4's acceptance criterion, and the wiring underneath it.
+
+    The Appraiser is the only stage that reads the evidence. If a source it judged not worth
+    trusting is then handed to the user as a trusted resource, the judgement changed nothing
+    and the role is decoration — so this is the one end-to-end claim the task is really about.
+
+    **Two assertions, and they are not equally strong.** The first is about the code: the
+    rejection, its reason and the instruction not to cite it must actually reach the prompt
+    the Supervisor sends to write the report. That is the wiring, and it fails the moment
+    `render_research_context` stops carrying the verdict — which is a silent regression,
+    because the run still produces a perfectly valid report.
+
+    The second is the outcome, and it is guidance rather than enforcement by design (see
+    `prompt_context._REJECTED_HEADING`): `validate_report` decides what may be cited by set
+    membership against what the run actually gathered, and letting one model's reading delete
+    a genuinely fetched URL from that set would spend the retry ladder undoing a true
+    citation. So the rejected page here is also one nobody opened, which means the *existing*
+    deterministic rule still bounds the damage — it could only ever be cited as
+    `authority="unknown"`, never as a trusted one.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+    roles.appraiser = FakeProvider(
+        [
+            verdict(
+                True,
+                accepted=[
+                    {
+                        "source": INDEXES_URL,
+                        "supports": "the index types PostgreSQL provides",
+                        "does_not_support": "how the planner chooses between them",
+                        "authority": "official",
+                    }
+                ],
+                rejected=[
+                    {
+                        "source": LEAD_URL,
+                        "reason": "a tutorial site that was never opened; no version stated",
+                    }
+                ],
+            )
+        ]
+    )
+    roles.supervisor = FakeProvider(
+        [
+            plan("RESEARCH", "what does a B-tree index do"),
+            report(
+                resources=[
+                    {
+                        "title": "PostgreSQL: Index Types",
+                        "url": INDEXES_URL,
+                        "why_this_source": "Official documentation for the version in use",
+                        "authority": "official",
+                    }
+                ]
+            ),
+        ]
+    )
+
+    result, _ = await drive(roles, workspace, "multi")
+
+    finalise_prompt = roles.supervisor.calls[-1].messages[0].content
+    assert LEAD_URL in finalise_prompt, "the run did gather the source that was rejected"
+    assert "a tutorial site that was never opened" in finalise_prompt, (
+        "the reason travels with the rejection, or the report cannot be honest about it"
+    )
+    assert "do not cite any of these in resources" in finalise_prompt
+
+    cited = [str(resource.url) for resource in result.resources]
+    assert cited == [INDEXES_URL], "the accepted source, and only it"
+    assert LEAD_URL not in cited
 
 
 # --- 6. each role calls the provider its configuration names (Day 5 T3) ----------------------

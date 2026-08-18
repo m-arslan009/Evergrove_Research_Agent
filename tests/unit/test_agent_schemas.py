@@ -15,9 +15,11 @@ from pydantic import BaseModel, ValidationError
 
 from evergrove_agent.llm.hosted_provider import to_gemini_schema
 from evergrove_agent.schemas import (
+    AcceptedSource,
     AppraisalRequest,
     AppraisalVerdict,
     GatheredSource,
+    RejectedSource,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -111,6 +113,64 @@ class TestAppraisalVerdict:
         AppraisalVerdict.model_validate({**payload, field: ["source"] * cap})
         with pytest.raises(ValidationError):
             AppraisalVerdict.model_validate({**payload, field: ["source"] * (cap + 1)})
+
+    def test_a_verdict_naming_bare_sources_still_validates(self) -> None:
+        """T4 widened `accepted` and `rejected` into objects without narrowing what a model
+        may answer with, and this is the whole claim.
+
+        Until T4 the prompt asked for a list of names, and that is what a 4B model will keep
+        producing for as long as any of its training distribution looks like the old shape.
+        Without the coercion the reply fails `model_validate_json`, spends `_decode`'s single
+        re-ask, and returns `None` — which `_stop_after_hop` reads as "the appraiser could
+        not answer" and ends the run on. A thinner judgement is a far cheaper failure than a
+        lost hop.
+        """
+        verdict = AppraisalVerdict.model_validate(
+            {
+                "sufficient": True,
+                "reasoning": "covered",
+                "accepted": ["PostgreSQL: Indexes"],
+                "rejected": ["Indexing explained"],
+            }
+        )
+
+        assert verdict.accepted[0].source == "PostgreSQL: Indexes"
+        assert verdict.accepted[0].authority == "unknown", (
+            "nobody claimed an authority, so the verdict must not imply one"
+        )
+        assert verdict.rejected[0].source == "Indexing explained"
+        assert verdict.rejected[0].reason == ""
+
+    def test_an_accepted_source_may_be_judged_without_every_field(self) -> None:
+        """`does_not_support` is a *relevant* gap, and a source may genuinely have none.
+
+        Required here, it would be answered by a model inventing one — which is exactly the
+        failure `sufficiency.md` spends a paragraph preventing, and it would arrive in the
+        report's `unknowns` as a warning about nothing.
+        """
+        accepted = AcceptedSource(source="PostgreSQL: Indexes", supports="what a B-tree does")
+
+        assert (accepted.does_not_support, accepted.authority) == ("", "unknown")
+
+    def test_an_authority_outside_the_ladder_is_refused(self) -> None:
+        """The judgement classifies sources with the same vocabulary the citation does.
+
+        A second authority vocabulary is how `finalise.md`'s authority rule and S9's
+        overclaim check end up arguing about different words: the appraiser would call a page
+        "trusted", the report would call it `official`, and nothing would line the two up.
+        """
+        with pytest.raises(ValidationError):
+            AcceptedSource(source="a page", authority="trusted")
+
+    def test_a_rejection_cannot_smuggle_extra_fields(self) -> None:
+        """`extra="forbid"` on the nested entries, for the reason it is on every message
+        here: a worker that can widen its own output can widen its own authority. A
+        `rejected` entry carrying `should_cite` or `sufficient` would be the Appraiser
+        deciding the report rather than judging the evidence."""
+        with pytest.raises(ValidationError):
+            RejectedSource.model_validate(
+                {"source": "a page", "reason": "a blog", "sufficient": False}
+            )
 
 
 # --- the code-assembled messages (Day 5 T2) ------------------------------------------------
@@ -299,6 +359,28 @@ class TestModelFacingSchemas:
         assert "$ref" not in repr(translated)
         assert set(model.model_fields) <= set(translated["properties"])
 
+    def test_the_per_source_judgement_survives_translation_intact(self) -> None:
+        """T4 gave a model-output schema its first nested object, and `$defs` is where that
+        breaks.
+
+        The test above proves no `$ref` survives; this proves the *contents* did. An
+        inlining that silently produced an empty object would still satisfy "no $ref" while
+        leaving the hosted model free to answer `accepted: [{}]` — a judgement naming no
+        source, on the one attempt left after the local model has already failed twice.
+        """
+        entry = to_gemini_schema(AppraisalVerdict.model_json_schema())["properties"][
+            "accepted"
+        ]["items"]
+
+        assert set(AcceptedSource.model_fields) <= set(entry["properties"])
+        assert entry["properties"]["authority"]["enum"] == [
+            "official",
+            "standards",
+            "primary",
+            "secondary",
+            "unknown",
+        ]
+
     def test_the_action_enum_reaches_the_model(self) -> None:
         """Constrained decoding can only hold the model to values the schema states."""
         translated = to_gemini_schema(SupervisorDecision.model_json_schema())
@@ -351,8 +433,17 @@ def _messages() -> dict[str, BaseModel]:
             missing_information=["partial index syntax"],
             requested_followup="what does EXPLAIN print for a partial index",
             reasoning="one page is thin for the question asked",
-            accepted=["PostgreSQL: Indexes"],
-            rejected=["a blog post, nothing sourced"],
+            accepted=[
+                AcceptedSource(
+                    source="PostgreSQL: Indexes",
+                    supports="what a B-tree index does to a lookup",
+                    does_not_support="partial index syntax",
+                    authority="official",
+                )
+            ],
+            rejected=[
+                RejectedSource(source="Indexing explained", reason="a blog, nothing sourced")
+            ],
             disagreements=["the two pages give different defaults"],
         ),
     }

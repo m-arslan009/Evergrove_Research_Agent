@@ -32,10 +32,19 @@ async def judge_sufficiency(
     ctx: RunContext,
     settings: Settings | None = None,
 ) -> AppraisalVerdict | None:
-    """Do these sources support a useful session? The Appraiser's whole job.
+    """Do these sources support a useful session, and what is each one actually worth?
 
     The one stage that must actually read the evidence, so it is handed `render_sources` —
     full excerpts at `SOURCE_EXCERPT_CHARS`, not the compact block `finalise.md` gets.
+
+    **The verdict is a reading of the evidence, not a flag (T4).** `sufficient` is one field
+    of it; the rest says which sources were accepted and what each of them establishes, which
+    were rejected and why, where they contradict each other, and what is still missing. All
+    of that is *semantic* judgement — it exists precisely because no deterministic check can
+    produce it. The deterministic half stays where it is: Pydantic validates the shape here,
+    `validate_report` (S9) checks the finished report against the URLs the run really
+    gathered, and neither responsibility moves into this stage. A judge that could also
+    validate would be able to approve its own reading of the evidence.
 
     It is told nothing about the budget or the hop count, deliberately: a judge that knows a
     follow-up is impossible stops asking for one, which would hide the real verdict instead

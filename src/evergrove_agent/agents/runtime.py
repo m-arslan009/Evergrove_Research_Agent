@@ -41,9 +41,11 @@ from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm import LLMProvider, Message, build_provider
 from evergrove_agent.memory.run_memory import entries_from
 from evergrove_agent.schemas import (
+    AcceptedSource,
     AppraisalVerdict,
     FocusPreparationReport,
     PreviousPreparation,
+    RejectedSource,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -399,14 +401,23 @@ def _appraisal_line(verdict: AppraisalVerdict | None) -> str:
     someone reading a nine-minute run back actually needs. An empty list contributes no
     segment rather than an empty one, so a Day 3-shaped verdict still produces the Day 3 line
     and a stored row never claims a judgement that was not made.
+
+    **T4's per-source detail travels with it, and this is where it becomes traceable.** The
+    row is written through the registered `record_run_memory` tool, so it is already a `tool`
+    span under the run — the appraisal reaches the trace by the path every other durable fact
+    reaches it, and needs no `agent` span of its own (that is Day 5 feature 6, and it would
+    trace *when* the Appraiser ran rather than *what it judged*). Each entry is rendered
+    rather than dumped as JSON: this row is read back by a human through
+    `scripts/show_trace.py`, and a nested object printed into a summary line is noise where a
+    sentence is evidence.
     """
     if verdict is None:
         return ""
     line = f"sufficient={verdict.sufficient}: {verdict.reasoning}"
     for label, values in (
         ("missing", verdict.missing_information),
-        ("accepted", verdict.accepted),
-        ("rejected", verdict.rejected),
+        ("accepted", [_accepted_summary(entry) for entry in verdict.accepted]),
+        ("rejected", [_rejected_summary(entry) for entry in verdict.rejected]),
         ("disagreements", verdict.disagreements),
     ):
         if values:
@@ -414,6 +425,28 @@ def _appraisal_line(verdict: AppraisalVerdict | None) -> str:
     if verdict.requested_followup:
         line += f" | follow-up: {verdict.requested_followup}"
     return line
+
+
+def _accepted_summary(entry: AcceptedSource) -> str:
+    """One accepted source, compressed to a phrase the stored row can carry (T4).
+
+    The authority is never dropped, because "which of these did the run actually trust" is
+    the first question anyone reads a judgement back to answer. The two readings are omitted
+    when empty rather than rendered as bare punctuation.
+    """
+    summary = f"{entry.source} ({entry.authority})"
+    if entry.supports.strip():
+        summary += f" supports {entry.supports.strip()}"
+    if entry.does_not_support.strip():
+        summary += f", but not {entry.does_not_support.strip()}"
+    return summary
+
+
+def _rejected_summary(entry: RejectedSource) -> str:
+    """One rejected source and why. A rejection with no reason is stored as it arrived —
+    the row's job is to record what the appraiser said, including when it said too little."""
+    reason = entry.reason.strip()
+    return f"{entry.source} ({reason})" if reason else entry.source
 
 
 async def _remember_preparation(

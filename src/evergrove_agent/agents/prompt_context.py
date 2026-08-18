@@ -38,8 +38,10 @@ from evergrove_agent.agents.tool_calling import ToolCallOutcome
 from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm.base import ToolSpec
 from evergrove_agent.schemas import (
+    AcceptedSource,
     GatheredSource,
     PreviousPreparation,
+    RejectedSource,
     ResearchAssignment,
     RunState,
     ToolFailure,
@@ -406,9 +408,12 @@ def render_research_context(
             ("Still missing after the research:", verdict.missing_information),
             (
                 "Sources the appraiser judged to support the question:",
-                verdict.accepted,
+                [_accepted_line(entry) for entry in verdict.accepted],
             ),
-            ("Sources the appraiser judged not to support it:", verdict.rejected),
+            (
+                _REJECTED_HEADING,
+                [_rejected_line(entry) for entry in verdict.rejected],
+            ),
             ("Where the sources contradict each other:", verdict.disagreements),
         ):
             if items:
@@ -423,6 +428,25 @@ def render_research_context(
 
     return "\n".join(lines)
 
+
+_REJECTED_HEADING = (
+    "Sources the appraiser rejected — do not cite any of these in resources:"
+)
+"""The heading is the wiring (T4).
+
+T2 listed the rejected sources under a neutral heading, which told the report they existed
+and left it to infer what that meant. A heading that states the consequence is what makes
+the judgement reach the deliverable: the appraiser's job is to say a source is not worth
+trusting, and a report that then points the user at it has ignored the only stage that read
+it. `finalise.md` carries the same rule in its own words, because a model that skims the
+evidence block still reads the rules.
+
+**Guidance, not enforcement, and deliberately so.** `validate_report` decides what a report
+may cite by set membership against what the run actually gathered (S9), and nothing here
+narrows that set. A rejection is a model's reading of the evidence; letting it delete a
+genuinely fetched URL from the grounding set would let one model's mistake spend the whole
+retry ladder undoing a citation that was true.
+"""
 
 _STOP_CAUSES: dict[str, str] = {
     "hop_cap": "the research hop limit was reached",
@@ -549,6 +573,40 @@ def _previous_block(previous: PreviousPreparation) -> list[str]:
     lines += ["", "Topics it deliberately left for later:"]
     lines += _bullets(previous.topics_deferred or ["none were recorded"])
     return lines
+
+
+def _accepted_line(entry: AcceptedSource) -> str:
+    """One accepted source as the report should read it: name, authority, and the reading.
+
+    Both halves of the reading travel, and they are not the same claim. `supports` is what
+    the report may rest on; `does_not_support` is the relevant gap, which is `unknowns`
+    material — a report told only what a source proves will present it as having settled the
+    whole question.
+
+    Each part is omitted when the appraiser left it empty rather than rendered as a label
+    with nothing after it. An empty "supports:" reads to the next model as a section that
+    was meant to be filled, which is the same invitation to invent that the empty
+    `disagreements` heading was.
+    """
+    line = f"{entry.source} ({entry.authority})"
+    if entry.supports.strip():
+        line += f" — supports: {entry.supports.strip()}"
+    if entry.does_not_support.strip():
+        line += f"; does not establish: {entry.does_not_support.strip()}"
+    return line
+
+
+def _rejected_line(entry: RejectedSource) -> str:
+    """One rejected source and the reason it was rejected.
+
+    The reason is the whole content of a rejection: it is what the report can put in
+    `unknowns` and what a human reading the trace can check against the page. A rejection
+    that arrived without one still renders — silently dropping it would hide that the
+    appraiser rejected something without saying why, which is exactly the drift worth
+    seeing.
+    """
+    reason = entry.reason.strip()
+    return f"{entry.source} — {reason}" if reason else f"{entry.source} — no reason given"
 
 
 def _source_block(source: GatheredSource, *, body: str) -> str:

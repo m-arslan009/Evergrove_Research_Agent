@@ -39,10 +39,12 @@ from evergrove_agent.config import Settings
 from evergrove_agent.llm.base import ToolCall
 from evergrove_agent.llm.prompts import render_prompt
 from evergrove_agent.schemas import (
+    AcceptedSource,
     AppraisalVerdict,
     ErrorCode,
     GatheredSource,
     PreviousPreparation,
+    RejectedSource,
     ResearchAssignment,
     ResearchFindings,
     RunState,
@@ -157,8 +159,20 @@ def _researched_state() -> RunState:
             missing_information=["partial index syntax"],
             requested_followup="What does EXPLAIN print for a partial index?",
             reasoning="One page is thin for the question asked.",
-            accepted=["PostgreSQL: Indexes"],
-            rejected=["Indexing explained — a blog, nothing sourced"],
+            accepted=[
+                AcceptedSource(
+                    source="PostgreSQL: Indexes",
+                    supports="B-tree indexes answer equality lookups",
+                    does_not_support="the syntax for a partial index",
+                    authority="official",
+                )
+            ],
+            rejected=[
+                RejectedSource(
+                    source="Indexing explained",
+                    reason="a blog with nothing sourced and no version stated",
+                )
+            ],
             disagreements=["the two pages disagree on the default index type"],
         ),
     )
@@ -220,12 +234,45 @@ def test_research_context_carries_the_appraisers_semantic_judgement(
     Without this test the fields validate, serialize and reach `run_memory` while never
     reaching the one stage that could use them — defined and wired to nothing, which is the
     failure mode the whole task exists to avoid.
+
+    T4 made the entries structured, and the same claim now has three more halves: the report
+    must be told what an accepted source *supports*, what it leaves open, and how far up the
+    authority ladder it sits. A report told only that a source was accepted will present it
+    as having settled the whole question.
     """
     text = render_research_context(_researched_state(), settings=settings)
 
     assert "the two pages disagree on the default index type" in text
-    assert "PostgreSQL: Indexes" in text
-    assert "Indexing explained — a blog, nothing sourced" in text
+    assert "PostgreSQL: Indexes (official)" in text
+    assert "B-tree indexes answer equality lookups" in text
+    assert "the syntax for a partial index" in text, (
+        "the relevant gap is unknowns material; a report that never hears it overclaims"
+    )
+    assert "Indexing explained" in text
+    assert "a blog with nothing sourced and no version stated" in text
+
+
+def test_research_context_tells_the_report_not_to_cite_a_rejected_source(
+    settings: Settings,
+) -> None:
+    """The rejection has to arrive as a consequence, not as a neutral list (T4).
+
+    T2 listed rejected sources under a heading that said only that they existed, which left
+    the report free to cite one anyway — and citing it is the one outcome that makes the
+    Appraiser pointless: the stage that actually read the page judged it not worth trusting,
+    and the deliverable then sends the user to it as a trusted resource.
+
+    Guidance rather than enforcement is deliberate (`_REJECTED_HEADING`), so this is the
+    check that the guidance is actually given. Both places carry it, because a model that
+    skims the evidence block still reads the rules: the heading here, and the citation rule
+    in `finalise.md`.
+    """
+    text = render_research_context(_researched_state(), settings=settings)
+
+    assert "do not cite any of these in resources" in text
+    assert "must not appear in `resources`" in render_prompt(
+        "finalise", **PROMPT_PLACEHOLDERS["finalise"]
+    )
 
 
 def test_research_context_omits_a_judgement_the_appraiser_never_made(

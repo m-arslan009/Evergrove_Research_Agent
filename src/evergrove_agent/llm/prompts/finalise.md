@@ -29,6 +29,9 @@ Session length: {session_minutes} minutes
 - A source the research section marks as found but not opened may only be cited with
   `authority` set to `unknown`. Nobody read it, so we do not get to call it
   authoritative.
+- A source the research section lists as rejected must not appear in `resources` at all.
+  The stage that read it judged it not worth trusting; what it was rejected for belongs in
+  `unknowns` if it matters, never in the list of sources the user is sent to.
 - `practice` is one concrete thing to do in the remaining minutes, with an outcome the
   user can check themselves.
 - `success_criteria` is how the user knows the session worked. One sentence.

@@ -159,13 +159,16 @@ def verdict(
     sufficient: bool,
     followup: str | None = None,
     missing: tuple[str, ...] = (),
-    **judgement: list[str],
+    **judgement: list[Any],
 ) -> str:
     """A scripted `AppraisalVerdict`.
 
     T2's `accepted`/`rejected`/`disagreements` arrive through `**judgement` and are omitted
     entirely when unset — which keeps every existing call site scripting the Day 3 payload,
     so those runs keep proving that a verdict without the semantic fields is still valid.
+
+    `list[Any]` since T4: `accepted` and `rejected` now carry an object per source, while
+    `disagreements` is still a list of phrases.
     """
     return json.dumps(
         {
@@ -936,6 +939,14 @@ async def test_the_appraisers_semantic_judgement_reaches_the_durable_record(
     Asserted through the stored row rather than by calling `_appraisal_line` directly: the
     private helper being correct proves nothing if `_mirror_session_memory` stops passing
     the verdict to it.
+
+    **This is also where T4's judgement becomes traceable.** The row is written through the
+    registered `record_run_memory` tool, so it already sits under a `tool` span — the
+    appraisal reaches the trace by the same path every other durable fact does, without the
+    loop needing to know a trace exists. What has to survive the trip is therefore the *per
+    source* detail: a stored line that kept the names and dropped the authority and the
+    reason would answer "which sources" while losing the entire reason anyone reads a
+    judgement back.
     """
     recorded_search(offline_settings)
     script = [
@@ -944,8 +955,15 @@ async def test_the_appraisers_semantic_judgement_reaches_the_durable_record(
         "notes",
         verdict(
             True,
-            accepted=["PostgreSQL: Indexes"],
-            rejected=["a blog, nothing sourced"],
+            accepted=[
+                {
+                    "source": "PostgreSQL: Indexes",
+                    "supports": "what a B-tree index does to a lookup",
+                    "does_not_support": "partial index syntax",
+                    "authority": "official",
+                }
+            ],
+            rejected=[{"source": "Indexing explained", "reason": "a blog, nothing sourced"}],
             disagreements=["the two pages give different defaults"],
         ),
         scripted_report(),
@@ -958,8 +976,10 @@ async def test_the_appraisers_semantic_judgement_reaches_the_durable_record(
 
     assert len(appraisals) == 1
     recorded = appraisals[0].content
-    assert "accepted: PostgreSQL: Indexes" in recorded
-    assert "rejected: a blog, nothing sourced" in recorded
+    assert "accepted: PostgreSQL: Indexes (official)" in recorded
+    assert "supports what a B-tree index does to a lookup" in recorded
+    assert "but not partial index syntax" in recorded
+    assert "rejected: Indexing explained (a blog, nothing sourced)" in recorded
     assert "disagreements: the two pages give different defaults" in recorded
 
 
