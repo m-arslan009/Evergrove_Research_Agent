@@ -1305,3 +1305,37 @@ them; the Appraiser has no tool-call spans; the existing trace renderer can disp
 hierarchy; and the current tracing, registry, single-agent, and multi-agent tests remain green. Add
 or update focused tests to prove these properties and report the files changed, how parent span
 propagation is handled, and the tests executed with their results.
+
+---
+
+`Title`: Repository cleanup before final testing, with requirement preservation as a hard constraint
+
+`User prompt`: Clean the current repository before final testing, but treat preservation of the
+already-fulfilled project requirements as a hard constraint. First inspect the current codebase,
+tests, configuration, project documentation, and requirement-verification evidence to understand
+which components are required for the working research agent. Then remove only code, files,
+modules, endpoints, scripts, configuration, compatibility layers, temporary fallbacks, experimental
+implementations, duplicated logic, commented-out code, debugging artifacts, obsolete branches,
+unused imports, abandoned interfaces, stale entry points, and other leftovers that are clearly no
+longer used or supported by the current architecture. In particular, remove temporary
+implementations that were introduced only because a required component did not yet exist, but only
+when the real implementation has now fully replaced them. Do not remove or weaken any functionality
+needed to satisfy the verified requirements: SerpAPI-based web search, within-session memory,
+persistent memory where currently supported, the shared tool registry, hooks and timestamped tool
+logging, tracing, `.txt` and `.pdf` reading, the retained single-agent multi-hop flow, the
+Supervisor/Researcher/Appraiser multi-agent flow, validation, caching, budgets, offline/fixture
+support, `FakeProvider`, recorded fixtures, test utilities, the existing service entry point,
+MCP-related integration, and `prompts.md`. Do not remove `single_agent.py`, fixture backends, fake
+providers, or other intentionally test/offline components simply because they are not part of the
+live production path; they are valid parts of this project if they support deterministic testing,
+offline demos, or explicit requirements. Do not add new features, new architecture, new endpoints,
+frameworks, or unrelated refactors. If a component's purpose cannot be proven obsolete, keep it.
+After cleanup, verify that all previously fulfilled requirements still remain fulfilled and that
+the agent's supported behavior is unchanged. Use an appropriate lightweight but meaningful
+verification strategy: run relevant unit/integration/offline tests, verify imports and supported
+entry points, and confirm that both single-agent and multi-agent paths, tool wiring, memory,
+tracing, file reading, search integration, validation, and MCP-related code still resolve
+correctly. Avoid unnecessary slow live LLM or SerpAPI runs unless a cleanup change genuinely
+requires them. If any cleanup causes a regression, restore or correct the affected code rather than
+accepting reduced functionality. The final state must be functionally equivalent to the current
+working system, only cleaner and easier to maintain.
