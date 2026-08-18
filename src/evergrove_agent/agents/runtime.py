@@ -68,12 +68,18 @@ StopReason = Literal[
     "hop_cap",
     "budget_spent",
     "no_followup",
+    "thin_evidence",
     "planner_unavailable",
     "appraiser_unavailable",
 ]
 """Why the loop stopped. Read by `render_stop_reason`, which decides which of these are
 worth telling the user about — the first two mean the run finished, the rest mean it was
-cut short."""
+cut short.
+
+`thin_evidence` (T5) is the one that is easy to misread: the Appraiser said *sufficient*, but
+accepted fewer than two sources, so the plan's stop condition was not actually met. It is a
+cut-short reason rather than a finished one on purpose — a session planned on one accepted
+source must not read like a session planned on a body of evidence."""
 
 
 class PreparationFailed(RuntimeError):

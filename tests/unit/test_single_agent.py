@@ -264,25 +264,27 @@ def prompts_for(provider: FakeProvider, schema_name: str) -> list[str]:
 
 
 @respx.mock
-async def test_hop_cap_holds_against_a_model_that_always_wants_more(
+async def test_hop_cap_holds_against_an_appraiser_that_always_wants_more(
     offline_settings: Settings, scripted_report: Callable[..., str]
 ) -> None:
-    """A model that answers RESEARCH forever must not research forever.
+    """An appraiser that keeps asking must not make the run keep researching.
 
-    The planner is asked once per hop, so an uncapped loop calls it a fourth time and keeps
-    going. `MAX_HOPS` is the only bound between a drifting model and an unbounded run, and
-    it has to hold from the loop, not from a model's cooperation.
+    Since T5 a non-empty `requested_followup` is what buys a hop, with no planner in between
+    to decline it — so `MAX_HOPS` is the only bound left between a judgement that is never
+    satisfied and an unbounded run, and it has to hold from the loop rather than from any
+    model's cooperation.
     """
-    script: list[Any] = []
-    for hop in range(3):
-        script += [plan("RESEARCH", f"question {hop}"), "notes", verdict(False, "more")]
+    script: list[Any] = [plan("RESEARCH", "question 0")]
+    for _ in range(3):
+        script += ["notes", verdict(False, "more")]
     script.append(scripted_report())
 
     report, provider, _ = await drive(script, offline_settings)
 
     assert report.hops_used == 3
-    assert len(prompts_for(provider, "SupervisorDecision")) == 3, (
-        "the planner was asked again after the last hop; the cap must skip it entirely"
+    assert len(prompts_for(provider, "SupervisorDecision")) == 1, (
+        "one planning turn for the run: hops 2 and 3 were the appraiser's, and the cap must "
+        "stop the loop before it plans a fourth"
     )
     assert provider.remaining == 0
 
@@ -296,8 +298,17 @@ async def test_a_sufficient_verdict_stops_with_hops_to_spare(
     Catches a loop that spends every hop it is allowed because it can. One usable session is
     the goal; a run that keeps researching after the appraiser said "enough" burns SerpAPI
     quota and session time for nothing.
+
+    Two accepted sources, because since T5 that is what "enough" means: `sufficient` on its
+    own is `thin_evidence`, which stops the run for a different reason and would let this test
+    pass while proving the wrong thing.
     """
-    script = [plan("RESEARCH", "q"), "notes", verdict(True), scripted_report()]
+    script = [
+        plan("RESEARCH", "q"),
+        "notes",
+        verdict(True, accepted=["one page", "another page"]),
+        scripted_report(),
+    ]
 
     report, _, ctx = await drive(script, offline_settings)
 
@@ -311,27 +322,35 @@ async def test_a_later_hop_asks_the_appraisers_follow_up(
 ) -> None:
     """The second hop must come from what hop 1 read, not from a scripted sequence.
 
-    This is the whole multi-hop claim. If `requested_followup` does not reach the planner's
-    prompt, the loop still performs a second hop and still looks correct — it is just
+    This is the whole multi-hop claim. If `requested_followup` does not reach the second hop's
+    assignment, the loop still performs a second hop and still looks correct — it is just
     re-asking a question nothing discovered, which is a retry wearing an agent's clothes.
+
+    Since T5 the follow-up travels to the Researcher directly rather than through the planner,
+    so the assertion moved to the research prompt — and the script now contains only one
+    planning reply, which is a stronger check than any assertion: a loop that consulted the
+    planner again would consume hop 2's research turn as a decision and never finish.
     """
     followup = "When is a partial index preferable to a full B-tree index?"
     script = [
         plan("RESEARCH", "what does a B-tree index do"),
         "notes from hop 1",
         verdict(False, followup, ("partial indexes",)),
-        plan("RESEARCH", followup),
         "notes from hop 2",
-        verdict(True),
+        verdict(True, accepted=["one page", "another page"]),
         scripted_report(),
     ]
 
     report, provider, _ = await drive(script, offline_settings)
 
-    second_plan = prompts_for(provider, "SupervisorDecision")[1]
-    assert followup in second_plan
-    assert "what does a B-tree index do" in second_plan, (
-        "hop 1's question must be listed as already spent, or hop 2 may repeat it"
+    plans = prompts_for(provider, "SupervisorDecision")
+    assert len(plans) == 1, "the appraiser's hop is not re-decided by the planner"
+    assert followup not in plans[0], (
+        "the follow-up cannot have come from the task — the planner never saw this subject, "
+        "because nothing had read hop 1's page yet"
+    )
+    assert followup in prompts_for(provider, "ResearchAction")[-1], (
+        "hop 2's assignment must carry the appraiser's question verbatim"
     )
     assert report.hops_used == 2
 
@@ -537,9 +556,9 @@ async def test_the_hop_cap_is_named_in_the_reports_unknowns(
     It travels as an extra message too, but a model may ignore it. Appending it is what
     guarantees a run cut off by a limit never reads like one that finished.
     """
-    script: list[Any] = []
-    for hop in range(3):
-        script += [plan("RESEARCH", f"q{hop}"), "notes", verdict(False, "more")]
+    script: list[Any] = [plan("RESEARCH", "q0")]
+    for _ in range(3):
+        script += ["notes", verdict(False, "more")]
     script.append(scripted_report(unknowns=[]))
 
     report, _, _ = await drive(script, offline_settings)

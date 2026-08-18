@@ -313,6 +313,11 @@ class AcceptedSource(BaseModel):
         `None`; and `None` is read by `_stop_after_hop` as "the appraiser could not answer",
         which ends the run. Losing the detail costs a thinner prompt. Losing the whole
         verdict costs the hop that produced it.
+
+        **The coercion carries more weight since T5**, because the length of this list is now
+        part of the stop condition: a bare name still counts towards the two accepted sources
+        a `sufficient` verdict needs, so a model that names its sources without describing
+        them is not penalised for the shape of its answer.
         """
         return {"source": value} if isinstance(value, str) else value
 
@@ -365,10 +370,19 @@ class AppraisalVerdict(BaseModel):
     that lists bare names still validates (see `AcceptedSource`), and a reply that omits the
     lists entirely still validates exactly as it did on Day 3.
 
-    **They inform, they never decide.** `_stop_after_hop` still reads `sufficient` and
-    `requested_followup` and nothing else, so a verdict that names the wrong sources cannot
-    redirect a run — it can only make the report and the trace more honest about what the
-    evidence actually was. Whether a follow-up is affordable remains the Supervisor's call.
+    **Three fields steer the run, and `accepted` became one of them (T5).** `_stop_after_hop`
+    reads `sufficient`, `requested_followup` and `len(accepted)`: the plan's stop condition is
+    `sufficient` **with at least two accepted sources**, so a "yes" backed by one source or
+    none finalises honestly instead of counting as success. That supersedes T2's narrower
+    "they inform, they never decide" — deliberately, because the alternative is a run that
+    reports a confident session plan built on a single page the judge itself only half
+    endorsed. `rejected` and `disagreements` still only inform.
+
+    **The defaults are what keep that safe.** A reply that omits `accepted` still validates and
+    still produces a report; it produces a *cut-short* one, whose `unknowns` say why. Nothing
+    about this makes a small model's reply invalid — it only stops an unsupported "yes" from
+    reading like a supported one. Whether a follow-up is affordable remains the Supervisor's
+    call.
     """
 
     model_config = ConfigDict(extra="forbid")

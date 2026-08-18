@@ -38,6 +38,7 @@ import respx
 
 from evergrove_agent.agents import AgentProviders
 from evergrove_agent.agents import supervisor as supervisor_module
+from evergrove_agent.agents.prompt_context import render_stop_reason
 from evergrove_agent.config import AgentMode, Settings
 from evergrove_agent.llm import FakeProvider
 from evergrove_agent.memory import db, get_search_usage
@@ -719,3 +720,196 @@ async def test_each_role_calls_the_provider_its_configuration_names(
         "seventh call would mean the finalise ladder's alternate provider fired on a run whose "
         "first report was already valid"
     )
+
+
+# --- 7. the multi-hop decision belongs to the Appraiser (Day 5 T5) ---------------------------
+#
+# Sections 1-6 establish that the roles exist, stay separate and are reached through typed
+# messages. None of them says who decides that the run continues — and until T5 the answer was
+# "both": the Appraiser judged, and then the Supervisor's planner was asked again and could
+# answer FINALISE straight over the top of an insufficient verdict. The plan is explicit that
+# it may not (section 8.3: "The Supervisor's stop/continue decision depends entirely on the
+# Appraiser's verdict"), and that is what this section holds.
+#
+# The scripts are the load-bearing part. Each supervisor below is scripted with exactly one
+# planning reply and one report, whatever the hop count — so a run that consulted the planner
+# a second time would consume its report as a decision and fail. "The hop came from the
+# verdict" is therefore not something these tests assert around; it is the only way they can
+# pass at all.
+
+FOLLOWUP_QUERY = "how to read a postgresql explain plan"
+"""`fixtures/search/explain-plans.json`, `source_type=general` — hop 2's own recording.
+
+It is also a subject that exists *only* in what hop 1 read: `fixtures/html/article.html`
+discusses `EXPLAIN ANALYZE`, and neither the task title nor the planner's prompt mentions it.
+That is what makes a hop-2 query containing it evidence-derived rather than something the
+original task could have produced on its own."""
+
+
+def two_accepted() -> list[dict[str, str]]:
+    """The judgement a `sufficient` verdict needs to actually stop the run.
+
+    Since T5 the stop condition is `sufficient` **and at least two accepted sources**, so a
+    bare `verdict(True)` is `thin_evidence` — a different stop, for a different reason. Tests
+    that mean "the evidence was enough" have to say so in the verdict.
+    """
+    return [
+        {"source": INDEXES_URL, "supports": "what a B-tree index does"},
+        {"source": LEAD_URL, "supports": "how the tree is laid out"},
+    ]
+
+
+def second_hop_researcher() -> list[Any]:
+    """The Researcher's turns for a run that hops twice."""
+    return [
+        tool_turn("web_search", {"query": DOCS_QUERY, "source_type": "docs"}),
+        tool_turn("fetch_url", {"url": INDEXES_URL}),
+        done(),
+        tool_turn("web_search", {"query": FOLLOWUP_QUERY, "source_type": "general"}),
+        done(),
+    ]
+
+
+@respx.mock
+async def test_the_second_hop_is_the_appraisers_decision_not_the_planners(
+    workspace: Settings, report
+) -> None:
+    """The headline claim: an insufficient verdict with a follow-up buys exactly one hop.
+
+    The Supervisor here is scripted to have *nothing to say* after its first decision — its
+    next reply is the report. Before T5 this run could not have reached two hops: the loop
+    would have asked the planner again, been handed the report JSON as a `SupervisorDecision`,
+    failed to parse it twice and stopped with `planner_unavailable` at one hop. So
+    `hops_used == 2` is only reachable if the second hop was taken on the verdict alone.
+
+    The follow-up subject is then traced into hop 2's assignment, because "a second hop
+    happened" and "a second hop asked what the evidence asked for" are different claims and
+    only the second one is multi-hop research. `FOLLOWUP_QUERY` appears in no prompt the
+    planner ever saw, which is what rules out a question the original task could have produced
+    by itself.
+    """
+    serve_indexes_page()
+    roles = Roles(
+        supervisor=[
+            plan("RESEARCH", "what does a B-tree index do"),
+            report(resources=[]),
+        ],
+        researcher=second_hop_researcher(),
+        appraiser=[
+            verdict(False, FOLLOWUP_QUERY),
+            verdict(True, accepted=two_accepted()),
+        ],
+    )
+
+    result, _ = await drive(roles, workspace, "multi")
+
+    assert result.hops_used == 2, "the appraiser's follow-up bought exactly one more hop"
+    assert roles.schemas(roles.supervisor) == [
+        "SupervisorDecision",
+        "FocusPreparationReport",
+    ], "one planning turn for a two-hop run: the second hop was never re-decided"
+
+    planned = roles.supervisor.calls[0].messages[0].content
+    assert FOLLOWUP_QUERY not in planned, (
+        "the follow-up subject must not be derivable from the task alone — nothing had read "
+        "the page that mentions it when the planner was asked"
+    )
+    hop_two = roles.researcher.calls[-2].messages[0].content
+    assert FOLLOWUP_QUERY in hop_two, (
+        "hop 2's assignment must carry AppraisalVerdict.requested_followup verbatim"
+    )
+    assert roles.supervisor.remaining == 0 and roles.appraiser.remaining == 0
+
+
+@respx.mock
+async def test_a_sufficient_verdict_finalises_without_another_hop(
+    workspace: Settings, report
+) -> None:
+    """The other half of the same rule: "enough" stops the run immediately.
+
+    A loop that spends every hop it is allowed is not early-stopping, and on a live run each
+    unnecessary hop costs SerpAPI quota and minutes of a user's session. The Researcher is
+    scripted with one hop's turns only, so a second delegation cannot quietly succeed — it
+    would exhaust the script and raise.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+    roles.appraiser = FakeProvider([verdict(True, accepted=two_accepted())])
+
+    result, _ = await drive(roles, workspace, "multi")
+
+    assert result.hops_used == 1
+    assert roles.researcher.remaining == 0, "one hop's turns, all of them spent"
+    assert len(roles.schemas(roles.appraiser)) == 1, "judged once, then the run stopped"
+
+
+@respx.mock
+async def test_repeated_insufficient_verdicts_still_stop_at_the_hop_cap(
+    tmp_path: Path, report
+) -> None:
+    """`MAX_HOPS` bounds a hop the Appraiser demanded exactly as it bounds one the planner chose.
+
+    This is the failure mode T5 introduces and the reason the cap is checked *before* the
+    follow-up is read: a verdict that always asks for more is now an instruction with no
+    planner in between to decline it, so without `_stop_before_planning` running first the loop
+    would keep hopping for as long as the Appraiser kept asking.
+
+    `max_model_calls` is raised so the run is stopped by the hop cap rather than by the ledger
+    — under the shipped 10 a cap that never fired would still pass.
+    """
+    settings = Settings(
+        _env_file=None, db_path=tmp_path / "agent.sqlite3", max_model_calls=16
+    )
+    serve_indexes_page()
+    roles = Roles(
+        supervisor=[
+            plan("RESEARCH", "what does a B-tree index do"),
+            report(resources=[]),
+        ],
+        researcher=[
+            *second_hop_researcher(),
+            tool_turn(
+                "web_search",
+                {"query": "learned index structures", "source_type": "academic"},
+            ),
+            done(),
+        ],
+        appraiser=[verdict(False, "keep going") for _ in range(3)],
+    )
+
+    result, _ = await drive(roles, settings, "multi")
+
+    assert result.hops_used == 3, "MAX_HOPS, and not one hop more"
+    assert len(roles.schemas(roles.supervisor)) == 2, (
+        "one decision and one report: the planner was not consulted for hops 2 and 3, and "
+        "the cap stopped the loop before it could be consulted for a fourth"
+    )
+    assert any("hop limit" in unknown for unknown in result.unknowns), (
+        "a run cut short by the cap must not read like one that finished"
+    )
+
+
+@respx.mock
+async def test_a_sufficient_verdict_backed_by_one_source_finalises_honestly(
+    workspace: Settings, report
+) -> None:
+    """The plan's stop condition is `sufficient` **and at least two accepted sources**.
+
+    A judge that says "yes" while endorsing a single page has not met it, and the failure this
+    guards against is the quiet one: the run returns a perfectly valid report whose reader has
+    no way to tell that the session was planned on one source the Appraiser itself only
+    half-committed to. So it finalises — one accepted source is not a reason to research more,
+    since the verdict named no follow-up to spend a hop on — but it finalises *honestly*, with
+    the reason in `unknowns` where an honest report puts its limits.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+    roles.appraiser = FakeProvider(
+        [verdict(True, accepted=[{"source": INDEXES_URL, "supports": "index types"}])]
+    )
+
+    result, _ = await drive(roles, workspace, "multi")
+
+    assert result.hops_used == 1, "a thin yes is still a stop, not another hop"
+    assert render_stop_reason("thin_evidence") in result.unknowns
+    assert roles.researcher.remaining == 0

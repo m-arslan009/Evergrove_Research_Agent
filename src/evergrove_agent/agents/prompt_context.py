@@ -455,6 +455,10 @@ _STOP_CAUSES: dict[str, str] = {
         "the evidence was judged incomplete and no specific follow-up question "
         "would have helped"
     ),
+    "thin_evidence": (
+        "fewer than two sources were accepted, so the evidence was too thin to count "
+        "as sufficient"
+    ),
     "planner_unavailable": "the planning step could not produce a usable decision",
     "appraiser_unavailable": "the sufficiency judgement could not be completed",
 }

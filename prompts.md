@@ -1244,3 +1244,42 @@ insufficient. Also add or preserve an integration assertion that a source reject
 Appraiser does not appear in the final report's trusted resources. Verify that the Appraiser
 performs no tool calls and that existing single-agent, multi-agent, tracing, validation, and
 offline tests remain green.
+
+---
+
+`Title`: Day 5 Task 5 — evidence-driven multi-hop
+
+`User prompt`: Implement Day 5 Task 5, **Evidence-driven multi-hop**, using the existing
+multi-agent implementation and the architecture document as the source of truth. First inspect the
+current Supervisor, Researcher, Appraiser, `AppraisalVerdict`, run state, budgets, and multi-hop
+implementation and preserve anything that already satisfies the requirements. The required
+architectural change is that the Supervisor's decision about whether more research is needed must
+be driven by the Appraiser's verdict rather than by the Supervisor independently assessing the
+research. `AppraisalVerdict.sufficient` and `requested_followup` are the relevant control signals,
+and `requested_followup` must remain the mechanism by which the Appraiser generates new research
+work from gaps discovered in the evidence. Preserve the document's termination rules: successful
+sufficiency requires `sufficient == true` with at least two accepted sources; research must not
+exceed `MAX_HOPS`; budget ceilings for searches, fetches, model calls, and wall-clock time must
+still stop further work; and an insufficient verdict may cause another hop only when
+`requested_followup` is non-empty and another hop is allowed. If the system cannot continue despite
+insufficient evidence, it must finalise honestly using `unknowns` and `assumptions` rather than
+guessing. Do not redesign the agent roles, message schemas, provider architecture, tools,
+validation, memory, or tracing as part of this task unless the existing implementation requires a
+minimal change to satisfy these requirements. Decide the cleanest implementation based on the
+current code rather than introducing a prescribed new control-flow structure. Successful
+implementation must demonstrate that a scripted `sufficient=false` verdict with
+`requested_followup` causes exactly one additional hop and that the next query contains the
+follow-up subject; `sufficient=true` causes immediate finalisation; repeated insufficient verdicts
+never bypass `MAX_HOPS`; the multi-hop decision is demonstrably derived from the Appraiser's
+verdict; and the multi-hop evaluation can show that the second-hop query contains information
+derived from hop-1 content through `AppraisalVerdict.requested_followup`, rather than being a query
+that could have been generated from the original task alone. Keep the existing offline
+`FakeProvider` tests green and add or update focused tests needed to prove these behaviors.
+
+`Title`: Day 5 Task 5 — decisions settled during planning
+
+`User prompt`: A `sufficient=true` verdict with fewer than two accepted sources is a degraded stop:
+finalise honestly with a new `thin_evidence` stop reason rather than hopping again. When a
+follow-up is outstanding, skip the planner entirely and build the assignment straight from
+`AppraisalVerdict.requested_followup`. Do not run the test suites; write the specs and let the
+configured pre-push hook run them.

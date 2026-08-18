@@ -53,6 +53,7 @@ from evergrove_agent.agents.runtime import (
     _mirror_session_memory,
     _recall_previous_preparation,
     _remember_preparation,
+    _RESEARCH_RESERVE,
 )
 from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.llm import LLMError, LLMProvider, Message
@@ -418,7 +419,17 @@ async def run_supervised(
     a difference between them is a difference in topology, never in what the run is allowed to
     do.
 
-    **Memory is recalled once, here, before anything is decided (T5)**, exactly as the single
+    **Whether the run continues is the Appraiser's answer, not the Supervisor's opinion.**
+    `_stop_after_hop` reads the verdict and either names a stop reason or says to hop again;
+    when it says to hop again the planner is skipped entirely and the assignment is built from
+    `AppraisalVerdict.requested_followup`, so there is no second model call in which the
+    coordinator could talk itself out of the judge's finding. The planner still decides the
+    *first* question — there is no verdict to defer to before any evidence exists — and every
+    bound still applies to a hop the Appraiser asked for: `_stop_before_planning` runs first,
+    so `MAX_HOPS` and the search and fetch ceilings cap a forced hop exactly as they cap a
+    planned one.
+
+    **Memory is recalled once, here, before anything is decided**, exactly as the single
     loop does it: the Supervisor's planner and its report must not be able to disagree about
     what the last session prepared.
 
@@ -441,15 +452,25 @@ async def run_supervised(
             stop = blocked
             break
 
-        decision = await decide_next_step(
-            state, provider=providers.supervisor, ctx=ctx, settings=settings
-        )
-        if decision is None:
-            stop = "planner_unavailable"
-            break
-        if decision.action == "FINALISE":
-            stop = "planner_finalised"
-            break
+        followup = _outstanding_followup(state.verdict)
+        if followup is not None:
+            # The Appraiser asked for this hop, so the Supervisor does not re-decide whether
+            # to take it. The planner is not consulted at all here — there is no model call in
+            # which a `FINALISE` could be produced over the top of the verdict (T5).
+            if not _can_afford_a_hop(budget):
+                stop = "budget_spent"
+                break
+            decision = _followup_decision(followup)
+        else:
+            decision = await decide_next_step(
+                state, provider=providers.supervisor, ctx=ctx, settings=settings
+            )
+            if decision is None:
+                stop = "planner_unavailable"
+                break
+            if decision.action == "FINALISE":
+                stop = "planner_finalised"
+                break
 
         findings, verdict = await _delegate_hop(
             decision,
@@ -558,6 +579,15 @@ def _stop_before_planning(state: RunState, budget: RunBudget) -> StopReason | No
 def _stop_after_hop(verdict: AppraisalVerdict | None) -> StopReason | None:
     """What the Appraiser's answer means for the run, or `None` to keep going.
 
+    **This is the whole of the stop/continue decision, and it is the Appraiser's (T5).** The
+    plan states the condition precisely (section 8.3): the run stops when the verdict is
+    `sufficient` with at least `_MIN_ACCEPTED` accepted sources, when the hop cap is reached,
+    or when the budget is spent; it continues for exactly one more hop when the verdict is
+    *not* sufficient, `requested_followup` is non-empty, and a hop is still allowed. The first
+    two of those live here; the other two are `_stop_before_planning`'s, checked before this
+    answer is acted on. Nothing else may end a run that this function said to continue — see
+    `_outstanding_followup`.
+
     `None` from the Appraiser is not a verdict of "insufficient" — it means the stage could
     not answer, and the honest response is to stop and finalise with what was gathered rather
     than to spend another hop against a question nobody asked for.
@@ -565,10 +595,86 @@ def _stop_after_hop(verdict: AppraisalVerdict | None) -> StopReason | None:
     if verdict is None:
         return "appraiser_unavailable"
     if verdict.sufficient:
-        return "sufficient"
+        # `sufficient` alone is not the stop condition, and this is the one place T4's
+        # "the semantic lists inform, they never decide" no longer holds. A model that says
+        # "yes" while accepting one source or none has not met the plan's bar, and the honest
+        # answer is a report that says so — not another hop, because the verdict named no
+        # follow-up to spend one on.
+        return "sufficient" if len(verdict.accepted) >= _MIN_ACCEPTED else "thin_evidence"
     if not (verdict.requested_followup or "").strip():
         # "Not enough, and nothing specific would help" is an honest verdict, and the answer
         # to it is a report with populated `unknowns` — not another hop against a question we
         # would have had to invent.
         return "no_followup"
     return None
+
+
+_MIN_ACCEPTED = 2
+"""Accepted sources a `sufficient` verdict needs before the run may stop on it.
+
+The plan's own number ("`sufficient == true` **and at least 2 accepted sources exist**"). Two
+rather than one because a single accepted source is exactly the shape of the failure the
+Appraiser exists to catch — the system believing its own first search result."""
+
+
+def _outstanding_followup(verdict: AppraisalVerdict | None) -> str | None:
+    """The question the Appraiser asked for, or `None` when it asked for nothing.
+
+    **Non-`None` exactly when `_stop_after_hop` returned `None`.** The two are two readings of
+    one verdict and must never disagree: the loop stops on the first and hops on the second,
+    so a gap between them either strands the run or lets a stale verdict reach the planner.
+    They are deliberately kept as separate small functions rather than one that returns both,
+    because each has exactly one caller and one meaning; the equivalence is pinned by a test
+    (`tests/unit/test_supervisor.py`) rather than by being structurally impossible to break.
+
+    Whitespace is stripped and an all-blank follow-up counts as none, for the same reason
+    `_stop_after_hop` strips it: a model that answers `" "` has not asked a question.
+    """
+    if verdict is None or verdict.sufficient:
+        return None
+    return (verdict.requested_followup or "").strip() or None
+
+
+def _followup_decision(followup: str) -> SupervisorDecision:
+    """The Appraiser's follow-up, as the assignment for the next hop (T5).
+
+    **The Supervisor does not get a second opinion on a hop the Appraiser asked for.** The
+    planner is not consulted at all on this path, which is what makes "the multi-hop decision
+    is derived from the verdict" structural: there is no model call in which a `FINALISE`
+    could be produced, so none can override the judgement. It also saves a model call on a
+    ten-call budget, which is the difference between two fully-judged hops and a run that
+    cannot afford its own report.
+
+    **The question is still never written by our code.** `research_question` is the
+    Appraiser's own text, drawn from content that did not exist before the hop ran — which is
+    what makes the second hop agentic rather than a scripted retry. Only the two fields the
+    Appraiser has no opinion about are supplied here: `source_preference` takes
+    `SupervisorDecision`'s own default rather than inheriting the previous hop's, because a
+    follow-up is by definition about something the last question did not cover; and
+    `reasoning` is a trace line, read by a human and never parsed.
+
+    `requested_followup` is bounded at 200 characters and `research_question` allows 300, so
+    this cannot fail validation on length. It cannot fail on emptiness either: the only caller
+    passes `_outstanding_followup`'s output, which is never blank.
+    """
+    return SupervisorDecision(
+        action="RESEARCH",
+        research_question=followup,
+        reasoning="the appraiser judged the evidence insufficient and asked for this",
+    )
+
+
+def _can_afford_a_hop(budget: RunBudget) -> bool:
+    """Whether a hop the Appraiser asked for can still be paid for in model calls.
+
+    Only the follow-up path needs this, and only because it skips the planner. On the planned
+    path `decide_next_step` answers `None` when the ledger refuses it and the loop stops with
+    `planner_unavailable`, so an exhausted budget is caught before any tool runs. Skipping the
+    planner skips that guard too — and without a replacement a forced hop would spend real
+    searches and fetches and then have nothing left to judge them with, which is the one
+    outcome `_RESEARCH_RESERVE` exists to prevent.
+
+    The same reserve, asked as a question instead of claimed: `claim` remains the only
+    enforcement point, and this only decides whether to reach it.
+    """
+    return budget.remaining("model_call") > _RESEARCH_RESERVE

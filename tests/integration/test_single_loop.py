@@ -290,10 +290,15 @@ async def test_an_insufficient_verdict_buys_exactly_one_more_hop_drawn_from_hop_
     nothing discovered still shows `hops_used == 2` and still looks like an agent — it is a
     retry wearing an agent's clothes. So the chain is asserted link by link: the page hop 1
     opened reaches the appraiser (it is the only place `EXPLAIN ANALYZE` can come from), the
-    appraiser's follow-up reaches the planner, hop 1's spent query reaches it too so hop 2
-    cannot simply repeat it, and hop 2's answer comes back from a *different* committed
-    recording. "Exactly one" matters as much as "one": three hops here would mean the
-    sufficient verdict was ignored.
+    appraiser's follow-up becomes hop 2's research question, and hop 2's answer comes back
+    from a *different* committed recording. "Exactly one" matters as much as "one": three hops
+    here would mean the sufficient verdict was ignored.
+
+    **The script is the strongest assertion in the file (T5).** There is exactly one planning
+    reply in it, for a run that performs two hops — so if anything asked the planner a second
+    time, the run would consume hop 2's research turn as a decision and fall apart. That is
+    what makes "the second hop came from the verdict" impossible to fake here: the only place
+    hop 2's question can have come from is `requested_followup`.
     """
     serve_indexes_page()
     script = [
@@ -302,7 +307,6 @@ async def test_an_insufficient_verdict_buys_exactly_one_more_hop_drawn_from_hop_
         tool_turn(("fetch_url", {"url": INDEXES_URL})),
         "the page ends by checking the query plan",
         verdict(False, EXPLAIN_QUERY, ("how to read the plan the page mentions",)),
-        plan("RESEARCH", EXPLAIN_QUERY, preference="general"),
         tool_turn(("web_search", {"query": EXPLAIN_QUERY, "source_type": "general"})),
         "the second hop found how to read a plan",
         verdict(True),
@@ -315,23 +319,31 @@ async def test_an_insufficient_verdict_buys_exactly_one_more_hop_drawn_from_hop_
 
     plans = prompts_for(provider, "SupervisorDecision")
     appraisals = prompts_for(provider, "AppraisalVerdict")
-    assert len(plans) == 2, "one planning turn per hop, and none after the run stopped"
+    researches = prompts_for(provider, "ResearchAction")
+    assert len(plans) == 1, (
+        "the planner chooses the first question only; a hop the appraiser asked for is not "
+        "re-decided, so it costs no planning turn"
+    )
     assert "EXPLAIN ANALYZE" in appraisals[0], (
         "the appraiser must be shown what hop 1 actually read, or its follow-up cannot have "
         "come from the evidence"
     )
-    assert EXPLAIN_QUERY in plans[1]
-    assert "what does a B-tree index do" in plans[1], (
-        "hop 1's question must be listed as already spent, or hop 2 may repeat it"
+    assert EXPLAIN_QUERY in researches[-1], (
+        "hop 2's assignment must carry the appraiser's follow-up verbatim — this is the link "
+        "that makes the second hop evidence-driven rather than a retry"
+    )
+    assert EXPLAIN_QUERY not in plans[0], (
+        "and it cannot have come from the task: the planner never saw this subject, because "
+        "nothing had read the page that mentions it yet"
     )
     assert EXPLAIN_DOC_URL in prompts_for(provider, "FocusPreparationReport")[0], (
         "hop 2 must have resolved against its own recording, not re-read hop 1's"
     )
 
-    # The shipped budget affords this run and nothing more: two researched hops plus one
-    # report is exactly `MAX_MODEL_CALLS`. Pinned because it is the offline half of what S14
-    # has to measure — on a run like this the retry ladder has no room left at all.
-    assert ctx.budget.remaining("model_call") == 0
+    # Two researched hops plus one report, with the second hop's planning call saved because
+    # the appraiser had already decided it. Pinned because it is the offline half of what S14
+    # has to measure: that spare call is the retry ladder's only room on a run like this.
+    assert ctx.budget.remaining("model_call") == 1
     assert provider.remaining == 0
 
 
@@ -339,15 +351,19 @@ async def test_an_insufficient_verdict_buys_exactly_one_more_hop_drawn_from_hop_
 
 
 @respx.mock
-async def test_the_hop_cap_holds_when_the_planner_keeps_asking(
+async def test_the_hop_cap_holds_when_the_appraiser_keeps_asking(
     workspace: Settings, tmp_path: Path, report
 ) -> None:
-    """A model that answers RESEARCH forever must not research forever.
+    """An appraiser that is never satisfied must not research forever.
 
-    `MAX_HOPS` is the only bound between a drifting model and an unbounded run, and it has to
-    hold from the loop rather than from the model's cooperation. `max_model_calls` is raised
-    on purpose: under the shipped 10 this run would stop because the *ledger* ran out, and the
-    test could no longer tell which bound stopped it — a hop cap that never fires would pass.
+    `MAX_HOPS` is the only bound between a judgement that keeps asking and an unbounded run,
+    and it has to hold from the loop rather than from any model's cooperation. Since T5 the
+    verdict is what buys a hop, so this is the bound that now matters most: `requested_followup`
+    would otherwise be an instruction the loop is obliged to obey indefinitely.
+
+    `max_model_calls` is raised on purpose: under the shipped 10 this run would stop because
+    the *ledger* ran out, and the test could no longer tell which bound stopped it — a hop cap
+    that never fires would pass.
 
     Three hops against three different recordings and three different source types, which is
     also the only place the routing rule ("`fixture` stays `fixture` for every source type")
@@ -356,16 +372,17 @@ async def test_the_hop_cap_holds_when_the_planner_keeps_asking(
     settings = Settings(
         _env_file=None, db_path=tmp_path / "agent.sqlite3", max_model_calls=16
     )
-    script: list[Any] = []
-    for question, query, preference in (
-        ("what does a B-tree index do", DOCS_QUERY, "docs"),
-        ("how do I read the plan", EXPLAIN_QUERY, "general"),
-        ("what does the research say", ACADEMIC_QUERY, "academic"),
+    script: list[Any] = [
+        plan("RESEARCH", "what does a B-tree index do", preference="docs")
+    ]
+    for query, preference in (
+        (DOCS_QUERY, "docs"),
+        (EXPLAIN_QUERY, "general"),
+        (ACADEMIC_QUERY, "academic"),
     ):
         script += [
-            plan("RESEARCH", question, preference=preference),
             tool_turn(("web_search", {"query": query, "source_type": preference})),
-            f"notes on {question}",
+            f"notes on {query}",
             verdict(False, "keep going"),
         ]
     script.append(report())
@@ -373,8 +390,9 @@ async def test_the_hop_cap_holds_when_the_planner_keeps_asking(
     result, provider, ctx = await drive(script, settings)
 
     assert result.hops_used == 3
-    assert len(prompts_for(provider, "SupervisorDecision")) == 3, (
-        "the planner was asked again after the last hop; the cap must skip it entirely"
+    assert len(prompts_for(provider, "SupervisorDecision")) == 1, (
+        "one planning turn for the whole run: hops 2 and 3 were the appraiser's, and the cap "
+        "must then stop the loop before it plans a fourth"
     )
     assert any("hop limit" in unknown for unknown in result.unknowns), (
         "a run cut short by a limit must not read like one that finished"

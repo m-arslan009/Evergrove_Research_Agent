@@ -18,11 +18,18 @@ imported back here and re-exported through `__all__`, so every existing importer
 `agents.single_agent` — `main.py`, three test modules, `agents/__init__.py` — keeps working
 against the names it already used. Nothing about what this loop *does* changed with the move.
 
-**A later hop's question is never scripted.** `judge_sufficiency` reads the excerpts and
-answers with `AppraisalVerdict.requested_followup`, drawn from what the sources actually
-said; `render_progress` puts it in front of the planner; `plan.md` already says to prefer
-it. The loop only carries it across — it never writes a question itself, and a run whose
+**A later hop's question is never scripted, and since T5 it is never re-litigated either.**
+`judge_sufficiency` reads the excerpts and answers with `AppraisalVerdict.requested_followup`,
+drawn from what the sources actually said; the loop carries that string straight into the next
+`ResearchAssignment` and skips the planner entirely, so no model call stands between the
+judgement and the hop it asked for. It never writes a question itself, and a run whose
 appraiser has nothing specific to ask stops rather than inventing one.
+
+**The stop/continue decision is the Appraiser's, and it has one definition.**
+`supervisor._stop_after_hop` and `supervisor._outstanding_followup` are imported rather than
+restated below: this loop plays all three roles, but it must not answer a verdict differently
+from the way the Supervisor answers it, and two copies of that rule is exactly how that would
+happen.
 
 **A refusal is control flow, not an error.** `RunBudget.claim` answers `False` and knows
 nothing about prompts, tools or error envelopes; deciding what that means is the loop's job,
@@ -68,7 +75,15 @@ from evergrove_agent.agents.runtime import (
     _recall_previous_preparation,
     _remember_preparation,
 )
-from evergrove_agent.agents.supervisor import decide_next_step, finalise
+from evergrove_agent.agents.supervisor import (
+    _can_afford_a_hop,
+    _followup_decision,
+    _outstanding_followup,
+    _stop_after_hop,
+    _stop_before_planning,
+    decide_next_step,
+    finalise,
+)
 from evergrove_agent.config import Settings, get_settings
 from evergrove_agent.schemas import (
     AppraisalRequest,
@@ -135,24 +150,35 @@ async def run_agent(
     stop: StopReason
 
     while True:
-        if budget.hops_remaining(state.hop) == 0:
-            # Deliberately before `decide_next_step`: `plan.md` is not written for a "you may
-            # not research" case, and skipping it also saves a model call for the report.
-            stop = "hop_cap"
-            break
-        if budget.remaining("search") == 0 and budget.remaining("fetch") == 0:
-            stop = "budget_spent"
+        # Deliberately before `decide_next_step`: `plan.md` is not written for a "you may not
+        # research" case, and skipping it also saves a model call for the report. Shared with
+        # `run_supervised` rather than restated, so the two loops cannot drift on what stops a
+        # run — the bound applies to a hop the Appraiser asked for just as it does to one the
+        # planner chose.
+        blocked = _stop_before_planning(state, budget)
+        if blocked is not None:
+            stop = blocked
             break
 
-        decision = await decide_next_step(
-            state, provider=providers.supervisor, ctx=ctx, settings=settings
-        )
-        if decision is None:
-            stop = "planner_unavailable"
-            break
-        if decision.action == "FINALISE":
-            stop = "planner_finalised"
-            break
+        followup = _outstanding_followup(state.verdict)
+        if followup is not None:
+            # The Appraiser asked for this hop, so it is not re-decided here. The planner is
+            # not consulted at all — there is no model call in which a `FINALISE` could be
+            # produced over the top of the verdict (T5).
+            if not _can_afford_a_hop(budget):
+                stop = "budget_spent"
+                break
+            decision = _followup_decision(followup)
+        else:
+            decision = await decide_next_step(
+                state, provider=providers.supervisor, ctx=ctx, settings=settings
+            )
+            if decision is None:
+                stop = "planner_unavailable"
+                break
+            if decision.action == "FINALISE":
+                stop = "planner_finalised"
+                break
 
         findings = await run_research_step(
             _assign(decision, state, budget),
@@ -186,18 +212,11 @@ async def run_agent(
             registry, ctx, decision=decision, findings=findings, verdict=verdict
         )
 
-        if verdict is None:
-            stop = "appraiser_unavailable"
-            break
-
-        if verdict.sufficient:
-            stop = "sufficient"
-            break
-        if not (verdict.requested_followup or "").strip():
-            # "Not enough, and nothing specific would help" is an honest verdict, and the
-            # answer to it is a report with populated `unknowns` — not another hop against a
-            # question we would have had to invent.
-            stop = "no_followup"
+        # The stop/continue decision itself, shared with `run_supervised`: one definition of
+        # what a verdict means, so the two loops cannot answer the same verdict differently.
+        judged = _stop_after_hop(verdict)
+        if judged is not None:
+            stop = judged
             break
 
     report = await finalise(

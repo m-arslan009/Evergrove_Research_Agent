@@ -28,7 +28,7 @@ anything.
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
 | **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts · **T3 — per-role provider selection**: the wiring was found **already complete** — the three `*_PROVIDER` settings, `build_provider`, `AgentProviders.from_settings` and the `providers.<role>` argument at every stage were built by Day 1 and Day 5 T1 — so T3 added no mechanism. Its content is the proof and one guard: `build_provider` now **raises** on an unrecognised name instead of falling through to local, and a wire-level test drives three provider combinations (all-local, hosted Appraiser, local Researcher only) through `prepare_focus_session` with **nothing injected**, asserting from the HTTP endpoints that each role's calls reached the provider its configuration names · **T4 — Appraiser judgement quality**: `AcceptedSource` / `RejectedSource`, the rewritten `sufficiency.md`, the per-source rendering into the finalise prompt and the `run_memory` row, `finalise.md`'s do-not-cite-a-rejected-source rule, and `tests/unit/test_appraiser.py`. The rejection is guidance to the report, never a narrowed grounding set |
-| **Next task** | **Day 5 — evidence-driven multi-hop (feature 5), then cross-agent `agent` spans (feature 6)**. Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
+| **Next task** | **Day 5 — cross-agent `agent` spans (feature 6)**, the last Day 5 subtask. Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -53,7 +53,7 @@ present.
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
 | 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
 | 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
-| 5 | Supervisor + Researcher + Appraiser | **T1–T4 done — the split, the `--mode` switch, the typed message contracts, per-role provider selection and the Appraiser's per-source judgement, offline-verified. Evidence-driven multi-hop and cross-agent `agent` spans still to do** |
+| 5 | Supervisor + Researcher + Appraiser | **T1–T5 done — the split, the `--mode` switch, the typed message contracts, per-role provider selection, the Appraiser's per-source judgement and the evidence-driven multi-hop decision, offline-verified. Cross-agent `agent` spans (T6) still to do** |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
@@ -573,9 +573,10 @@ Invariants later work must preserve:
   constrained-decoding target and a 4B model routinely fills only the fields it understands. A
   lost default would fail `model_validate_json`, spend `_decode`'s one re-ask, and return
   `None`, which the loop reads as "the appraiser could not answer" and **stops the run on**.
-  `_stop_after_hop` still reads `sufficient` and `requested_followup` and nothing else, so a
-  verdict that names the wrong sources cannot redirect a run — it can only make the report and
-  the trace more honest. Both consumers render only populated lists: `_appraisal_line` omits an
+  `_stop_after_hop` reads `sufficient`, `requested_followup` and **`len(accepted)`** (T5
+  widened it by one field; `rejected` and `disagreements` still only inform), so a verdict that
+  names the wrong sources cannot redirect a run — it can only make the report and the trace
+  more honest, and make a thin "yes" read as the `thin_evidence` stop it is. Both consumers render only populated lists: `_appraisal_line` omits an
   empty segment, `render_research_context` omits the whole heading, because an empty heading in
   front of the next model invites the invented contradiction the honest empty case exists to
   avoid. They are `list[str]`, deliberately not URLs — prompt material and a trace line, never a
@@ -726,9 +727,10 @@ Invariants later work must preserve:
   also no longer charged, since `dispatch` refuses it before the registry is reached.
 - **`dispatch_all` is not used by the loop** — the counters are claimed one call at a time, so
   `dispatch` is called per tool call, still strictly in the model's own order.
-- **A later hop's question is never written by our code.** `requested_followup` →
-  `state.verdict` → `render_progress` → `plan.md`'s "prefer the suggested follow-up" clause.
-  The loop only carries it. A null follow-up ends the run (`"no_followup"`); never invent one.
+- **A later hop's question is never written by our code.** Still true, but the path changed in
+  T5: `requested_followup` → `state.verdict` → `_outstanding_followup` → `_followup_decision`
+  → `ResearchAssignment.research_question`, with **no planner turn in between**. The loop only
+  carries it. A null follow-up ends the run (`"no_followup"`); never invent one.
 - **`RunState.findings` is reassigned, never appended to.** `validate_assignment=True` does not
   see an in-place `append`, and the `max_length=3` bound is what the hop cap rests on.
 - **When no hop remains the planner is skipped entirely**, before `decide_next_step` — `plan.md`
@@ -909,6 +911,43 @@ Invariants later work must preserve:
   against `finalise.md`'s frozen placeholder set. `AppraisalVerdict`'s
   `accepted[]` / `rejected[]` / `disagreements[]` fields were added by Day 5 T2 and given
   their per-source shape by T4.
+
+- **The stop/continue decision is the Appraiser's, and it has exactly one definition (T5).**
+  `supervisor._stop_after_hop` names a `StopReason` or returns `None` to continue;
+  `supervisor._outstanding_followup` returns the question to spend, and is non-`None`
+  **exactly** when the first returned `None`. The two are two readings of one verdict and a
+  gap between them either strands the run or lets a stale verdict reach the planner, so the
+  equivalence is pinned by `tests/unit/test_supervisor.py`. `single_agent.py` **imports** both
+  from `supervisor` rather than restating them: it plays all three roles, but it must not
+  answer a verdict differently from the way the Supervisor answers it.
+  - **A hop the Appraiser asked for does not go past the planner at all.** `_followup_decision`
+    builds the `SupervisorDecision` in code from `requested_followup`, so there is no model
+    call in which a `FINALISE` could be produced over the top of an insufficient verdict.
+    That is what "depends entirely on the Appraiser's verdict" (plan §8.3) means structurally
+    rather than as a prompt instruction. The question is still never *written* by our code —
+    it is the Appraiser's own text, verbatim; only `source_preference` (the schema default)
+    and `reasoning` (a trace line) are supplied.
+  - **The planner still owns the first question**, because there is no verdict to defer to
+    before any evidence exists. `plan.md`'s "prefer the suggested follow-up" clause and
+    `render_progress`'s verdict block are therefore now unreachable in a live run. Both are
+    left in place deliberately: they are still correct, still covered by
+    `test_prompt_context.py`, and removing them is a decision of its own rather than a side
+    effect of this one.
+  - **Every bound still applies to a forced hop.** `_stop_before_planning` runs *first*, so
+    `MAX_HOPS` and the search/fetch ceilings cap a hop the Appraiser demanded exactly as they
+    cap one the planner chose — which matters more now, since a verdict that always asks for
+    more has no planner in between to decline it. `_can_afford_a_hop` is the replacement for
+    the one guard skipping the planner removed: `decide_next_step` used to answer `None` when
+    the ledger refused it, and without a substitute a forced hop would spend real searches and
+    fetches and then have nothing left to judge them with.
+  - **`sufficient` alone no longer stops a run.** The plan's condition is `sufficient` **and
+    at least two accepted sources** (`_MIN_ACCEPTED = 2`); a thinner "yes" is the new
+    `thin_evidence` stop — still a stop, because the verdict named no follow-up to spend a hop
+    on, but a *cut-short* one whose reason reaches `unknowns`. This **supersedes T2's "the
+    semantic lists inform, they never decide"** for `accepted` only; `rejected` and
+    `disagreements` still only inform. `AcceptedSource`'s bare-string coercion carries more
+    weight because of it — a model that names its sources without describing them still
+    clears the bar.
 
 - **The Appraiser judges; it never validates and never decides (T4).** The verdict is
   semantic — what a source supports, what it leaves open, its authority, why one was
@@ -1409,8 +1448,7 @@ future session damages the project.
   a file move rather than a rewrite exactly as planned, because each stage already took and
   returned a Pydantic model. Workers reuse the Day 2 tools unchanged through the registry; no
   tool is re-implemented inside a worker. `single_agent.py` is retained and `--mode` selects.
-  **Still to do:** T2's typed inter-agent message extensions, appraiser judgement quality,
-  evidence-driven multi-hop verification, and cross-agent `agent` spans.
+  **Still to do:** cross-agent `agent` spans (T6).
 - **Day 6** (MCP) wraps `service.py`. The MCP tool's return type is `FocusPreparationReport` and its
   input mirrors `TaskContext`.
 - **Day 7** runs five evaluations over all of the above.
@@ -1591,10 +1629,8 @@ cached row — that, not a leak, is why `search_budget` runs slightly ahead of t
   bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
   the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
-**Missing (later days):** the rest of Day 5 — typed inter-agent message extensions (T2),
-appraiser judgement quality, evidence-driven multi-hop verification and cross-agent `agent`
-spans; the supervisor/worker **split itself is done** (T1) · the MCP server, client and
-`.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7). Everything
+**Missing (later days):** the rest of Day 5 — only cross-agent `agent` spans (T6); T1-T5 are
+all **done** · the MCP server, client and `.mcp.json` (Day 6) · `evals/`, the requirement audit, the `--offline` demo (Day 7). Everything
 Day 4 specified is now built.
 
 **Only *tool* spans exist so far.** T2 wired the run header and one span per tool call. There are
@@ -1710,7 +1746,7 @@ rewrite — which is why this day comes after Day 3 rather than instead of it.
 | **T2** | **Typed inter-agent messages** — `AppraisalVerdict` gains `accepted[]`, `rejected[]`, `disagreements[]`; additive, never a rewrite | `schemas/agents.py` | Not started |
 | **T3** | **Per-role provider selection** — `SUPERVISOR_PROVIDER` / `RESEARCHER_PROVIDER` / `APPRAISER_PROVIDER` already exist and already route; needs verifying rather than building | `config.py`, `llm/__init__.py` | Not started |
 | **T4** | **Appraiser judgement quality** — the verdict became a reading of the evidence rather than a flag. `AppraisalVerdict.accepted`/`rejected` now hold one object per source: `AcceptedSource(source, supports, does_not_support, authority)` and `RejectedSource(source, reason)`, both defaulted and both coercing a bare string, so a Day 3/T2-shaped reply still validates. `sufficiency.md` rewritten to judge per source, reject only with a stated reason, and leave `disagreements` empty when none exist. Consumed by `render_research_context` (the finalise prompt now names an accepted source's authority, what it supports and what it leaves open, and heads the rejected list with "do not cite any of these in resources") and by `_appraisal_line` (the `run_memory` row, and therefore the trace). `finalise.md` gained the matching citation rule | `schemas/agents.py`, `schemas/__init__.py`, `llm/prompts/{sufficiency,finalise}.md`, `agents/{prompt_context,runtime,appraiser}.py`, `tests/unit/test_appraiser.py` | **Done** |
-| **T5** | **Evidence-driven multi-hop** — hop 2's query contains the follow-up's subject | — | Not started |
+| **T5** | **Evidence-driven multi-hop** — the stop/continue decision became the Appraiser's alone. `_stop_after_hop` now applies the plan's full stop condition (`sufficient` **and** `len(accepted) >= _MIN_ACCEPTED`, else the new `thin_evidence` reason), and when it says to continue the planner is **skipped entirely**: `_outstanding_followup` reads the verdict and `_followup_decision` turns `requested_followup` into the next `ResearchAssignment`, so no model call exists in which the Supervisor could answer FINALISE over the judgement. `_can_afford_a_hop` replaces the budget guard that the skipped planner used to provide. Both loops share the four helpers (`single_agent.py` imports them) so they cannot answer one verdict two ways | `agents/{supervisor,single_agent,runtime,prompt_context}.py`, `schemas/agents.py`, `tests/unit/test_supervisor.py`, `tests/integration/test_multi_agent.py`, `tests/integration/test_single_loop.py`, `tests/unit/test_single_agent.py` | **Done** |
 | **T6** | **Cross-agent tracing** — `supervisor.decide`, `researcher.loop`, `appraiser.judge` spans, correctly parented. The renderer is already proven at depth, so this is new `open_span` calls and the first time a loop learns a trace exists | `agents/`, `tracing/` | Not started |
 
 **What T1 deliberately did not do**, so a later session does not read the absence as an
