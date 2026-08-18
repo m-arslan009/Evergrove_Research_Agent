@@ -392,12 +392,25 @@ def _appraisal_line(verdict: AppraisalVerdict | None) -> str:
     Empty means `entries_from` records no `appraisal` row at all, which is the honest shape:
     a missing row reads as "this hop was not judged", where a row saying nothing would read as
     a judgement that found nothing.
+
+    **Every populated field appears, and only the populated ones (T2).** `run_memory` is the
+    durable record of a run that `RunState` cannot be, and the semantic half of the judgement
+    — which sources were accepted, which were rejected, where they disagreed — is the part
+    someone reading a nine-minute run back actually needs. An empty list contributes no
+    segment rather than an empty one, so a Day 3-shaped verdict still produces the Day 3 line
+    and a stored row never claims a judgement that was not made.
     """
     if verdict is None:
         return ""
     line = f"sufficient={verdict.sufficient}: {verdict.reasoning}"
-    if verdict.missing_information:
-        line += f" | missing: {'; '.join(verdict.missing_information)}"
+    for label, values in (
+        ("missing", verdict.missing_information),
+        ("accepted", verdict.accepted),
+        ("rejected", verdict.rejected),
+        ("disagreements", verdict.disagreements),
+    ):
+        if values:
+            line += f" | {label}: {'; '.join(values)}"
     if verdict.requested_followup:
         line += f" | follow-up: {verdict.requested_followup}"
     return line

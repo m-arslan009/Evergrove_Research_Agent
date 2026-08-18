@@ -29,6 +29,12 @@ The session it is for: {session_minutes} minutes.
 - Leave `requested_followup` null when nothing specific would help. That is a real
   answer; an invented follow-up question is worse than none.
 - `reasoning` is one sentence, read by a human looking at the trace.
+- `accepted` lists the sources above that genuinely help answer the question. Name each
+  one by its title or its URL exactly as it is written above. Leave it empty when none do.
+- `rejected` lists the sources above that do not help, each followed by a few words on
+  why. A source you never saw above does not belong in either list.
+- `disagreements` names any point where two of the sources above contradict each other,
+  one short phrase per item. Leave it empty when they agree or never overlap.
 - Do not write the session plan, do not list topics, and do not cite anything here. You
   are only judging.
 

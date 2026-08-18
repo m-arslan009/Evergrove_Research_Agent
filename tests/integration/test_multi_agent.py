@@ -37,10 +37,19 @@ import pytest
 import respx
 
 from evergrove_agent.agents import AgentProviders
+from evergrove_agent.agents import supervisor as supervisor_module
 from evergrove_agent.config import AgentMode, Settings
 from evergrove_agent.llm import FakeProvider
 from evergrove_agent.memory import db, get_search_usage
-from evergrove_agent.schemas import FocusPreparationReport, ResearchAction, TaskContext
+from evergrove_agent.schemas import (
+    AppraisalRequest,
+    AppraisalVerdict,
+    FocusPreparationReport,
+    ResearchAction,
+    ResearchAssignment,
+    ResearchFindings,
+    TaskContext,
+)
 from evergrove_agent.service import prepare_focus_session
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tracing import get_spans
@@ -367,3 +376,72 @@ def test_a_worker_cannot_import_its_way_around_the_supervisor(
     itself.
     """
     assert forbidden not in imported_modules(worker)
+
+
+# --- 5. every hand-off is a typed message, routed by the Supervisor (Day 5 T2) ---------------
+
+
+@respx.mock
+async def test_each_hand_off_is_the_typed_message_its_role_is_defined_by(
+    workspace: Settings, report, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The messages are not merely defined — they are what actually crosses each boundary.
+
+    Section 3 reads what each *model* was asked for, which is a claim about prompting. This
+    is the claim about the code between the prompts: the Supervisor converts its own
+    `SupervisorDecision` into a `ResearchAssignment`, receives a `ResearchFindings`, builds
+    an `AppraisalRequest` from it, and receives an `AppraisalVerdict` — four typed values,
+    no dictionaries, no loose JSON, no role-specific ad hoc payload.
+
+    The chain of `research_question` assertions is what makes it a *chain* rather than four
+    isolated type checks: one question, chosen by the planner, travelling supervisor →
+    researcher → supervisor → appraiser. The sources assertion is the architectural rule
+    stated as a value — the Appraiser judges exactly what the Researcher gathered, yet
+    receives it from the Supervisor's own frame, because `_delegate_hop` is the only path
+    between the two workers. Section 4 proves no other path can be built; this proves the
+    one that exists is the one being used.
+
+    The real stage functions still run — the spies record and delegate — so this is the
+    behaviour of an actual run rather than of a stubbed one.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+    seen: dict[str, Any] = {}
+
+    real_research = supervisor_module.run_research_step
+    real_judge = supervisor_module.judge_sufficiency
+
+    async def spy_research(assignment: Any, **kwargs: Any) -> Any:
+        seen["assignment"] = assignment
+        seen["findings"] = await real_research(assignment, **kwargs)
+        return seen["findings"]
+
+    async def spy_judge(request: Any, **kwargs: Any) -> Any:
+        seen["request"] = request
+        seen["verdict"] = await real_judge(request, **kwargs)
+        return seen["verdict"]
+
+    monkeypatch.setattr(supervisor_module, "run_research_step", spy_research)
+    monkeypatch.setattr(supervisor_module, "judge_sufficiency", spy_judge)
+
+    await drive(roles, workspace, "multi")
+
+    assert isinstance(seen["assignment"], ResearchAssignment)
+    assert isinstance(seen["findings"], ResearchFindings)
+    assert isinstance(seen["request"], AppraisalRequest)
+    assert isinstance(seen["verdict"], AppraisalVerdict)
+
+    question = "what does a B-tree index do"
+    assert seen["assignment"].research_question == question, "the planner's question"
+    assert seen["findings"].research_question == question, "the Researcher answered it"
+    assert seen["request"].research_question == question, "the Appraiser judged it"
+
+    assert [source.url for source in seen["request"].sources] == [
+        source.url for source in seen["findings"].sources
+    ], "the Appraiser judged what the Researcher gathered, handed over by the Supervisor"
+
+    # The assignment is the decision *plus* what the run can still afford — the half that
+    # makes the message self-contained, and the reason the Researcher needs nothing else.
+    assert seen["assignment"].hop == 1
+    assert seen["assignment"].source_preference == "docs"
+    assert seen["assignment"].max_searches > 0

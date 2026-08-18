@@ -255,11 +255,19 @@ class AppraisalRequest(BaseModel):
 class AppraisalVerdict(BaseModel):
     """MODEL OUTPUT. `judge_sufficiency()` → do these sources support a useful session?
 
-    Four fields, and every one of them steers control flow or explains it. Day 5 adds the
-    richer judgement fields (`accepted[]`, `rejected[]`, `disagreements[]`) as optional
-    extras — an additive change, not a rewrite, which is why they are not here today: a
-    fatter constrained-decoding target costs reliability on a 4B local model, and Day 3
-    exists to find out whether that model can drive the loop at all.
+    The first four fields steer control flow or explain it; the last three are the
+    Appraiser's *semantic* judgement of the evidence, added by Day 5 T2.
+
+    **T2's three fields are additive, not a rewrite.** Every one defaults to an empty list,
+    so a reply written against the Day 3 shape still validates and the loop behaves exactly
+    as it did — which is what lets a 4B model that ignores them cost nothing. That default
+    matters more here than anywhere else in the file: this is a constrained-decoding target,
+    and the wider it gets the worse a small model's adherence to it becomes.
+
+    **They inform, they never decide.** `_stop_after_hop` still reads `sufficient` and
+    `requested_followup` and nothing else, so a verdict that names the wrong sources cannot
+    redirect a run — it can only make the report and the trace more honest about what the
+    evidence actually was. Whether a follow-up is affordable remains the Supervisor's call.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -277,10 +285,49 @@ class AppraisalVerdict(BaseModel):
     rather than a scripted retry. Never drop this field (plan section 8.3)."""
     reasoning: str = Field(max_length=400)
 
+    # --- the semantic judgement (Day 5 T2) ------------------------------------------------
+
+    accepted: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="The sources above that genuinely help answer the question, named "
+        "exactly as they are written above. Empty when none do.",
+    )
+    rejected: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="The sources above that do not help, each with a few words on why. "
+        "Empty when all of them help.",
+    )
+    """`accepted` and `rejected` are what turn "sufficient: false" from a bare flag into a
+    reading of the evidence. Bounded at 8 because `MAX_SOURCES_KEPT` is the ceiling on what
+    a run reads, and a judgement listing more sources than the run gathered is drift.
+
+    Deliberately `list[str]` rather than a list of URLs. These are prompt material and a
+    trace line, never a citation menu: a cited URL must still be in `RunState.evidence_urls`
+    (S9), so an invented name here is caught by the grounding check exactly as it always
+    was, and typing it as a URL would only invite the model to produce one."""
+
+    disagreements: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Where two of the sources above contradict each other, one short "
+        "phrase each. Empty when they agree or never overlap.",
+    )
+    """The field with the clearest downstream job: a contradiction the appraiser saw is
+    exactly what the report owes its reader in `unknowns` or `assumptions`. Bounded as
+    `missing_information` is, and for the same reason — this travels into a 4096-token
+    finalise window."""
+
     # There is deliberately no validator requiring a follow-up when `sufficient` is
     # false. "Not enough, and nothing specific would help" is a real, honest verdict, and
     # the loop's answer to it is to finalise with populated `unknowns`. Forcing a
     # follow-up would turn that into a retry loop and invite an invented question.
+    #
+    # Nor is there one tying `accepted`/`rejected` to `sufficient`. A verdict may accept
+    # two sources and still judge the set insufficient, or reject every one and still find
+    # the question answerable from the snippets — both are real readings, and a validator
+    # would turn either into a retry the model cannot diagnose.
 
 
 # --- what survives between runs -----------------------------------------------------------

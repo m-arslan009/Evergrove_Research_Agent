@@ -395,9 +395,24 @@ def render_research_context(
         lines += ["", "What the researcher noted:"] + _bullets(notes)
 
     verdict = state.verdict
-    if verdict is not None and verdict.missing_information:
-        lines += ["", "Still missing after the research:"]
-        lines += _bullets(verdict.missing_information)
+    if verdict is not None:
+        # T2's semantic judgement, each block present only when the appraiser filled it.
+        # `disagreements` is the one with an explicit destination: a contradiction the
+        # appraiser saw is exactly what the report owes its reader in `unknowns`, and a
+        # report that never heard about it has no way to be honest. `accepted`/`rejected`
+        # are a reading of the same sources listed above, never a second source list — the
+        # citation rule is still set membership against what this run gathered (S9).
+        for heading, items in (
+            ("Still missing after the research:", verdict.missing_information),
+            (
+                "Sources the appraiser judged to support the question:",
+                verdict.accepted,
+            ),
+            ("Sources the appraiser judged not to support it:", verdict.rejected),
+            ("Where the sources contradict each other:", verdict.disagreements),
+        ):
+            if items:
+                lines += ["", heading] + _bullets(items)
 
     failures = [
         failure for finding in state.findings for failure in finding.failures

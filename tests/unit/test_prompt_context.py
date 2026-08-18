@@ -157,6 +157,9 @@ def _researched_state() -> RunState:
             missing_information=["partial index syntax"],
             requested_followup="What does EXPLAIN print for a partial index?",
             reasoning="One page is thin for the question asked.",
+            accepted=["PostgreSQL: Indexes"],
+            rejected=["Indexing explained — a blog, nothing sourced"],
+            disagreements=["the two pages disagree on the default index type"],
         ),
     )
 
@@ -200,6 +203,49 @@ def test_research_context_reports_what_failed_and_what_is_still_missing(
     assert "the backend answered 503 twice" in text
     assert "partial index syntax" in text
     assert "Only the official index page was readable." in text
+
+
+def test_research_context_carries_the_appraisers_semantic_judgement(
+    settings: Settings,
+) -> None:
+    """T2's three fields are only worth adding if the report can act on them.
+
+    `disagreements` is the load-bearing one: a contradiction the Appraiser actually saw in
+    the sources is exactly what the report owes its reader in `unknowns`, and a `finalise`
+    prompt that never mentions it produces a report that quietly picks a side. `accepted`
+    and `rejected` are the Appraiser's reading of the same sources listed above — they tell
+    the report which evidence survived scrutiny, which is the difference between citing a
+    page and citing the page that mattered.
+
+    Without this test the fields validate, serialize and reach `run_memory` while never
+    reaching the one stage that could use them — defined and wired to nothing, which is the
+    failure mode the whole task exists to avoid.
+    """
+    text = render_research_context(_researched_state(), settings=settings)
+
+    assert "the two pages disagree on the default index type" in text
+    assert "PostgreSQL: Indexes" in text
+    assert "Indexing explained — a blog, nothing sourced" in text
+
+
+def test_research_context_omits_a_judgement_the_appraiser_never_made(
+    settings: Settings,
+) -> None:
+    """An empty list contributes no heading at all.
+
+    A 4B model will routinely leave T2's fields empty, and an empty "Where the sources
+    contradict each other:" heading reads to the next model as a section it failed to fill
+    — inviting exactly the invented contradiction the honest empty case exists to avoid.
+    It also spends the 4096-token window on nothing.
+    """
+    state = _researched_state()
+    state.verdict = AppraisalVerdict(sufficient=True, reasoning="enough to start")
+
+    text = render_research_context(state, settings=settings)
+
+    assert "contradict each other" not in text
+    assert "judged to support" not in text
+    assert "Still missing after the research" not in text
 
 
 def test_progress_starts_empty_and_then_carries_what_was_already_spent(

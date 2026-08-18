@@ -156,14 +156,24 @@ def plan(action: str, question: str | None = None) -> str:
 
 
 def verdict(
-    sufficient: bool, followup: str | None = None, missing: tuple[str, ...] = ()
+    sufficient: bool,
+    followup: str | None = None,
+    missing: tuple[str, ...] = (),
+    **judgement: list[str],
 ) -> str:
+    """A scripted `AppraisalVerdict`.
+
+    T2's `accepted`/`rejected`/`disagreements` arrive through `**judgement` and are omitted
+    entirely when unset — which keeps every existing call site scripting the Day 3 payload,
+    so those runs keep proving that a verdict without the semantic fields is still valid.
+    """
     return json.dumps(
         {
             "sufficient": sufficient,
             "missing_information": list(missing),
             "requested_followup": followup,
             "reasoning": "because",
+            **judgement,
         }
     )
 
@@ -909,6 +919,48 @@ async def test_a_validated_run_remembers_itself(
     }
     assert {row.hop for row in remembered} == {1}
     assert queries == {QUERY}, "the hop's own query must be recoverable from disk"
+
+
+@respx.mock
+async def test_the_appraisers_semantic_judgement_reaches_the_durable_record(
+    offline_settings: Settings, scripted_report: Callable[..., str]
+) -> None:
+    """T2's three fields survive into `run_memory`, not just into the process.
+
+    `RunState` dies with the process and a real run takes nine to fifteen minutes, so the
+    `appraisal` row is the only lasting answer to "what did the judge actually think of the
+    evidence". A verdict reduced on the way to disk to `sufficient=False` is precisely the
+    row that cannot explain a run afterwards — and the loss would be invisible, because the
+    row is still written and still has the right `kind`.
+
+    Asserted through the stored row rather than by calling `_appraisal_line` directly: the
+    private helper being correct proves nothing if `_mirror_session_memory` stops passing
+    the verdict to it.
+    """
+    recorded_search(offline_settings)
+    script = [
+        plan("RESEARCH", "what does a B-tree index do"),
+        tool_turn(("web_search", {"query": QUERY, "source_type": "docs"})),
+        "notes",
+        verdict(
+            True,
+            accepted=["PostgreSQL: Indexes"],
+            rejected=["a blog, nothing sourced"],
+            disagreements=["the two pages give different defaults"],
+        ),
+        scripted_report(),
+    ]
+
+    _, _, ctx = await drive(script, offline_settings)
+
+    with db.open_database(offline_settings.db_path) as connection:
+        appraisals = run_memory.get_run_memory(connection, ctx.run_id, kind="appraisal")
+
+    assert len(appraisals) == 1
+    recorded = appraisals[0].content
+    assert "accepted: PostgreSQL: Indexes" in recorded
+    assert "rejected: a blog, nothing sourced" in recorded
+    assert "disagreements: the two pages give different defaults" in recorded
 
 
 @respx.mock
