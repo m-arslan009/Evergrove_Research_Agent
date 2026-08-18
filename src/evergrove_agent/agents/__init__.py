@@ -1,14 +1,24 @@
 """The reasoning layer: what decides, and how it reaches the tools.
 
-Three files. `tool_calling.py` is the model-facing tool bridge (S2), `prompt_context.py`
-fills the prompt files' placeholders (S3), and `single_agent.py` is the loop that drives
-both (S5-S8). Day 5 splits `single_agent.py`'s four stage functions into `supervisor.py`,
-`researcher.py` and `appraiser.py` beside them — a file move, because each already takes and
-returns a model from `schemas/agents.py`.
+`tool_calling.py` is the model-facing tool bridge (S2) and `prompt_context.py` fills the
+prompt files' placeholders (S3). Above them sit the three roles Day 5 T1 split out of
+`single_agent.py` — `supervisor.py` decides and writes the report, `researcher.py` gathers,
+`appraiser.py` judges — with `runtime.py` holding what more than one of them needs. It was a
+file move rather than a rewrite because each stage already took and returned a model from
+`schemas/agents.py`.
+
+**Two topologies over one set of parts.** `supervisor.run_supervised` is the multi-agent
+path and the default; `single_agent.run_agent` runs the same four stages as one agent and
+remains a required demonstration. `service.prepare_focus_session(mode=...)` chooses.
+
+Modules inside this package import each other **by module path, never through this file** —
+`runtime` → the three roles → `single_agent` → here. Importing `evergrove_agent.agents` from
+within `agents/` would make the package re-enter itself.
 """
 
 from __future__ import annotations
 
+from evergrove_agent.agents.appraiser import judge_sufficiency
 from evergrove_agent.agents.prompt_context import (
     max_topics_for,
     render_allowance,
@@ -24,16 +34,14 @@ from evergrove_agent.agents.prompt_context import (
     render_tool_outcome,
     render_turn_state,
 )
-from evergrove_agent.agents.single_agent import (
+from evergrove_agent.agents.researcher import run_research_step
+from evergrove_agent.agents.runtime import (
     AgentProviders,
     PreparationFailed,
     StopReason,
-    decide_next_step,
-    finalise,
-    judge_sufficiency,
-    run_agent,
-    run_research_step,
 )
+from evergrove_agent.agents.single_agent import run_agent
+from evergrove_agent.agents.supervisor import decide_next_step, finalise, run_supervised
 from evergrove_agent.agents.tool_calling import (
     ToolCallOutcome,
     advertise,
@@ -70,5 +78,6 @@ __all__ = [
     "render_turn_state",
     "run_agent",
     "run_research_step",
+    "run_supervised",
     "to_tool_spec",
 ]

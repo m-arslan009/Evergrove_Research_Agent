@@ -6,10 +6,17 @@ budget would be two places for a run's composition to drift, and the second one 
 drifts silently.
 
 **Composition only.** Nothing here decides anything: no prompt, no budget arithmetic, no
-retry, no error translation. `run_agent` already owns every one of those, and its
-`registry` / `providers` / `ctx` parameters are optional *for this module's benefit* — the
+retry, no error translation. Both loops already own every one of those, and their
+`registry` / `providers` / `ctx` parameters are optional *for this module's benefit* — a
 loop takes them so composition can live outside it. If a change to this file would alter
-what a run does rather than what it is built from, it belongs in `agents/single_agent.py`.
+what a run does rather than what it is built from, it belongs in `agents/supervisor.py` or
+`agents/single_agent.py`.
+
+**`mode` is the one thing this module chooses** (Day 5 T1), and it is still composition:
+`run_supervised` and `run_agent` are two finished loops with the same signature, and picking
+between them assembles nothing and decides nothing inside either. Everything else on the way
+in — the registry, the tracer, the providers, the budget — is built once and handed to
+whichever one runs, so the two modes cannot drift in what they are allowed to do.
 
 **This module owns the run's database handle** (Day 4 T2). It is the only layer that knows
 when a run begins and ends, and both a trace and a shared cache connection need exactly
@@ -34,8 +41,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from evergrove_agent.agents import AgentProviders, run_agent
-from evergrove_agent.config import Settings, get_settings
+from evergrove_agent.agents import AgentProviders, run_agent, run_supervised
+from evergrove_agent.config import AgentMode, Settings, get_settings
 from evergrove_agent.memory import db
 from evergrove_agent.schemas import FocusPreparationReport, TaskContext
 from evergrove_agent.tools.base import RunBudget, RunContext
@@ -49,6 +56,7 @@ logger = logging.getLogger(__name__)
 async def prepare_focus_session(
     task: TaskContext,
     *,
+    mode: AgentMode = "multi",
     settings: Settings | None = None,
     registry: ToolRegistry | None = None,
     providers: AgentProviders | None = None,
@@ -73,6 +81,14 @@ async def prepare_focus_session(
     said what it wants that path to be, and quietly attaching hooks to it would make the
     object behave differently from the one they built.
 
+    `mode` picks the reasoning topology and nothing else (Day 5 T1). `"multi"` is the
+    Supervisor coordinating a Researcher and an Appraiser; `"single"` is the Day 3 loop
+    running the same four stages as one agent. **Both are composed identically** — the same
+    registry, tools, hooks, budget, memory, tracing, providers and validation are assembled
+    above this line and handed to whichever loop runs, so a difference between the two modes
+    can only ever be a difference in topology. Choosing between two already-built loops is
+    composition, which is why it belongs here rather than inside either of them.
+
     Raises `PreparationFailed` when the run could not produce a valid report, and `LLMError`
     when the configured model could not be reached. Both are the caller's to render.
     """
@@ -86,7 +102,8 @@ async def prepare_focus_session(
     try:
         if tracer is not None:
             tracer.start_run(ctx, task)
-        report = await run_agent(
+        run = run_supervised if mode == "multi" else run_agent
+        report = await run(
             task,
             registry=(
                 registry

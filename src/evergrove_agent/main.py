@@ -79,6 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare from model knowledge alone. No search, no fetching, no sources.",
     )
     parser.add_argument(
+        "--mode",
+        choices=("single", "multi"),
+        default="multi",
+        help="Reasoning topology: 'multi' is the Supervisor coordinating a Researcher and "
+        "an Appraiser (default); 'single' runs the same four stages as one agent. Both use "
+        "the same tools, budgets, memory and validation. Ignored with --no-research, which "
+        "reasons in one round trip and has no topology.",
+    )
+    parser.add_argument(
         "--provider",
         choices=("local", "hosted"),
         default=None,
@@ -337,10 +346,13 @@ async def _run_without_research(
 async def _run_with_research(
     task: TaskContext, args: argparse.Namespace, settings: Settings
 ) -> int:
-    """The Day 3 loop, through the one entry point.
+    """A researched run, through the one entry point.
 
     The `RunContext` is built here so the status line can read the same ledger the run
-    spends from. Nothing else about the run is assembled at this level.
+    spends from. Nothing else about the run is assembled at this level — `--mode` is passed
+    straight through, because which topology runs is `service.py`'s to resolve and a surface
+    that reached for a loop itself would be the second composition root S11 exists to
+    prevent.
 
     **A failed research run is not quietly downgraded to a no-research one.** The two modes
     make different promises about what a report rests on, and substituting one for the other
@@ -350,7 +362,9 @@ async def _run_with_research(
 
     try:
         async with progress(ctx, enabled=not args.quiet):
-            report = await prepare_focus_session(task, settings=settings, ctx=ctx)
+            report = await prepare_focus_session(
+                task, mode=args.mode, settings=settings, ctx=ctx
+            )
     except PreparationFailed as exc:
         # The message already carries the run id, the attempts made and the last validation
         # errors; `exc.issues` carries the same facts structurally for any other caller.

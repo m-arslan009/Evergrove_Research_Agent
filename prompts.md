@@ -1076,3 +1076,54 @@ than introducing a new tracing path.
 
 `User prompt`: Keep all the testing for day 7 such as live run. First we complete the
 implementation, later we will focus on testing.
+
+---
+
+`Title`: Day 5 Task 1 — refactor the single-agent loop into Supervisor, Researcher and Appraiser
+
+`User prompt`: Implement Day 5 Task 1 by refactoring the existing working single-agent research
+loop into a multi-agent structure consisting of a Supervisor, Researcher, and Appraiser, while
+preserving the current behavior and reusing the implementation that already works. This is a
+structural refactor, not a rewrite and not an opportunity to redesign unrelated parts of the
+system. The existing decision logic belongs to the Supervisor, the research-step logic belongs to
+the Researcher, the sufficiency/judgement logic belongs to the Appraiser, and final report
+generation belongs to the Supervisor. Create appropriate modules under `agents/` for these three
+roles, but decide the exact class/function structure, imports, abstractions, and internal
+organization based on the existing codebase rather than forcing a new architecture unnecessarily.
+The Supervisor must own the overall orchestration and run state, decide what happens next,
+coordinate worker outputs, and produce the final report; the Researcher must perform research
+using the existing Day 2 tools and return research findings without deciding that the overall run
+is complete or generating the final report; and the Appraiser must evaluate the gathered evidence
+and determine its sufficiency without performing research tool calls or producing the final
+report. Researcher and Appraiser must not communicate directly; coordination should remain
+controlled by the Supervisor. Do not reimplement web search, URL fetching, document reading,
+memory, validation, tracing, budget enforcement, retries, grounding, or any other existing
+capability inside the new agents; all tool execution must continue through the existing shared
+registry so that the hooks, tracing, budgets, and other Day 4 behavior remain intact. Retain
+`agents/single_agent.py` and keep the existing single-agent multi-hop flow runnable because it
+remains a required demonstration; the application should support both single-agent and
+multi-agent reasoning through the existing service entry point, with `--mode single` selecting the
+existing single-agent path and `--mode multi` selecting the Supervisor/Researcher/Appraiser path,
+with multi intended to be the default. Both modes should share the same tools, registry, memory,
+tracing, validation, persistence, schemas where applicable, and surrounding infrastructure,
+differing only in their reasoning topology. Avoid unnecessary schema redesign in this task because
+detailed typed inter-agent message work belongs to the next Day 5 task; make only minimal schema
+changes if they are genuinely required to complete this refactor safely. Do not introduce
+LangGraph, LangChain, MCP work, new providers, a new tracing architecture, changes to
+`FocusPreparationReport`, or unrelated cleanup. Preserve all existing Day 3 and Day 4 behavior and
+tests, and add or adjust only the tests necessary to prove that the refactor did not break the
+existing single-agent path and that the new multi-agent path is correctly wired through the same
+infrastructure. In particular, verify that both modes can produce a schema-valid report with the
+existing offline/FakeProvider setup, that agents do not bypass the registry to execute tools
+directly, and that the existing test suite remains green.
+
+---
+
+`Title`: Keep both loops rather than sharing one parameterized loop body
+
+`User prompt`: [Decision taken during planning, in answer to how the two modes should relate.]
+Keep both loops, share helpers: `run_agent` stays verbatim as the Day 3 demonstration;
+`supervisor.py` gets its own coordinator that delegates to researcher/appraiser. Shared per-hop
+mechanics are extracted so only the ~25-line control skeleton appears twice. Zero regression risk
+to single mode. The `--mode` default lives in the CLI flag and the service parameter only — no
+`AGENT_MODE` setting in `config.Settings` or `.env.example`.
