@@ -1201,3 +1201,46 @@ selected for that role, that different provider combinations can coexist within 
 run, that the all-local configuration remains supported, and that an invalid provider value fails
 through the project's normal configuration validation rather than silently falling back. Do not
 make real hosted API calls in the normal test suite.
+
+---
+
+`Title`: Day 5 Task 4 — make the Appraiser a genuine evidence judge
+
+`User prompt`: Implement Day 5 Task 4 by strengthening the Appraiser so that it performs real
+semantic judgement over the Researcher's gathered evidence rather than returning only a shallow
+sufficiency decision. First inspect the current `AppraisalVerdict` schema, Appraiser prompt,
+Appraiser implementation, source models, finalisation flow, and the changes already made in Task
+2 for `accepted`, `rejected`, and `disagreements`. Preserve the existing architecture and extend
+the current implementation rather than creating a parallel appraisal mechanism. The Appraiser
+should evaluate each supplied source in the context of the research question and produce
+structured judgement that includes which sources are accepted, what each accepted source actually
+supports, what it does not establish, its authority classification using the existing authority
+model or enum, which sources are rejected and the reason for rejection, what information is still
+missing, any meaningful disagreement between sources, whether the available evidence is
+sufficient, and a specific `requested_followup` when further research is needed. These fields
+must represent evidence-based semantic judgement rather than deterministic schema validation; do
+not move Pydantic validation, URL grounding, business-rule validation, or other responsibilities
+owned by `validate_report` into the Appraiser. Likewise, the Appraiser must not search the web,
+fetch URLs, call research tools, decide the final report itself, or communicate directly with the
+Researcher. It receives an `AppraisalRequest` through the Supervisor and returns an
+`AppraisalVerdict` to the Supervisor. Review the Appraiser prompt carefully so it tells the model
+to judge only from the supplied source content, avoid inventing unsupported facts, distinguish
+between what a source supports and what it merely does not cover, reject evidence for an explicit
+reason rather than arbitrarily, and request follow-up research only when the missing information
+materially affects the research goal. Do not add fake disagreements just to populate the field; an
+empty list is valid when sources do not genuinely conflict. Similarly, `does_not_support` should
+capture relevant gaps in a source rather than every topic the source fails to mention. Wire the
+richer verdict into existing consumers where there is a real architectural need: accepted versus
+rejected evidence should be available to finalisation so rejected sources cannot appear as trusted
+final resources, missing information and requested follow-up should remain available for the
+Supervisor's later stop/continue decision, and the structured appraisal should be traceable using
+the existing tracing system. Do not invent new orchestration behavior in this task beyond what is
+required to make the Appraiser's judgement usable. Add focused tests using `FakeProvider` or
+scripted outputs that prove the Appraiser can accept an authoritative source with meaningful
+`supports` and `does_not_support`, reject a low-authority or irrelevant source with a concrete
+reason, preserve genuine disagreements when supplied, return empty disagreements when none exist,
+identify missing information, and produce a specific follow-up question when the evidence is
+insufficient. Also add or preserve an integration assertion that a source rejected by the
+Appraiser does not appear in the final report's trusted resources. Verify that the Appraiser
+performs no tool calls and that existing single-agent, multi-agent, tracing, validation, and
+offline tests remain green.
