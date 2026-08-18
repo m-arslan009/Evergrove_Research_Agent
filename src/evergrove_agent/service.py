@@ -81,6 +81,13 @@ async def prepare_focus_session(
     said what it wants that path to be, and quietly attaching hooks to it would make the
     object behave differently from the one they built.
 
+    The same `Tracer` is handed to the loop (Day 5 T6), which is what puts the agent
+    boundaries in the trace and makes every tool call nest under the role that made it.
+    It travels as an argument because `RunContext` carries identifiers and never I/O, and
+    because this module is the only layer that knows when a run begins and ends — the same
+    reason it already owns the connection. A loop given no tracer runs exactly as it did
+    before, tools included.
+
     `mode` picks the reasoning topology and nothing else (Day 5 T1). `"multi"` is the
     Supervisor coordinating a Researcher and an Appraiser; `"single"` is the Day 3 loop
     running the same four stages as one agent. **Both are composed identically** — the same
@@ -113,6 +120,7 @@ async def prepare_focus_session(
             providers=providers or AgentProviders.from_settings(settings),
             ctx=ctx,
             settings=settings,
+            tracer=tracer,
         )
     except Exception:
         # A run that stopped because it ran out of allowance is a different fact from one

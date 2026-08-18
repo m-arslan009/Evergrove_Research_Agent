@@ -53,7 +53,7 @@ from evergrove_agent.schemas import (
 )
 from evergrove_agent.service import prepare_focus_session
 from evergrove_agent.tools.base import RunBudget, RunContext
-from evergrove_agent.tracing import get_spans
+from evergrove_agent.tracing import get_run, get_spans, render_trace
 
 TASK = TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25)
 
@@ -913,3 +913,167 @@ async def test_a_sufficient_verdict_backed_by_one_source_finalises_honestly(
     assert result.hops_used == 1, "a thin yes is still a stop, not another hop"
     assert render_stop_reason("thin_evidence") in result.unknowns
     assert roles.researcher.remaining == 0
+
+
+# --- 8. the trace records the topology (Day 5 T6) --------------------------------------------
+#
+# Sections 3-5 prove the roles are separate by reading what each model was asked for, what
+# crossed each boundary, and what each module may import. All three are claims about the code.
+# This section is the claim about the *recorded run*: after the fact, from the rows alone,
+# someone must be able to see which agent did what and which tool calls belonged to whom.
+#
+# That is what an `agent` span buys, and the parenting is not passed anywhere — `Tracer.
+# open_span` reads `RunContext.span_stack`, so a tool call made while a role's span is open
+# nests under it with no argument threaded through the researcher and no change to
+# `tools/hooks.py`. These tests are what stop that derivation being silently lost.
+
+
+def span_tree(
+    ledger: sqlite3.Connection, run_id: str
+) -> tuple[list[str], dict[str, list[str]]]:
+    """One run's spans as `(root names, {span name: child names})`, in start order.
+
+    Names rather than ids, because an id proves the shape to a test and nothing to a reader:
+    `researcher.loop → web_search` is the assertion this section is actually about. Uniqueness
+    is asserted rather than assumed, so a run that opened two spans with one name cannot
+    silently collapse into a tree that looks right.
+    """
+    spans = get_spans(ledger, run_id)
+    names = [span.name for span in spans]
+    assert len(set(names)) == len(names), f"span names repeat in this run: {names}"
+
+    name_of = {span.span_id: span.name for span in spans}
+    roots: list[str] = []
+    children: dict[str, list[str]] = {name: [] for name in names}
+    for span in spans:
+        parent = name_of.get(span.parent_span_id) if span.parent_span_id else None
+        if parent is None:
+            roots.append(span.name)
+        else:
+            children[parent].append(span.name)
+    return roots, children
+
+
+def indent_of(lines: list[str], name: str) -> int:
+    """How far into its line a span's name starts — the tree prefix's width, in characters."""
+    line = next(line for line in lines if name in line)
+    return len(line) - len(line.lstrip("│├└─ "))
+
+
+@respx.mock
+async def test_the_trace_shows_which_agent_made_every_tool_call(
+    workspace: Settings, ledger: sqlite3.Connection, report
+) -> None:
+    """The whole of T6, as one recorded run.
+
+    Four failures, each of which leaves a perfectly healthy run and a useless trace:
+
+    * **no agent spans at all** — the Day 4 shape, where every tool call hangs off the run and
+      a reader cannot tell a Supervisor from a Researcher;
+    * **a flat list of agent spans** — the roles appear but nothing is nested, so "the
+      Supervisor coordinates" is unrecorded and the workers look like peers of it;
+    * **tool calls parented to the wrong role**, which is what happens the moment a span is
+      opened outside the frame that does the work, or closed before it;
+    * **a tool call under the Appraiser** — the one that is not a display problem. The
+      Appraiser judging its own fresh evidence is the failure the split exists to prevent, and
+      an empty child list is where that becomes checkable on a real run rather than by reading
+      imports.
+
+    The memory tools sitting under `supervisor.run` rather than under a worker is the same
+    claim from the other side: filing a hop away is the coordinator's bookkeeping.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+
+    _, ctx = await drive(roles, workspace, "multi")
+
+    roots, children = span_tree(ledger, ctx.run_id)
+
+    assert roots == ["supervisor.run"], "one root: the Supervisor holds the whole run"
+    assert children["supervisor.run"] == [
+        "recall_previous_preparation",
+        "supervisor.decide",
+        "researcher.loop",
+        "appraiser.judge",
+        "record_run_memory",
+        "supervisor.finalise",
+        "save_preparation",
+    ], "the coordination, in the order it happened, with both workers underneath it"
+    assert children["researcher.loop"] == ["web_search", "fetch_url"], (
+        "every tool the Researcher reached nests under the Researcher"
+    )
+    assert children["appraiser.judge"] == [], "the Appraiser performs no research"
+    assert children["supervisor.decide"] == []
+    assert children["supervisor.finalise"] == []
+
+    spans = get_spans(ledger, ctx.run_id)
+    agents = {span.name for span in spans if span.kind == "agent"}
+    assert agents == {
+        "supervisor.run",
+        "supervisor.decide",
+        "researcher.loop",
+        "appraiser.judge",
+        "supervisor.finalise",
+    }
+    assert all(span.ok for span in spans), "a successful run closes every span ok"
+
+
+@respx.mock
+async def test_the_existing_renderer_displays_the_agent_hierarchy(
+    workspace: Settings, ledger: sqlite3.Connection, report
+) -> None:
+    """`scripts/show_trace.py`'s renderer, unchanged, over a real multi-agent run.
+
+    The renderer was proven at depth on Day 4 against synthesised rows, which left one thing
+    open: whether the rows a genuine run *writes* form the tree it was proven against. This
+    closes it, and it is the assertion that catches a regression the previous test cannot —
+    spans correctly parented in SQLite but flattened on the way to the screen, which is the
+    only form in which anybody actually reads a trace.
+
+    Indentation is asserted as a relation rather than an exact width, so the tree stays
+    readable evidence without pinning `render.py`'s column layout to this test.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+
+    _, ctx = await drive(roles, workspace, "multi")
+    lines = render_trace(get_run(ledger, ctx.run_id), get_spans(ledger, ctx.run_id))
+
+    assert indent_of(lines, "supervisor.run") < indent_of(lines, "researcher.loop")
+    assert indent_of(lines, "researcher.loop") < indent_of(lines, "web_search")
+    assert indent_of(lines, "researcher.loop") == indent_of(lines, "appraiser.judge"), (
+        "the two workers are siblings under the Supervisor, never nested in each other"
+    )
+    assert indent_of(lines, "fetch_url") > indent_of(lines, "appraiser.judge")
+
+
+@respx.mock
+async def test_a_single_agent_run_traces_as_one_agent(
+    workspace: Settings, ledger: sqlite3.Connection, report
+) -> None:
+    """The mode that has no delegation records none — and still records its tool calls.
+
+    Two regressions in one run. Emitting role spans here would make a single-agent trace
+    indistinguishable from a multi-agent one, which is the distinction the whole subtask
+    exists to create. And a `tracer` that reached only `run_supervised` would leave this
+    mode's tools hanging off the run with no owner — Day 4's shape, kept by accident rather
+    than by decision.
+    """
+    serve_indexes_page()
+    roles = one_hop(report(resources=[]))
+
+    _, ctx = await drive(roles, workspace, "single")
+
+    roots, children = span_tree(ledger, ctx.run_id)
+
+    assert roots == ["agent.run"], "one agent, so one agent span"
+    assert children["agent.run"] == [
+        "recall_previous_preparation",
+        "web_search",
+        "fetch_url",
+        "record_run_memory",
+        "save_preparation",
+    ], "every tool call belongs to the one agent that made it"
+    assert {span.name for span in get_spans(ledger, ctx.run_id) if span.kind == "agent"} == {
+        "agent.run"
+    }, "no supervisor, researcher or appraiser span: nothing was delegated"

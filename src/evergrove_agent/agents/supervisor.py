@@ -23,6 +23,15 @@ agent, and `service.prepare_focus_session(mode=...)` chooses between them. That 
 required Week 4 deliverable in its own right, so both stay green; the per-hop mechanics they
 share (`_assign`, the memory calls) live once in `runtime.py`, and what is written twice is
 only the control skeleton.
+
+**The topology is recorded, not merely asserted (Day 5 T6).** Every claim above is a
+statement about where code lives, and the trace is where it becomes checkable after the
+fact: `supervisor.run` holds the whole coordination, `supervisor.decide`, `researcher.loop`,
+`appraiser.judge` and `supervisor.finalise` are its children, and a worker's tool calls nest
+under that worker because `Tracer.open_span` derives a parent from `RunContext`'s stack.
+Nothing is passed down to make that happen and `tools/hooks.py` is untouched — the spans
+opened here are the only new thing. The `tracer` is a parameter rather than a field on
+`RunContext`, which holds identifiers and never I/O; `service.py` owns it and hands it in.
 """
 
 from __future__ import annotations
@@ -70,6 +79,7 @@ from evergrove_agent.schemas import (
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.registry import ToolRegistry
 from evergrove_agent.tools.validate_report import ReportIssue, validate_report
+from evergrove_agent.tracing import Tracer, agent_span
 
 # --- deciding what happens next (S5) ------------------------------------------------------
 
@@ -404,6 +414,7 @@ async def run_supervised(
     providers: AgentProviders | None = None,
     ctx: RunContext | None = None,
     settings: Settings | None = None,
+    tracer: Tracer | None = None,
 ) -> FocusPreparationReport:
     """One run, coordinated by the Supervisor: decide → delegate → judge → stop → report.
 
@@ -433,6 +444,13 @@ async def run_supervised(
     loop does it: the Supervisor's planner and its report must not be able to disagree about
     what the last session prepared.
 
+    **The whole coordination is one `supervisor.run` span (T6)**, and every other span this
+    run produces is inside it — the two workers' spans, the Supervisor's own two stages, and
+    the three memory tool calls, which sit directly under this one because filing a hop away
+    is the coordinator's bookkeeping rather than any worker's work. That is what makes "the
+    Supervisor is the coordination point" a property of the recorded tree instead of a
+    sentence in a docstring.
+
     Raises `PreparationFailed` when no valid report could be produced, and lets `LLMError`
     propagate. Both are the caller's to render.
     """
@@ -440,71 +458,105 @@ async def run_supervised(
     providers = providers or AgentProviders.from_settings(settings)
     ctx = ctx or RunContext(budget=RunBudget.from_settings(settings))
     budget = ctx.budget
-    state = RunState(
-        task=task,
-        previous=await _recall_previous_preparation(registry, ctx, task, settings),
-    )
     stop: StopReason
 
-    while True:
-        blocked = _stop_before_planning(state, budget)
-        if blocked is not None:
-            stop = blocked
-            break
-
-        followup = _outstanding_followup(state.verdict)
-        if followup is not None:
-            # The Appraiser asked for this hop, so the Supervisor does not re-decide whether
-            # to take it. The planner is not consulted at all here — there is no model call in
-            # which a `FINALISE` could be produced over the top of the verdict (T5).
-            if not _can_afford_a_hop(budget):
-                stop = "budget_spent"
-                break
-            decision = _followup_decision(followup)
-        else:
-            decision = await decide_next_step(
-                state, provider=providers.supervisor, ctx=ctx, settings=settings
-            )
-            if decision is None:
-                stop = "planner_unavailable"
-                break
-            if decision.action == "FINALISE":
-                stop = "planner_finalised"
-                break
-
-        findings, verdict = await _delegate_hop(
-            decision,
-            state,
-            registry=registry,
-            providers=providers,
-            ctx=ctx,
-            settings=settings,
+    with agent_span(
+        tracer, ctx, "supervisor.run", input_summary=task.task_title
+    ) as coordination:
+        state = RunState(
+            task=task,
+            previous=await _recall_previous_preparation(registry, ctx, task, settings),
         )
-        # Reassigned, never appended: `RunState` validates on assignment, and an in-place
-        # append would slip straight past the `max_length=3` bound that the hop cap rests on.
-        state.findings = [*state.findings, findings]
-        state.hop = state.hop + 1
-        if verdict is not None:
-            state.verdict = verdict
 
-        judged = _stop_after_hop(verdict)
-        if judged is not None:
-            stop = judged
-            break
+        while True:
+            blocked = _stop_before_planning(state, budget)
+            if blocked is not None:
+                stop = blocked
+                break
 
-    report = await finalise(
-        state,
-        provider=providers.supervisor,
-        ctx=ctx,
-        stop_reason=stop,
-        settings=settings,
-        fallback_provider=providers.fallback,
-    )
-    # The one place a validated report exists: `finalise` returns one or raises, so this line
-    # is what makes "an invalid preparation is never remembered" structural rather than a rule
-    # somebody has to follow.
-    await _remember_preparation(registry, ctx, report)
-    return report
+            followup = _outstanding_followup(state.verdict)
+            if followup is not None:
+                # The Appraiser asked for this hop, so the Supervisor does not re-decide
+                # whether to take it. The planner is not consulted at all here — there is no
+                # model call in which a `FINALISE` could be produced over the top of the
+                # verdict (T5). It is therefore also not a `supervisor.decide` span: the
+                # trace would then show a decision that was never taken.
+                if not _can_afford_a_hop(budget):
+                    stop = "budget_spent"
+                    break
+                decision = _followup_decision(followup)
+            else:
+                with agent_span(
+                    tracer,
+                    ctx,
+                    "supervisor.decide",
+                    input_summary=f"hop {state.hop + 1}: {task.task_title}",
+                ) as span:
+                    decision = await decide_next_step(
+                        state, provider=providers.supervisor, ctx=ctx, settings=settings
+                    )
+                    span.summarise(_decision_summary(decision))
+                if decision is None:
+                    stop = "planner_unavailable"
+                    break
+                if decision.action == "FINALISE":
+                    stop = "planner_finalised"
+                    break
+
+            findings, verdict = await _delegate_hop(
+                decision,
+                state,
+                registry=registry,
+                providers=providers,
+                ctx=ctx,
+                settings=settings,
+                tracer=tracer,
+            )
+            # Reassigned, never appended: `RunState` validates on assignment, and an in-place
+            # append would slip straight past the `max_length=3` bound the hop cap rests on.
+            state.findings = [*state.findings, findings]
+            state.hop = state.hop + 1
+            if verdict is not None:
+                state.verdict = verdict
+
+            judged = _stop_after_hop(verdict)
+            if judged is not None:
+                stop = judged
+                break
+
+        with agent_span(
+            tracer, ctx, "supervisor.finalise", input_summary=f"stop reason: {stop}"
+        ) as span:
+            report = await finalise(
+                state,
+                provider=providers.supervisor,
+                ctx=ctx,
+                stop_reason=stop,
+                settings=settings,
+                fallback_provider=providers.fallback,
+            )
+            span.summarise(
+                f"{len(report.resources)} resources cited, written by {report.model_used}"
+            )
+        # The one place a validated report exists: `finalise` returns one or raises, so this
+        # line is what makes "an invalid preparation is never remembered" structural rather
+        # than a rule somebody has to follow.
+        await _remember_preparation(registry, ctx, report)
+        coordination.summarise(f"{state.hop} hop(s), stopped on {stop}")
+        return report
+
+
+def _decision_summary(decision: SupervisorDecision | None) -> str:
+    """The planner's answer as one trace line (T6).
+
+    `None` is recorded as what it means — the stage could not answer — rather than left
+    blank, because a `supervisor.decide` span with no summary reads as a decision nobody
+    bothered to write down, and this is the exact shape that ends a run on
+    `planner_unavailable`.
+    """
+    if decision is None:
+        return "no decision: the planner could not answer"
+    return f"{decision.action}: {decision.research_question or '(no question)'}"
 
 
 async def _delegate_hop(
@@ -515,6 +567,7 @@ async def _delegate_hop(
     providers: AgentProviders,
     ctx: RunContext,
     settings: Settings,
+    tracer: Tracer | None = None,
 ) -> tuple[ResearchFindings, AppraisalVerdict | None]:
     """One hop, delegated: assign to the Researcher, then hand its evidence to the Appraiser.
 
@@ -534,33 +587,76 @@ async def _delegate_hop(
 
     The hop is mirrored into `run_memory` whether or not it was judged: a hop that gathered
     evidence and then lost its appraiser is exactly the run someone will want the history of.
-    """
-    findings = await run_research_step(
-        _assign(decision, state, ctx.budget),
-        provider=providers.researcher,
-        registry=registry,
-        ctx=ctx,
-        settings=settings,
-        attachment_path=(
-            str(state.task.attachment_path) if state.task.attachment_path else None
-        ),
-    )
 
-    verdict = await judge_sufficiency(
-        AppraisalRequest(
-            research_question=findings.research_question,
-            session_minutes=state.task.session_minutes,
-            sources=[*state.all_sources, *findings.sources][:64],
-        ),
-        provider=providers.appraiser,
-        ctx=ctx,
-        settings=settings,
+    **This is also where the trace's two worker spans open (T6)**, one around each delegation
+    and neither inside the other. Every tool the Researcher reaches nests under
+    `researcher.loop` with nothing passed down, because the registry's tracing pre-hook takes
+    its parent from `RunContext`'s stack — and `appraiser.judge` has no tool children for the
+    same reason it has no `dispatch` import: there is no path from that stage to a tool. The
+    mirror below sits outside both, under `supervisor.run`, because recording the hop is the
+    coordinator's act rather than either worker's.
+    """
+    assignment = _assign(decision, state, ctx.budget)
+    with agent_span(
+        tracer, ctx, "researcher.loop", input_summary=assignment.research_question
+    ) as span:
+        findings = await run_research_step(
+            assignment,
+            provider=providers.researcher,
+            registry=registry,
+            ctx=ctx,
+            settings=settings,
+            attachment_path=(
+                str(state.task.attachment_path) if state.task.attachment_path else None
+            ),
+        )
+        span.summarise(
+            f"{len(findings.sources)} sources from {len(findings.queries_used)} "
+            f"queries, {len(findings.failures)} tool failures"
+        )
+
+    request = AppraisalRequest(
+        research_question=findings.research_question,
+        session_minutes=state.task.session_minutes,
+        sources=[*state.all_sources, *findings.sources][:64],
     )
+    with agent_span(
+        tracer,
+        ctx,
+        "appraiser.judge",
+        input_summary=f"{len(request.sources)} sources: {request.research_question}",
+    ) as span:
+        verdict = await judge_sufficiency(
+            request,
+            provider=providers.appraiser,
+            ctx=ctx,
+            settings=settings,
+        )
+        span.summarise(_verdict_summary(verdict))
 
     await _mirror_session_memory(
         registry, ctx, decision=decision, findings=findings, verdict=verdict
     )
     return findings, verdict
+
+
+def _verdict_summary(verdict: AppraisalVerdict | None) -> str:
+    """The Appraiser's answer as one trace line (T6).
+
+    Deliberately the three fields the loop acts on — `sufficient`, how many sources were
+    accepted (the second half of the stop condition since T5), and whether a follow-up was
+    asked for. The full semantic judgement already reaches `run_memory` through
+    `runtime._appraisal_line`, and a span summary is bounded at `TRACE_SUMMARY_CHARS`: this
+    line exists so a reader can see *why the run continued or stopped* at the point it was
+    decided, not to hold a second copy of the verdict.
+    """
+    if verdict is None:
+        return "no verdict: the appraiser could not answer"
+    followup = (verdict.requested_followup or "").strip()
+    return (
+        f"sufficient={verdict.sufficient}, accepted={len(verdict.accepted)}"
+        + (f", follow-up: {followup}" if followup else "")
+    )
 
 
 def _stop_before_planning(state: RunState, budget: RunBudget) -> StopReason | None:

@@ -14,8 +14,9 @@ Plan section 13. Two jobs, and only these two:
 **Start and finish are separate methods, not a context manager.** A registry pre-hook and
 post-hook are two independent callables with no shared frame: the pre-hook calls
 `open_span` and the post-hook calls `close_span`. A context manager cannot span the two,
-which is why the primitive is a pair. (A convenience manager for the agent and model spans
-that *are* opened and closed in one frame belongs with the work that adds them.)
+which is why the primitive is a pair. `agent_span` below is the convenience manager Day 4
+deferred to "the work that adds them" — Day 5 T6 is that work, and an agent span is the
+case a manager fits: one frame opens it and the same frame closes it.
 
 Nothing here decides *what* to trace. Which operations get a span, what they are named and
 what a summary contains is the caller's business; this module records what it is told.
@@ -25,7 +26,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from evergrove_agent.config import Settings, get_settings
@@ -210,3 +213,71 @@ class Tracer:
                 type(exc).__name__,
                 exc,
             )
+
+
+# --- the agent boundary (Day 5 T6) --------------------------------------------------------
+
+
+@dataclass
+class AgentSpan:
+    """The span a role is running inside right now, and the one thing it may still say.
+
+    Handed out by `agent_span` so the *outcome* of a role can reach the trace: the manager
+    knows when the stage started and ended, but only the caller knows what the stage
+    answered. `span_id` is `None` on an untraced run, which is what lets a caller log or
+    correlate without first asking whether tracing is on.
+    """
+
+    span_id: str | None
+    output_summary: str | None = None
+
+    def summarise(self, summary: str) -> None:
+        """Record what this role answered. The last call wins, and none at all is fine."""
+        self.output_summary = summary
+
+
+@contextmanager
+def agent_span(
+    tracer: Tracer | None,
+    ctx: RunContext,
+    name: str,
+    *,
+    input_summary: str | None = None,
+) -> Iterator[AgentSpan]:
+    """Trace one agent boundary: open a span, run the role, close it however it ends.
+
+    **This is the whole of how a trace becomes a tree.** `Tracer.open_span` pushes onto
+    `ctx.span_stack` and reads the parent from it, so anything opened while this manager is
+    active — a tool call through the registry, a nested role — nests underneath without a
+    parent id being passed anywhere or derived at a call site. Propagation is the shared
+    `RunContext`, exactly as Day 4 built it; T6 adds only the operations that were missing.
+
+    **A failed stage still closes its span**, with `ok=False` and the exception's type name
+    as the error code, and the exception then propagates untouched. That matters more than
+    the success path: a span left open re-parents every operation for the rest of a
+    nine-to-fifteen-minute run, so the one case that must not leak is the one where
+    something already went wrong. `BaseException` rather than `Exception` because a
+    cancelled run is precisely a run someone will want the trace of.
+
+    **`tracer=None` is a no-op**, pushing nothing and yielding a handle with no id. A run
+    whose database could not be opened then nests exactly as it did before this existed,
+    which is what keeps "the run proceeds untraced" true rather than approximately true.
+    """
+    if tracer is None:
+        yield AgentSpan(span_id=None)
+        return
+
+    span_id = tracer.open_span(ctx, name, "agent", input_summary=input_summary)
+    span = AgentSpan(span_id=span_id)
+    try:
+        yield span
+    except BaseException as exc:
+        tracer.close_span(
+            ctx,
+            span_id,
+            ok=False,
+            error_code=type(exc).__name__,
+            output_summary=span.output_summary,
+        )
+        raise
+    tracer.close_span(ctx, span_id, ok=True, output_summary=span.output_summary)

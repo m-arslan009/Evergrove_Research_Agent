@@ -93,6 +93,7 @@ from evergrove_agent.schemas import (
 )
 from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tools.registry import ToolRegistry
+from evergrove_agent.tracing import Tracer, agent_span
 
 __all__ = [
     "AgentProviders",
@@ -120,6 +121,7 @@ async def run_agent(
     providers: AgentProviders | None = None,
     ctx: RunContext | None = None,
     settings: Settings | None = None,
+    tracer: Tracer | None = None,
 ) -> FocusPreparationReport:
     """Plan → act → observe → judge → stop, then write the report.
 
@@ -138,97 +140,111 @@ async def run_agent(
     reads to answer one question. It happens before the first `decide_next_step` because the
     very first decision — what this session is even about — is the one a continuation changes
     most.
+
+    **One agent, so exactly one agent span (Day 5 T6).** The whole run is `agent.run` and
+    every tool call nests under it. There are deliberately no `supervisor.decide` /
+    `researcher.loop` / `appraiser.judge` spans here: the four stages are the same functions
+    the multi path calls, but nothing is *delegated* — one agent performs all of them — and
+    emitting role spans would make a single-agent trace indistinguishable from a multi-agent
+    one, which is the exact distinction T6 exists to record. The difference between the two
+    modes is therefore readable straight off the tree: one agent span, or a Supervisor with
+    workers underneath it.
     """
     settings = settings or get_settings()
     providers = providers or AgentProviders.from_settings(settings)
     ctx = ctx or RunContext(budget=RunBudget.from_settings(settings))
     budget = ctx.budget
-    state = RunState(
-        task=task,
-        previous=await _recall_previous_preparation(registry, ctx, task, settings),
-    )
     stop: StopReason
 
-    while True:
-        # Deliberately before `decide_next_step`: `plan.md` is not written for a "you may not
-        # research" case, and skipping it also saves a model call for the report. Shared with
-        # `run_supervised` rather than restated, so the two loops cannot drift on what stops a
-        # run — the bound applies to a hop the Appraiser asked for just as it does to one the
-        # planner chose.
-        blocked = _stop_before_planning(state, budget)
-        if blocked is not None:
-            stop = blocked
-            break
+    with agent_span(tracer, ctx, "agent.run", input_summary=task.task_title) as run_span:
+        state = RunState(
+            task=task,
+            previous=await _recall_previous_preparation(registry, ctx, task, settings),
+        )
 
-        followup = _outstanding_followup(state.verdict)
-        if followup is not None:
-            # The Appraiser asked for this hop, so it is not re-decided here. The planner is
-            # not consulted at all — there is no model call in which a `FINALISE` could be
-            # produced over the top of the verdict (T5).
-            if not _can_afford_a_hop(budget):
-                stop = "budget_spent"
+        while True:
+            # Deliberately before `decide_next_step`: `plan.md` is not written for a "you may
+            # not research" case, and skipping it also saves a model call for the report.
+            # Shared with `run_supervised` rather than restated, so the two loops cannot drift
+            # on what stops a run — the bound applies to a hop the Appraiser asked for just as
+            # it does to one the planner chose.
+            blocked = _stop_before_planning(state, budget)
+            if blocked is not None:
+                stop = blocked
                 break
-            decision = _followup_decision(followup)
-        else:
-            decision = await decide_next_step(
-                state, provider=providers.supervisor, ctx=ctx, settings=settings
+
+            followup = _outstanding_followup(state.verdict)
+            if followup is not None:
+                # The Appraiser asked for this hop, so it is not re-decided here. The planner
+                # is not consulted at all — there is no model call in which a `FINALISE` could
+                # be produced over the top of the verdict (T5).
+                if not _can_afford_a_hop(budget):
+                    stop = "budget_spent"
+                    break
+                decision = _followup_decision(followup)
+            else:
+                decision = await decide_next_step(
+                    state, provider=providers.supervisor, ctx=ctx, settings=settings
+                )
+                if decision is None:
+                    stop = "planner_unavailable"
+                    break
+                if decision.action == "FINALISE":
+                    stop = "planner_finalised"
+                    break
+
+            findings = await run_research_step(
+                _assign(decision, state, budget),
+                provider=providers.researcher,
+                registry=registry,
+                ctx=ctx,
+                settings=settings,
+                attachment_path=(
+                    str(task.attachment_path) if task.attachment_path else None
+                ),
             )
-            if decision is None:
-                stop = "planner_unavailable"
+            # Reassigned, never appended: `RunState` validates on assignment, and an in-place
+            # append would slip straight past the `max_length=3` bound the hop cap rests on.
+            state.findings = [*state.findings, findings]
+            state.hop = state.hop + 1
+
+            verdict = await judge_sufficiency(
+                AppraisalRequest(
+                    research_question=findings.research_question,
+                    session_minutes=task.session_minutes,
+                    sources=list(state.all_sources)[:64],
+                ),
+                provider=providers.appraiser,
+                ctx=ctx,
+                settings=settings,
+            )
+            if verdict is not None:
+                state.verdict = verdict
+
+            # The hop is mirrored whether or not it was judged: a hop that gathered evidence
+            # and then lost its appraiser is exactly the run someone will want the history of.
+            await _mirror_session_memory(
+                registry, ctx, decision=decision, findings=findings, verdict=verdict
+            )
+
+            # The stop/continue decision itself, shared with `run_supervised`: one definition
+            # of what a verdict means, so the two loops cannot answer one verdict differently.
+            judged = _stop_after_hop(verdict)
+            if judged is not None:
+                stop = judged
                 break
-            if decision.action == "FINALISE":
-                stop = "planner_finalised"
-                break
 
-        findings = await run_research_step(
-            _assign(decision, state, budget),
-            provider=providers.researcher,
-            registry=registry,
+        report = await finalise(
+            state,
+            provider=providers.supervisor,
             ctx=ctx,
+            stop_reason=stop,
             settings=settings,
-            attachment_path=str(task.attachment_path) if task.attachment_path else None,
+            fallback_provider=providers.fallback,
         )
-        # Reassigned, never appended: `RunState` validates on assignment, and an in-place
-        # append would slip straight past the `max_length=3` bound that the hop cap rests on.
-        state.findings = [*state.findings, findings]
-        state.hop = state.hop + 1
-
-        verdict = await judge_sufficiency(
-            AppraisalRequest(
-                research_question=findings.research_question,
-                session_minutes=task.session_minutes,
-                sources=list(state.all_sources)[:64],
-            ),
-            provider=providers.appraiser,
-            ctx=ctx,
-            settings=settings,
-        )
-        if verdict is not None:
-            state.verdict = verdict
-
-        # The hop is mirrored whether or not it was judged: a hop that gathered evidence and
-        # then lost its appraiser is exactly the run someone will want the history of.
-        await _mirror_session_memory(
-            registry, ctx, decision=decision, findings=findings, verdict=verdict
-        )
-
-        # The stop/continue decision itself, shared with `run_supervised`: one definition of
-        # what a verdict means, so the two loops cannot answer the same verdict differently.
-        judged = _stop_after_hop(verdict)
-        if judged is not None:
-            stop = judged
-            break
-
-    report = await finalise(
-        state,
-        provider=providers.supervisor,
-        ctx=ctx,
-        stop_reason=stop,
-        settings=settings,
-        fallback_provider=providers.fallback,
-    )
-    # The one place a validated report exists: `finalise` returns one or raises, so this line
-    # is what makes "an invalid preparation is never remembered" structural rather than a rule
-    # somebody has to follow.
-    await _remember_preparation(registry, ctx, report)
-    return report
+        # The one place a validated report exists: `finalise` returns one or raises, so this
+        # line is what makes "an invalid preparation is never remembered" structural rather
+        # than a rule somebody has to follow.
+        await _remember_preparation(registry, ctx, report)
+        run_span.summarise(f"{state.hop} hop(s), stopped on {stop}")
+        return report

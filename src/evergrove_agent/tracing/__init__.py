@@ -5,6 +5,8 @@ Plan section 13. Two layers and a clean split between them:
 - `store.py` — the `runs` and `spans` rows. Storage only, and it raises on a database error.
 - `tracer.py` — the `Tracer` a registry hook calls. Coordinates `RunContext`'s span stack
   with those writes, and is the one place a tracing failure is prevented from ending a run.
+  `agent_span` (Day 5 T6) is the same pair as a context manager, for the agent boundaries a
+  single frame opens and closes.
 - `render.py` — the read side (T6). Pure: rows in, lines out. It writes nothing, opens no
   connection and imports no `sqlite3`, so displaying a trace can never disturb one.
 
@@ -30,15 +32,17 @@ from evergrove_agent.tracing.store import (
     start_run,
     start_span,
 )
-from evergrove_agent.tracing.tracer import Tracer
+from evergrove_agent.tracing.tracer import AgentSpan, Tracer, agent_span
 
 __all__ = [
+    "AgentSpan",
     "RunRecord",
     "RunStatus",
     "SpanKind",
     "SpanNode",
     "SpanRecord",
     "Tracer",
+    "agent_span",
     "build_forest",
     "finish_run",
     "finish_span",

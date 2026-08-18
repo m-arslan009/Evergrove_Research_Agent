@@ -1283,3 +1283,25 @@ finalise honestly with a new `thin_evidence` stop reason rather than hopping aga
 follow-up is outstanding, skip the planner entirely and build the assignment straight from
 `AppraisalVerdict.requested_followup`. Do not run the test suites; write the specs and let the
 configured pre-push hook run them.
+
+`Title`: Day 5 Task 6 — cross-agent tracing as a parent-child span tree
+
+`User prompt`: Implement Day 5 Task 6 by extending the existing Day 4 tracing system so the
+multi-agent execution is visible as a parent-child span tree. Reuse the current tracing,
+`RunContext`, registry hooks, span storage, and trace rendering; do not introduce a second tracing
+mechanism. Add agent-level spans for the Supervisor, Researcher, and Appraiser, using the
+architecture's expected span concepts such as `supervisor.decide`, `researcher.loop`, and
+`appraiser.judge`, and ensure tool spans created during an agent's work are parented under the
+correct agent span. Preserve the existing rule that all tool calls go through the registry so tool
+tracing remains automatic. The trace must make the multi-agent topology verifiable: Researcher tool
+calls should appear beneath the Researcher span, the Appraiser must have no research tool-call
+children, workers must not invoke each other directly, and the Supervisor must remain the
+coordination point. Keep the existing single-agent mode and Day 4 tracing behavior working. Decide
+the exact span lifecycle, helper placement, context propagation, and implementation details after
+inspecting the current code rather than duplicating tracing logic inside each agent. Successful
+implementation requires an offline multi-agent run whose trace contains the Supervisor, Researcher,
+and Appraiser spans with correct parenting; tool spans are nested under the agent that triggered
+them; the Appraiser has no tool-call spans; the existing trace renderer can display the resulting
+hierarchy; and the current tracing, registry, single-agent, and multi-agent tests remain green. Add
+or update focused tests to prove these properties and report the files changed, how parent span
+propagation is handled, and the tests executed with their results.
