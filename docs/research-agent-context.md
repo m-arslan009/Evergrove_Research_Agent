@@ -22,13 +22,13 @@ anything.
 | | |
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
-| **Current milestone** | **Day 5 — Supervisor + Researcher + Appraiser** — **T1 done**: `single_agent.py`'s four stage functions now live in `supervisor.py` / `researcher.py` / `appraiser.py` over a shared `runtime.py`, and `service.py` takes a `mode` (`multi` default, `single` retained). Behaviour is unchanged — every one of the 470 pre-existing tests passes untouched |
+| **Current milestone** | **Day 5 — Supervisor + Researcher + Appraiser** — **T1–T3 done**: `single_agent.py`'s four stage functions now live in `supervisor.py` / `researcher.py` / `appraiser.py` over a shared `runtime.py`, and `service.py` takes a `mode` (`multi` default, `single` retained). Behaviour is unchanged — every one of the 470 pre-existing tests passes untouched |
 | **Day 4** | **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
 | **Day 3** | S1–S14 implemented and live-verified. **Implementation complete; sign-off deferred to Day 7** — two acceptance runs are owed and banked there, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
-| **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts |
-| **Next task** | **Day 5 — per-role provider selection** (already configurable, needs verifying) and **cross-agent `agent` spans** (feature 6). Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
+| **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts · **T3 — per-role provider selection**: the wiring was found **already complete** — the three `*_PROVIDER` settings, `build_provider`, `AgentProviders.from_settings` and the `providers.<role>` argument at every stage were built by Day 1 and Day 5 T1 — so T3 added no mechanism. Its content is the proof and one guard: `build_provider` now **raises** on an unrecognised name instead of falling through to local, and a wire-level test drives three provider combinations (all-local, hosted Appraiser, local Researcher only) through `prepare_focus_session` with **nothing injected**, asserting from the HTTP endpoints that each role's calls reached the provider its configuration names |
+| **Next task** | **Day 5 — cross-agent `agent` spans** (feature 6). Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -53,7 +53,7 @@ present.
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
 | 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
 | 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
-| 5 | Supervisor + Researcher + Appraiser | **T1 + T2 done — the split, the `--mode` switch and the typed message contracts, offline-verified. Per-role provider selection and cross-agent `agent` spans still to do** |
+| 5 | Supervisor + Researcher + Appraiser | **T1–T3 done — the split, the `--mode` switch, the typed message contracts and per-role provider selection, offline-verified. Cross-agent `agent` spans still to do** |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
@@ -1015,6 +1015,23 @@ implementations:
 `build_provider(role, settings=None, *, override=None)` is the only construction path;
 `role ∈ {supervisor, researcher, appraiser}` resolves through `Settings.provider_for`. Adding a
 provider is a branch here plus a class — never a change at a call site.
+
+**Per-role selection is the whole mechanism (Day 5 T3), and it is configuration only.**
+`SUPERVISOR_PROVIDER`, `RESEARCHER_PROVIDER` and `APPRAISER_PROVIDER` each resolve
+independently through this one factory into `AgentProviders`, which `service.py` builds and
+hands to whichever loop `mode` selects; a stage receives `providers.<role>` as an argument.
+**No agent module reads a `*_PROVIDER` setting or constructs a client**, so pointing the
+Appraiser at a different model — the independent semantic judgement the split exists for — is
+an `.env` edit and nothing else. `single` mode uses the same three fields for the same three
+stages: it inherits per-role selection from the identical composition path rather than
+carrying a setting of its own, which is what keeps the two modes comparable. There is exactly
+one override seam, the CLI's `--provider`, which writes all three settings *before*
+composition, so precedence never becomes a question at resolution time.
+
+**An unrecognised provider name raises here rather than defaulting to local.** `ProviderName`
+catches a typo when `Settings` is built, but `model_copy(update=…)` and `setattr` — how
+`tools/cli.py` and `main.py` apply overrides — bypass that, and a silent fall-through would
+give an operator a local run they believed was hosted.
 
 **`LLMError` is an exception, `ToolError` is a value.** Deliberate: an unreachable model is a
 broken run, not something the agent can reason around. Preserve the asymmetry.

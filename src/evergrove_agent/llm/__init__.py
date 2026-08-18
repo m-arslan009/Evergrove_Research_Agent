@@ -37,10 +37,26 @@ def build_provider(
 ) -> LLMProvider:
     """The provider serving `role`, per `.env` (plan section 14.2).
 
+    **The only place a provider is constructed.** Each role resolves independently, so
+    `SUPERVISOR_PROVIDER=local RESEARCHER_PROVIDER=local APPRAISER_PROVIDER=hosted` is a
+    configuration change and nothing else — no agent reads a setting or builds a client of
+    its own, and `AgentProviders.from_settings` is three calls to this function.
+
     `override` exists for the CLI's `--provider` flag; it does not change the file.
+
+    **An unrecognised name raises rather than defaulting to local.** `ProviderName` already
+    makes a bad `*_PROVIDER` a `ValidationError` when `Settings` is built, which is where a
+    typo should be caught — but `Settings.model_copy(update=…)` and `setattr` both bypass
+    that, and those are exactly how `tools/cli.py` and `main.py` apply their overrides. A
+    silent fall-through would hand such a run the local model while the operator believed a
+    role was hosted, which is the one failure that looks like success.
     """
     settings = settings or get_settings()
     provider = override or settings.provider_for(role)
+    if provider == "local":
+        return OllamaProvider(settings)
     if provider == "hosted":
         return HostedProvider(settings)
-    return OllamaProvider(settings)
+    raise ValueError(
+        f"unknown provider {provider!r} for role {role!r}; expected 'local' or 'hosted'"
+    )

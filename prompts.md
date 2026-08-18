@@ -1166,3 +1166,38 @@ models already existed and were already used at every agent boundary.] Add all t
 wired — the fields go on `AppraisalVerdict` **and** into their consumers (`runtime._appraisal_line`
 for `run_memory`, `prompt_context.render_research_context` for `finalise`), so they are not dead
 fields. Accepted cost: a wider constrained-decoding target for the 4B local model.
+
+
+---
+
+`Title`: Day 5 Task 3 — independent LLM provider selection per agent role
+
+`User prompt`: Implement Day 5 Task 3 by wiring independent LLM provider selection for the
+Supervisor, Researcher, and Appraiser while reusing the provider abstractions and
+implementations that already exist in the project. Add or use configuration values named
+`SUPERVISOR_PROVIDER`, `RESEARCHER_PROVIDER`, and `APPRAISER_PROVIDER`, with each role
+independently supporting the existing `local` and `hosted` provider choices. This task is
+provider wiring only: do not create new provider implementations, duplicate Ollama or
+hosted-provider code, introduce a second local model, or redesign the existing LLM abstraction.
+Resolve each configured role to an existing provider instance through the project's established
+provider factory or equivalent shared construction path, and inject the resolved provider into
+the appropriate agent so that the Supervisor, Researcher, and Appraiser do not read environment
+settings or construct provider clients themselves. The architecture must support an entirely
+local run as well as mixed configurations such as a local Supervisor and Researcher with a hosted
+Appraiser; changing a role's provider should require configuration only and must not require
+modifying agent logic. Preserve the current single-agent mode and determine from the existing
+design how its provider should continue to be selected rather than unnecessarily forcing the
+three new role settings into the single-agent path. Avoid introducing ambiguous configuration
+precedence or additional provider-selection mechanisms beyond what the existing configuration
+architecture requires. The primary architectural reason for independent role selection is that
+the Appraiser can be configured to use a genuinely different provider from the Researcher for an
+independent semantic judgement, while still allowing all-local execution on the target machine;
+therefore ensure that a mixed-provider multi-agent run actually routes each role's model calls
+through its configured provider rather than merely storing the settings. Keep prompts, message
+schemas, tool execution, memory, tracing, budgets, report validation, and multi-hop logic
+unchanged unless a minimal adaptation is required to pass the selected provider into an agent.
+Add focused tests using fakes or stubs that prove each role receives and calls the provider
+selected for that role, that different provider combinations can coexist within one multi-agent
+run, that the all-local configuration remains supported, and that an invalid provider value fails
+through the project's normal configuration validation rather than silently falling back. Do not
+make real hosted API calls in the normal test suite.

@@ -445,3 +445,184 @@ async def test_each_hand_off_is_the_typed_message_its_role_is_defined_by(
     assert seen["assignment"].hop == 1
     assert seen["assignment"].source_preference == "docs"
     assert seen["assignment"].max_searches > 0
+
+
+# --- 6. each role calls the provider its configuration names (Day 5 T3) ----------------------
+
+# Every test above injects `AgentProviders` directly, which is what makes them readable — and
+# also what leaves the configuration path itself unproven: three roles pointed at one shared
+# provider would pass all of them. So this section builds nothing and injects nothing. It sets
+# `*_PROVIDER`, lets `service.py` resolve the run through `AgentProviders.from_settings`, and
+# reads which *endpoint* each stage's request actually reached.
+#
+# That is the difference between storing a setting and honouring one, and it is only visible at
+# the wire: `respx` answers both a local Ollama server and Google AI Studio, so a hosted role is
+# exercised end to end without a real API call, a real key, or a cent of quota.
+
+_SIGNATURE_PROPERTY: dict[str, str] = {
+    "action": "SupervisorDecision",
+    "tool": "ResearchAction",
+    "sufficient": "AppraisalVerdict",
+    "topics_to_cover": "FocusPreparationReport",
+}
+"""One property that appears in exactly one of the four stage schemas.
+
+Read instead of a schema title because the two providers do not send the same thing:
+`OllamaProvider` posts `format=<JSON Schema>` intact, while `to_gemini_schema` drops `title`
+along with every other keyword Gemini rejects. A property both dialects keep is the one key
+that identifies a stage on either endpoint.
+"""
+
+ROLE_STAGES: dict[str, tuple[str, ...]] = {
+    "supervisor": ("SupervisorDecision", "FocusPreparationReport"),
+    "researcher": ("ResearchAction",),
+    "appraiser": ("AppraisalVerdict",),
+}
+"""Which stages belong to which role — the mapping `run_supervised` expresses by handing
+`providers.<role>` to each stage function."""
+
+COMBINATIONS = [
+    pytest.param({}, id="all-local"),
+    pytest.param({"appraiser_provider": "hosted"}, id="hosted-appraiser"),
+    pytest.param(
+        {"supervisor_provider": "hosted", "appraiser_provider": "hosted"},
+        id="local-researcher-only",
+    ),
+]
+"""The combinations that carry an architectural claim.
+
+`all-local` is the committed default and the $0 guarantee, so it is the one that must never
+regress. `hosted-appraiser` is the reason per-role selection exists at all: the Appraiser
+judging the Researcher's evidence with a genuinely different model is an independent judgement
+rather than one model agreeing with itself. The third keeps the Researcher — the role that
+handles fetched source text — local while both reasoning roles are hosted, which is the shape a
+privacy-conscious mixed run takes.
+"""
+
+
+def stage_of(request: httpx.Request) -> str:
+    """Which stage sent this request, read from the schema it constrains."""
+    body = json.loads(request.content)
+    schema = body.get("format") or body["generationConfig"]["responseSchema"]
+    properties = schema.get("properties", {})
+    for prop, stage in _SIGNATURE_PROPERTY.items():
+        if prop in properties:
+            return stage
+    raise AssertionError(f"unrecognised stage schema: {sorted(properties)}")
+
+
+class Wire:
+    """Both model endpoints, scripted by stage and recording which endpoint served each call.
+
+    Keyed by stage rather than by call order because the order is the run's to choose: the
+    subject here is where each request *went*, and a script that also pinned the sequence would
+    fail for reasons that have nothing to do with provider selection.
+    """
+
+    def __init__(self, script: dict[str, list[str]]) -> None:
+        self._script = {stage: list(replies) for stage, replies in script.items()}
+        self.served: list[tuple[str, str]] = []
+
+    def take(self, endpoint: str, request: httpx.Request) -> str:
+        stage = stage_of(request)
+        self.served.append((endpoint, stage))
+        replies = self._script[stage]
+        assert replies, f"the run asked for more {stage} replies than were scripted"
+        return replies.pop(0)
+
+    def endpoints_for(self, stage: str) -> set[str]:
+        return {endpoint for endpoint, served in self.served if served == stage}
+
+
+def serve_both_providers(wire: Wire, settings: Settings) -> None:
+    """Ollama and Google AI Studio, answered locally in their own reply shapes."""
+    respx.post(f"{settings.ollama_host}/api/chat").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json={
+                "model": settings.local_model,
+                "message": {"content": wire.take("local", request)},
+                "done_reason": "stop",
+            },
+        )
+    )
+    respx.post(
+        f"{settings.hosted_api_base}/models/{settings.hosted_model}:generateContent"
+    ).mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": wire.take("hosted", request)}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "modelVersion": settings.hosted_model,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("configured", COMBINATIONS)
+@respx.mock
+async def test_each_role_calls_the_provider_its_configuration_names(
+    configured: dict[str, str], workspace: Settings, report
+) -> None:
+    """Changing a role's provider is a configuration change, and it reaches the model calls.
+
+    Three failures this is the only guard against, every one of which still returns a
+    perfectly valid report:
+
+    * a role wired to another role's provider — a transposition in `from_settings`, or in the
+      `providers.<role>` argument at a stage's call site;
+    * every role collapsing onto one provider, which is what a mixed configuration silently
+      becomes if the three instances are resolved but one of them is passed everywhere;
+    * the all-local default quietly reaching the hosted endpoint, which would break the $0
+      guarantee and send task text to Google without anyone asking for it.
+
+    Nothing is injected: `prepare_focus_session` is given settings only, so this runs against
+    the same `AgentProviders.from_settings` path a real run composes itself from.
+
+    `GOOGLE_API_KEY` is set on every combination, including `all-local`, deliberately. It makes
+    the hosted path genuinely available in each case, so a local role landing on it would be a
+    successful HTTP call rather than a missing-key error — the failure has to be caught by
+    routing, not by an absent credential.
+    """
+    settings = Settings(
+        _env_file=None,
+        db_path=workspace.db_path,
+        google_api_key="test-key",
+        **configured,
+    )
+    serve_indexes_page()
+    wire = Wire(
+        {
+            "SupervisorDecision": [plan("RESEARCH", "what does a B-tree index do")],
+            "ResearchAction": [
+                tool_turn("web_search", {"query": DOCS_QUERY, "source_type": "docs"}),
+                tool_turn("fetch_url", {"url": INDEXES_URL}),
+                done(),
+            ],
+            "AppraisalVerdict": [verdict(True)],
+            "FocusPreparationReport": [report(resources=[])],
+        }
+    )
+    serve_both_providers(wire, settings)
+
+    result = await prepare_focus_session(TASK, mode="multi", settings=settings)
+
+    for role, stages in ROLE_STAGES.items():
+        expected = settings.provider_for(role)
+        for stage in stages:
+            assert wire.endpoints_for(stage) == {expected}, (
+                f"{role} is configured as {expected}, so every {stage} call must reach it"
+            )
+
+    assert isinstance(result, FocusPreparationReport)
+    assert result.hops_used == 1, "the run really did delegate a hop under this combination"
+    assert len(wire.served) == 6, (
+        "one decision, three research turns, one verdict, one report — and nothing else. A "
+        "seventh call would mean the finalise ladder's alternate provider fired on a run whose "
+        "first report was already valid"
+    )
