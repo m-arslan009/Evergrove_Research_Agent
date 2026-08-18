@@ -47,7 +47,6 @@ from evergrove_agent.agents.tool_calling import (
     advertise,
     advertised_tool_names,
     dispatch,
-    dispatch_all,
     to_tool_spec,
 )
 
@@ -60,7 +59,6 @@ __all__ = [
     "advertised_tool_names",
     "decide_next_step",
     "dispatch",
-    "dispatch_all",
     "finalise",
     "judge_sufficiency",
     "max_topics_for",

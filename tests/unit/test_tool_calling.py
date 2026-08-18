@@ -25,11 +25,9 @@ import respx
 
 from evergrove_agent.agents import tool_calling
 from evergrove_agent.agents.tool_calling import (
-    ToolCallOutcome,
     advertise,
     advertised_tool_names,
     dispatch,
-    dispatch_all,
     to_tool_spec,
 )
 from evergrove_agent.config import AgentRole, Settings
@@ -280,51 +278,37 @@ async def test_dispatched_calls_reach_the_real_tools_in_order(
     tmp_path: Path, offline_settings: Settings
 ) -> None:
     """The assembled path, offline: one call the researcher was given and one it was not,
-    answered in the order asked. Catches a dispatcher that side-steps the registry (nothing
-    would come back), loses which question produced which result, or runs the turn's calls
-    concurrently — which would spend the search quota in an order no trace can reproduce.
+    dispatched one at a time as the research step dispatches them. Catches a dispatcher that
+    side-steps the registry (nothing would come back) or loses which question produced which
+    result.
+
+    Sequential by construction, which is the property that matters: a budget claim has to sit
+    between one call and the next, so a turn's calls may never be gathered concurrently — that
+    would spend the search quota in an order no trace can reproduce.
 
     No `respx` routes are registered, so a live fall-through fails the test rather than
     quietly spending the free tier."""
     recorded_search(tmp_path / "search")
 
-    outcomes = await dispatch_all(
-        [
+    registry = build_tool_registry(offline_settings)
+    ctx = RunContext()
+    allowed = advertised_tool_names("researcher")
+
+    results = [
+        await dispatch(call, registry=registry, ctx=ctx, allowed=allowed)
+        for call in (
             ToolCall(
                 name="web_search",
                 arguments={"query": QUERY, "source_type": "docs"},
             ),
             ToolCall(name="read_document", arguments={"path": "notes.txt"}),
-        ],
-        registry=build_tool_registry(offline_settings),
-        ctx=RunContext(),
-        allowed=advertised_tool_names("researcher"),
-    )
-
-    assert [outcome.call.name for outcome in outcomes] == ["web_search", "read_document"]
-    assert all(isinstance(outcome, ToolCallOutcome) for outcome in outcomes)
-
-    search, document = outcomes
-    assert search.result.ok is True, search.result.error
-    assert [source.url for source in search.result.data.results] == [DOCS_URL]
-    # Advertised only with an attachment, so without one it is refused before the registry.
-    assert document.result.ok is False
-    assert document.result.error is not None
-    assert document.result.error.code is ErrorCode.UNKNOWN
-
-
-async def test_a_turn_with_no_tool_calls_is_not_a_failure(
-    offline_settings: Settings,
-) -> None:
-    """A model that answered with prose has not broken anything; deciding what to do about
-    it belongs to the research step. Catches a bridge that raises or invents an outcome for
-    an empty turn."""
-    assert (
-        await dispatch_all(
-            [],
-            registry=build_tool_registry(offline_settings),
-            ctx=RunContext(),
-            allowed=advertised_tool_names("researcher"),
         )
-        == []
-    )
+    ]
+
+    search, document = results
+    assert search.ok is True, search.error
+    assert [source.url for source in search.data.results] == [DOCS_URL]
+    # Advertised only with an attachment, so without one it is refused before the registry.
+    assert document.ok is False
+    assert document.error is not None
+    assert document.error.code is ErrorCode.UNKNOWN

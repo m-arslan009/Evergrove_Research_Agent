@@ -166,31 +166,6 @@ async def dispatch(
     return await registry.call(call.name, call.arguments, ctx)
 
 
-async def dispatch_all(
-    calls: Sequence[ToolCall],
-    *,
-    registry: ToolRegistry,
-    ctx: RunContext,
-    allowed: Sequence[str],
-) -> list[ToolCallOutcome]:
-    """Every call from one model turn, in the order it asked for them.
-
-    Sequential, never `asyncio.gather`: the per-run counters (S4) and the monthly search
-    quota are claimed one call at a time, and a run whose tools fire in a different order
-    each time cannot be read back off a trace.
-
-    An empty list in gives an empty list out. A model that answered with prose instead of a
-    tool call has not failed — what the loop does about it is the research step's business.
-    """
-    return [
-        ToolCallOutcome(
-            call=call,
-            result=await dispatch(call, registry=registry, ctx=ctx, allowed=allowed),
-        )
-        for call in calls
-    ]
-
-
 def _menu(allowed: Sequence[str]) -> str:
     """The available-tools sentence, phrased as the registry phrases its own.
 

@@ -89,9 +89,9 @@ async def run_research_step(
 
     **Always returns findings, never raises.** A hop that gathered nothing is still a fact
     about the run, and the failures it collected are what stop the report reading like a
-    confident one. `dispatch_all` is deliberately not used — a budget claim has to sit
-    between one call and the next, so the calls are dispatched one at a time, still strictly
-    in the order the model asked for them.
+    confident one. Calls are dispatched one at a time, never batched: a budget claim has to
+    sit between one call and the next, and they stay strictly in the order the model asked
+    for them.
     """
     settings = settings or get_settings()
     budget = ctx.budget
