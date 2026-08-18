@@ -27,8 +27,8 @@ anything.
 | **Day 3** | S1–S14 implemented and live-verified. **Implementation complete; sign-off deferred to Day 7** — two acceptance runs are owed and banked there, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
-| **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` |
-| **Next task** | **Day 5 T2 — typed inter-agent messages.** The models already exist (`SupervisorDecision`, `ResearchAssignment`, `ResearchFindings`, `AppraisalRequest`, `AppraisalVerdict`) and T1 deliberately changed none of them; T2 is where `AppraisalVerdict` gains `accepted[]` / `rejected[]` / `disagreements[]`. Still owed on Day 5: per-role provider selection (already configurable, needs verifying), appraiser judgement quality, and cross-agent `agent` spans (feature 6). Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
+| **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts |
+| **Next task** | **Day 5 — per-role provider selection** (already configurable, needs verifying) and **cross-agent `agent` spans** (feature 6). Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -53,7 +53,7 @@ present.
 | 2 | Deterministic tools: registry, search, fetch, document readers, SQLite caches, fixtures, tools CLI | **Done** |
 | 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
 | 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
-| 5 | Supervisor + Researcher + Appraiser | **T1 done — the split and the `--mode` switch, offline-verified. T2 (typed messages), appraiser quality and agent spans still to do** |
+| 5 | Supervisor + Researcher + Appraiser | **T1 + T2 done — the split, the `--mode` switch and the typed message contracts, offline-verified. Per-role provider selection and cross-agent `agent` spans still to do** |
 | 6 | MCP server and client, hardening | Not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
@@ -567,8 +567,19 @@ Invariants later work must preserve:
   question.
 - **`ResearchAssignment.max_searches` / `max_fetches` are an allowance, not a ledger.** The live
   counters are `RunContext`'s (S4), in one place, so Day 4 can lift enforcement into hooks.
-- **`AppraisalVerdict` is lean by design.** Day 5 adds `accepted[]`, `rejected[]` and
-  `disagreements[]` as optional fields — additive, not a rewrite.
+- **`AppraisalVerdict` carries the semantic judgement, and it informs without deciding (T2).**
+  `accepted[]`, `rejected[]` and `disagreements[]` were added additively, every one defaulting
+  to `[]`, so a Day 3-shaped reply is still a valid verdict — which matters because this is a
+  constrained-decoding target and a 4B model routinely fills only the fields it understands. A
+  lost default would fail `model_validate_json`, spend `_decode`'s one re-ask, and return
+  `None`, which the loop reads as "the appraiser could not answer" and **stops the run on**.
+  `_stop_after_hop` still reads `sufficient` and `requested_followup` and nothing else, so a
+  verdict that names the wrong sources cannot redirect a run — it can only make the report and
+  the trace more honest. Both consumers render only populated lists: `_appraisal_line` omits an
+  empty segment, `render_research_context` omits the whole heading, because an empty heading in
+  front of the next model invites the invented contradiction the honest empty case exists to
+  avoid. They are `list[str]`, deliberately not URLs — prompt material and a trace line, never a
+  citation menu, since a cited URL must still be in `RunState.evidence_urls` (S9).
 - **`PreviousPreparation` is a summary, not a stored report** (T4). Only what a later session needs
   to continue: the previous goal and objective, `topics_covered`, `topics_deferred`, the source
   URLs, the run id and when it was saved. It lives here rather than in `memory/` because

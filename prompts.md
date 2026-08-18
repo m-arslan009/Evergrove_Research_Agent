@@ -1127,3 +1127,42 @@ Keep both loops, share helpers: `run_agent` stays verbatim as the Day 3 demonstr
 mechanics are extracted so only the ~25-line control skeleton appears twice. Zero regression risk
 to single mode. The `--mode` default lives in the CLI flag and the service parameter only — no
 `AGENT_MODE` setting in `config.Settings` or `.env.example`.
+
+---
+
+`Title`: Day 5 Task 2 — formalize typed inter-agent message contracts
+
+`User prompt`: Implement Day 5 Task 2 by formalizing the communication contracts between the
+Supervisor, Researcher, and Appraiser using typed Pydantic models in `schemas/agents.py`. The
+required inter-agent message concepts are `SupervisorDecision`, `ResearchAssignment`,
+`ResearchFindings`, `AppraisalRequest`, and `AppraisalVerdict`. Their purpose is to make every
+transition between agents explicit, validated, serializable, and traceable rather than relying on
+free-form dictionaries, loosely structured JSON, or agent-specific ad hoc payloads. Preserve the
+architectural rule that the Researcher and Appraiser never communicate directly: the Supervisor
+owns orchestration and must be the component that converts its decision into a
+`ResearchAssignment`, receives `ResearchFindings`, constructs the `AppraisalRequest`, receives the
+`AppraisalVerdict`, and then decides whether to continue or finalize. Reuse existing models or
+fields wherever they already express the required information correctly instead of creating
+duplicate representations. Do not redesign `FocusPreparationReport`, tool I/O schemas, memory
+schemas, tracing schemas, or other unrelated contracts. Add sensible Pydantic validation only
+where it protects a real contract; do not add arbitrary restrictions. Update the three agent
+modules and Supervisor orchestration so these models are actually used at agent boundaries rather
+than merely defined and left unused. LLM structured-output parsing should validate against the
+appropriate message model, and invalid output should continue through the existing retry/error
+handling. Keep all existing tool execution, tracing, memory, budget enforcement, report
+validation, and single-agent behavior intact. The single-agent path may continue using its
+existing internal flow. Add focused tests proving that the message schemas accept valid
+representative payloads, reject materially malformed payloads, and are actually passed between
+Supervisor, Researcher, and Appraiser in the multi-agent flow; verify that no direct
+Researcher-to-Appraiser call path is introduced and that the existing suite remains green.
+
+---
+
+`Title`: Wire the Appraiser's semantic judgement into its consumers, not just the schema
+
+`User prompt`: [Decision taken during planning, in answer to whether T2 should add
+`AppraisalVerdict.accepted[]` / `rejected[]` / `disagreements[]`, given that the five message
+models already existed and were already used at every agent boundary.] Add all three, fully
+wired — the fields go on `AppraisalVerdict` **and** into their consumers (`runtime._appraisal_line`
+for `run_memory`, `prompt_context.render_research_context` for `finalise`), so they are not dead
+fields. Accepted cost: a wider constrained-decoding target for the 4B local model.
