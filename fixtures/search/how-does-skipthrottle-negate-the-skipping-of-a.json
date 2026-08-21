@@ -1,0 +1,23 @@
+{
+  "query": "how does @skipthrottle() negate the skipping of a route in a class according to the nestjs rate-limiting documentation",
+  "source_type": "general",
+  "recorded_from": "serpapi",
+  "note": "Captured live during the Day 4/5 end-to-end demo run, in the same session as the call.",
+  "results": [
+    {
+      "url": "https://docs.nestjs.com/security/rate-limiting",
+      "title": "Rate Limiting | NestJS - A progressive Node.js framework",
+      "snippet": "This @SkipThrottle() decorator can be used to skip a route or a class or to negate the skipping of a route in a class that is skipped."
+    },
+    {
+      "url": "https://github.com/nestjs/throttler",
+      "title": "nestjs/throttler: A rate limiting module for ...",
+      "snippet": "The @SkipThrottle() decorator can also be used to negate the skipping of a route in a class that is already skipped: @SkipThrottle({ default: true })"
+    },
+    {
+      "url": "https://medium.com/@Xfade/rate-limiting-using-throttler-in-nest-js-fb74b6661050",
+      "title": "Rate Limiting Using Throttler In Nest Js | by Fadi Mohsen",
+      "snippet": "if you want to Skip some modules from Rate limiting then you need to specify SkipThrottle() function. Now the rate limit will not apply to any of this ..."
+    }
+  ]
+}

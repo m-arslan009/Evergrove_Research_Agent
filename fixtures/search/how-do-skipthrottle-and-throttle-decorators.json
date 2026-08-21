@@ -1,0 +1,23 @@
+{
+  "query": "how do @skipthrottle() and @throttle() decorators customize rate limits per controller or route handler in @nestjs/throttler",
+  "source_type": "docs",
+  "recorded_from": "serpapi",
+  "note": "Captured live during the Day 4/5 end-to-end demo run, in the same session as the call.",
+  "results": [
+    {
+      "url": "https://docs.nestjs.com/security/rate-limiting",
+      "title": "Rate Limiting | NestJS - A progressive Node.js framework",
+      "snippet": "This @SkipThrottle() decorator can be used to skip a route or a class or to negate the skipping of a route in a class that is skipped. Any @SkipThrottle() ..."
+    },
+    {
+      "url": "https://bhargavacharyb.medium.com/nestjs-13-unleash-maximum-performance-with-rate-limiting-in-nestjs-33526c446159",
+      "title": "(NestJS-13) Unleash Maximum Performance with Rate ...",
+      "snippet": "If you want to skip rate limiting for all routes inside a controller, you can use @SkipThrottle() directly on the controller: import ..."
+    },
+    {
+      "url": "https://github.com/nestjs/throttler",
+      "title": "nestjs/throttler: A rate limiting module for ...",
+      "snippet": "Throttler ensures that users can only make limit requests per ttl to each endpoint. you can use the @SkipThrottle() decorator to negate the throttler for an ..."
+    }
+  ]
+}

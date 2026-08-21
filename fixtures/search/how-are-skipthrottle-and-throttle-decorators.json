@@ -1,0 +1,23 @@
+{
+  "query": "how are @skipthrottle and @throttle decorators configured and used in @nestjs/throttler",
+  "source_type": "docs",
+  "recorded_from": "serpapi",
+  "note": "Captured live during the Day 4/5 end-to-end demo run, in the same session as the call.",
+  "results": [
+    {
+      "url": "https://docs.nestjs.com/security/rate-limiting",
+      "title": "Rate Limiting | NestJS - A progressive Node.js framework",
+      "snippet": "Any @SkipThrottle() decorator can be used to bypass throttling for specific routes or methods. It accepts an optional boolean parameter, which defaults to true"
+    },
+    {
+      "url": "https://github.com/nestjs/throttler",
+      "title": "nestjs/throttler: A rate limiting module for ...",
+      "snippet": "both the @SkipThrottle() and @Throttle() decorators must be provided with an object where keys are the names of your throttlers."
+    },
+    {
+      "url": "https://www.telerik.com/blogs/rate-limiting-nestjs-using-throttler",
+      "title": "Rate Limiting in NestJS Using Throttler",
+      "snippet": "The SkipThrottle decorator allows us to disable rate limiting again, either on the controller or route level. It expects an object whose keys ..."
+    }
+  ]
+}
