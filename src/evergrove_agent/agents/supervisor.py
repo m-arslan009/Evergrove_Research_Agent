@@ -45,6 +45,7 @@ from evergrove_agent.agents.appraiser import judge_sufficiency
 from evergrove_agent.agents.prompt_context import (
     max_topics_for,
     render_continuation_note,
+    render_missing_context,
     render_previous_preparation,
     render_progress,
     render_research_context,
@@ -205,6 +206,13 @@ async def finalise(
     continuation = render_continuation_note(state.previous)
     if continuation:
         opening.append(Message(role="user", content=continuation))
+    # Third and last of the conditional opening turns, and it rides in the opening for the
+    # reason the other two do: every rung of the retry ladder must argue with a model that
+    # was told the task is underspecified. A correction attempt that lost this instruction
+    # would be free to invent exactly what the run stopped in order not to invent.
+    gaps = render_missing_context(state.missing_context)
+    if gaps:
+        opening.append(Message(role="user", content=gaps))
 
     messages = list(opening)
     attempts = settings.max_output_retries
@@ -387,6 +395,15 @@ def _apply_bookkeeping(
     read them.
     """
     unknowns = list(report.unknowns)
+    # What the task never said, recorded whatever the model wrote. The same stance the stop
+    # note takes and for the same reason: the instruction to report these is a request, and a
+    # request a model declined must not be the only thing standing between a user and the
+    # fact that this plan was built without knowing their setup. Prepended after the note, so
+    # the six-item cap keeps the most load-bearing lines rather than the model's own.
+    for gap in reversed(state.missing_context):
+        line = f"Not stated in the task, so this plan does not assume it: {gap}"
+        if line not in unknowns:
+            unknowns = ([line] + unknowns)[:6]
     if note and note not in unknowns:
         unknowns = ([note] + unknowns)[:6]
 
@@ -499,6 +516,16 @@ async def run_supervised(
                 if decision is None:
                     stop = "planner_unavailable"
                     break
+                # Before the FINALISE check, so a decision that names missing context stops
+                # the run whichever action it carried. Recorded on the state rather than
+                # passed to `finalise`, which reads it from the same object it already has.
+                unsupported = _stop_for_missing_context(decision)
+                if unsupported is not None:
+                    state.missing_context = list(decision.missing_context) or [
+                        UNSPECIFIED_SITUATION
+                    ]
+                    stop = unsupported
+                    break
                 if decision.action == "FINALISE":
                     stop = "planner_finalised"
                     break
@@ -556,6 +583,11 @@ def _decision_summary(decision: SupervisorDecision | None) -> str:
     """
     if decision is None:
         return "no decision: the planner could not answer"
+    if decision.missing_context:
+        # Recorded ahead of the action, because it is what the run actually did: a decision
+        # naming missing context never becomes a hop whatever its `action` said, and a trace
+        # showing `RESEARCH` for a run that researched nothing describes the wrong run.
+        return "declined to guess; not stated: " + "; ".join(decision.missing_context)
     return f"{decision.action}: {decision.research_question or '(no question)'}"
 
 
@@ -657,6 +689,47 @@ def _verdict_summary(verdict: AppraisalVerdict | None) -> str:
         f"sufficient={verdict.sufficient}, accepted={len(verdict.accepted)}"
         + (f", follow-up: {followup}" if followup else "")
     )
+
+
+def _stop_for_missing_context(decision: SupervisorDecision) -> StopReason | None:
+    """Whether the planner declined to guess, in which case no worker is given the task.
+
+    **This is the whole of the fix for assumption-based research, and it is deliberately in
+    code rather than in a prompt.** `plan.md` asks the planner not to invent a setting the
+    task never stated; this is what makes the refusal *binding*. A decision that names
+    missing context never reaches `_assign`, so it cannot become a `ResearchAssignment`, a
+    `web_search` query, a set of sources, or a report written as though the guess were given.
+
+    Read **regardless of `action`**, and that asymmetry is the point. A model that fills
+    `missing_context` and still answers `RESEARCH` has told us two things and only one of
+    them is safe to act on: the honest half wins, because the cost of stopping is a report
+    that says what it needs, while the cost of continuing is a plan built on a premise
+    nobody supplied. The run still finalises — `unknowns` carries the gap — so nothing is
+    lost except a hop that would have researched the wrong question.
+
+    **Either signal is enough.** `context_check == "MISSING"` and a non-empty
+    `missing_context` are one judgement expressed twice, and a model that answers only one of
+    them has still answered. Requiring both would discard the honest half of a reply for
+    being incomplete — and it is the *list* a small model drops, which is why the binary is
+    the one that must not be ignored.
+
+    `ENOUGH` with nothing listed is the ordinary case, which is what keeps every
+    well-specified task on exactly the path it took before this existed.
+    """
+    if decision.context_check == "MISSING" or decision.missing_context:
+        return "missing_context"
+    return None
+
+
+UNSPECIFIED_SITUATION = (
+    "what this task applies to — the situation it is about was never described"
+)
+"""What a run reports when the planner said `MISSING` but listed nothing.
+
+A neutral statement of the shape of the gap, never a guess at its content: it says only that
+something was not described, which is exactly what the model told us. The alternative is a
+report that stops without saying why, and "the run declined to guess" is not information a
+user can act on."""
 
 
 def _stop_before_planning(state: RunState, budget: RunBudget) -> StopReason | None:

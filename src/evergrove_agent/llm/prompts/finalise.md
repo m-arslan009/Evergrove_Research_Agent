@@ -35,7 +35,12 @@ Session length: {session_minutes} minutes
 - `practice` is one concrete thing to do in the remaining minutes, with an outcome the
   user can check themselves.
 - `success_criteria` is how the user knows the session worked. One sentence.
-- `assumptions` records what you assumed about the user's starting point.
+- `assumptions` records what you assumed about the user's starting point. Anything the
+  task did not state and the research did not establish belongs here or in `unknowns` —
+  never inside `interpreted_goal`, `session_objective`, `topics_to_cover`, `practice` or
+  `success_criteria`, where the user reads it as a description of their own situation. Do
+  not narrow the task by choosing a platform, a language, a framework, a protocol, a vendor
+  or an architecture for them; narrow it by scope instead.
 - `unknowns` records what you could not establish: whatever the research section reports
   as still missing, and anything a failed tool prevented. When no research was performed,
   this must not be empty — say plainly that the plan rests on model knowledge alone.

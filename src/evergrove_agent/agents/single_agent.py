@@ -81,6 +81,8 @@ from evergrove_agent.agents.supervisor import (
     _outstanding_followup,
     _stop_after_hop,
     _stop_before_planning,
+    _stop_for_missing_context,
+    UNSPECIFIED_SITUATION,
     decide_next_step,
     finalise,
 )
@@ -188,6 +190,16 @@ async def run_agent(
                 )
                 if decision is None:
                     stop = "planner_unavailable"
+                    break
+                # Shared with `run_supervised` rather than restated: one agent performing
+                # every stage must decline to guess on exactly the same terms as a
+                # Supervisor briefing a Researcher.
+                unsupported = _stop_for_missing_context(decision)
+                if unsupported is not None:
+                    state.missing_context = list(decision.missing_context) or [
+                        UNSPECIFIED_SITUATION
+                    ]
+                    stop = unsupported
                     break
                 if decision.action == "FINALISE":
                     stop = "planner_finalised"

@@ -461,6 +461,10 @@ _STOP_CAUSES: dict[str, str] = {
     ),
     "planner_unavailable": "the planning step could not produce a usable decision",
     "appraiser_unavailable": "the sufficiency judgement could not be completed",
+    "missing_context": (
+        "the task does not say enough to research it without guessing, and guessing "
+        "would have sent this session to material about someone else's setup"
+    ),
 }
 """Why a run stopped, for the stops that mean the research was cut short.
 
@@ -508,6 +512,56 @@ def render_stop_reason(reason: str, *, exhausted: Sequence[str] = ()) -> str:
     if limits:
         sentence += f", and this run ran out of {_join(limits)}"
     return sentence + "."
+
+
+def render_missing_context(missing: Sequence[str]) -> str:
+    """The report's instruction for a run that stopped rather than guess.
+
+    A third extra `Message`, for the third time and the same reason: `finalise.md`'s five
+    placeholders are frozen, so anything conditional rides in as a turn rather than as a
+    sixth placeholder. Empty when nothing is missing, and then no message is appended at all.
+
+    The instruction is the hard half of the fix at the report stage. The planner has already
+    refused to invent the setting; this is what stops `finalise` inventing it a second time,
+    with the whole report as the surface to do it on. It asks for a plan that is *true
+    whatever the answer turns out to be* — which is a real, useful session for an
+    underspecified task — rather than an empty report or a plan for a guessed setup.
+
+    `_apply_bookkeeping` writes the same items into `unknowns` in code, so this message is
+    the model's chance to write a better plan around them, never the only thing that makes
+    the gap visible. That division is the one `render_stop_reason` already uses: ask, and
+    also record, because a model may ignore the ask and a degraded run must not read like a
+    confident one.
+    """
+    if not missing:
+        return ""
+    return "\n".join(
+        [
+            "This task does not say the following, and nothing that was read establishes it:",
+            *_bullets(list(missing)),
+            "",
+            _FINALISE_MISSING_CONTEXT,
+        ]
+    )
+
+
+_FINALISE_MISSING_CONTEXT = (
+    "No research was performed, because researching a guess would have been worse than "
+    "researching nothing. Do not decide any of those points yourself: naming a platform, a "
+    "framework, a protocol, a vendor or an architecture that the task never mentioned would "
+    "present a guess as the user's own situation. Record each of them in `unknowns`, saying "
+    "what you would need to know. Then plan the session that is genuinely useful without "
+    "them — what holds whatever the answer turns out to be, or the work of establishing "
+    "those points — and put anything you had to suppose in `assumptions`, never inside "
+    "`interpreted_goal`, `topics_to_cover` or `practice` as though it were given."
+)
+"""The report's half of the missing-context instruction.
+
+It names the three fields explicitly because those are where an assumption does the damage:
+a guess in `unknowns` is honest, the same guess in `interpreted_goal` is a false premise the
+user reads as their own words. The escape — plan what holds regardless — is what keeps this
+from producing an empty report, which would be its own failure mode.
+"""
 
 
 def render_continuation_note(previous: PreviousPreparation | None) -> str:

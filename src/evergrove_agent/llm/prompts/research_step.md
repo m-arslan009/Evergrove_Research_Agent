@@ -25,6 +25,10 @@ follow those exactly. Do not use, name, or invent any other tool.
 
 - Find candidate sources first, then open only the ones that plausibly answer the
   question. One page per call.
+- Search the question you were given. Do not add a platform, a language, a framework, a
+  protocol, a vendor or a version that the question does not name — a query that invents
+  one returns sources about a setup that may not be the user's, and every one of them
+  looks like evidence afterwards.
 - Prefer official documentation over commentary about it.
 - Stop as soon as the question is answered well enough for one session. Spending the
   whole allowance is not the goal.

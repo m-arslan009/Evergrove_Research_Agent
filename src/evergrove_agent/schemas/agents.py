@@ -32,11 +32,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evergrove_agent.schemas.report import SourceAuthority
 from evergrove_agent.schemas.task import TaskContext
 from evergrove_agent.schemas.tools import SearchSourceType, ToolError
+
+ContextCheck = Literal["ENOUGH", "MISSING"]
+"""Whether the task says enough to be researched at all.
+
+A separate answer from `AgentAction` on purpose. "What do I do next" and "do I have enough
+to do anything" are two questions, and collapsing them into a three-valued action would put
+them in one token — which is exactly the decode order that made a small model commit to
+`RESEARCH` before it had considered whether the task supported one."""
 
 AgentAction = Literal["RESEARCH", "FINALISE"]
 """What the planner decided to do next. Two values on purpose: every other outcome —
@@ -109,29 +117,145 @@ class SupervisorDecision(BaseModel):
     """MODEL OUTPUT. `decide_next_step()` → research something, or write the report.
 
     Becomes `supervisor.decide()`'s return value on Day 5, unchanged.
+
+    **The field order is behaviour rather than style: think, then admit, then act.**
+    Declaration order becomes property order in `model_json_schema()`, which becomes decode
+    order under both Ollama's `format=` and Gemini's `responseSchema` — the model emits these
+    keys in the order they appear, and each one is committed before the next is written. So
+    the order is the reasoning procedure:
+
+    1. `reasoning` — work out what the task is asking, with nothing yet committed;
+    2. `missing_context` — name anything only the user could supply;
+    3. `action`, `research_question`, `source_preference` — decide, now that both are known.
+
+    Both earlier orders were measured against `qwen3:4b` and both failed. With `action`
+    first, the model committed to `RESEARCH` before reaching the field where it could say
+    the task was underspecified, then wrote a question that supplied the missing detail
+    itself. Moving `missing_context` to the front only inverted the problem: it answered the
+    hardest question as its very first token, defaulted to `[]`, and explained afterwards
+    that the task was "too vague to start planning". Do not reorder these fields.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    reasoning: str = Field(
+        max_length=1600,
+        description="Think here first, before filling anything below, and reach a "
+        "conclusion. In at most three short sentences: what is this task asking, is any "
+        "part of it something only this user could tell you rather than something a page "
+        "could, and what will you therefore do? Do not spend this space restating the "
+        "earlier session.",
+    )
+    """Declared first, and it is the model's working space rather than a comment on a
+    decision already made.
+
+    No `min_length`: a terse model must not fail validation and burn a retry over brevity.
+    The field is still required, so the trace always has a reason.
+
+    **It moved to the front because a constrained decode has no scratch pad.** With this
+    field last, `qwen3:4b` emitted `missing_context: []` as the very first token of its
+    answer — before it had written a word of analysis — and only afterwards explained, in
+    `reasoning`, that the task was "too vague to start planning" and that "any plan would be
+    speculative". The model was not wrong about the task; it was answering the hardest
+    question first and the easiest question last. Deliberating here, then answering, is what
+    makes the rest of the object follow from the analysis instead of preceding it.
+
+    **The bound went 400 → 800 → 1600 for the same reason.** Constrained decoding enforces
+    `maxLength` by stopping, so the limit is a guillotine rather than a hint: on a
+    continuation task the model spent 400 characters restating the recalled preparation and
+    was cut off mid-sentence at *"the task description says 'Continue my previous research
+    for my application' but does not re"* — exactly one clause short of its own conclusion,
+    which then arrived as an empty `missing_context`. A deliberation field has to be long
+    enough to finish deliberating; the description now also tells it not to spend the space
+    summarising what it was already shown. 800 was still not enough — the same model was cut
+    off mid-analysis twice more at that bound, both times on a continuation, because a
+    recalled preparation gives it more to restate. The field is bounded to stop a runaway
+    generation, not to ration thought, and 1600 is roughly twice what this model writes
+    unprompted.
+    """
+
+    context_check: ContextCheck = Field(
+        default="ENOUGH",
+        description="ENOUGH when the task names a subject you can go and read about. "
+        "MISSING when any part of it could only be answered by this user — what they "
+        "built, what they run it on, what they already have, what they want. Answer this "
+        "before choosing an action.",
+    )
+    """The checkpoint between thinking and deciding, and the reason it is a `Literal`.
+
+    `missing_context` alone was not enough. Given room to think, `qwen3:4b` reached the
+    right conclusion in prose — *"since the task does not mention the user's application
+    details, the case is missing context"* — and then emitted `missing_context: []` in the
+    very next field. Naming a gap in a list is a generative act a model can simply decline
+    to perform; choosing between two tokens is not. `AppraisalVerdict` already carries this
+    shape for the same reason: `sufficient` decides, `accepted`/`rejected` explain.
+
+    Defaulted to `ENOUGH`, so a reply that omits it is the ordinary researched run and every
+    pre-existing scripted decision still validates. The loop stops on **either** signal
+    (`supervisor._stop_for_missing_context`), because a model that says `MISSING` and lists
+    nothing has still said the thing that matters.
+    """
+
+    missing_context: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Details about the user's own situation that the task never stated and "
+        "that no page could tell you — what they built, what they run it on, what they "
+        "already have. One short phrase each, naming the missing detail rather than asking "
+        "a question. Fill this instead of guessing a value for it. Leave empty when the "
+        "task names a subject that can be researched exactly as written.",
+    )
+    """The planner's way of saying "I cannot narrow this without inventing something".
+
+    **Additive and defaulted**, the same shape `AppraisalVerdict.accepted` took in T2: this
+    is a constrained-decoding target, and a reply that omits the field entirely — which a
+    4B model routinely produces — must still validate. A lost default would fail
+    `model_validate_json`, spend `_decode`'s one re-ask and return `None`, which the loop
+    reads as `planner_unavailable` and stops the run on.
+
+    It exists because the two-value `AgentAction` had no way to express the third real
+    outcome. `plan.md` asks for a question "small enough to matter inside {session_minutes}
+    minutes", and narrowing a task whose setting was never stated is only possible by
+    supplying that setting — so the prompt's own quality bar manufactured the invention this
+    field lets the model decline. **Non-empty means the run stops before a worker is given
+    the assignment** (`supervisor._stop_for_missing_context`); the items reach the user
+    through `unknowns`, which is the mechanism that already exists for what a run could not
+    establish. It is deliberately not a fourth `AgentAction`: widening a `Literal` a small
+    model decodes into is a far bigger change to that model's behaviour than a list it may
+    leave empty.
+    """
+
+    @field_validator("missing_context", mode="after")
+    @classmethod
+    def _tidy_missing_context(cls, items: list[str]) -> list[str]:
+        """Strip, drop blanks, bound each item, and dedupe — never reject.
+
+        A model asked for "short phrases" will sometimes answer with an empty string, a
+        sentence, or the same gap twice. None of those is worth a retry: the loop only needs
+        to know *whether* anything is missing and what to tell the user, and a validation
+        error here costs a model call to re-ask a question the reply already answered.
+        """
+        seen: list[str] = []
+        for item in items:
+            cleaned = " ".join(item.split())[:160]
+            if cleaned and cleaned not in seen:
+                seen.append(cleaned)
+        return seen[:4]
 
     action: AgentAction
     research_question: str | None = Field(
         default=None,
         max_length=300,
         description="Required when action is RESEARCH: the one question this hop should "
-        "answer, narrow enough to fit the session.",
+        "answer, narrow enough to fit the session. It must be answerable by reading a "
+        "page. Never ask here for something only the user could tell you — that belongs "
+        "in missing_context.",
     )
     source_preference: SearchSourceType = Field(
         default="general",
         description="What kind of source this question wants. Passed straight to "
         "web_search as source_type.",
     )
-    reasoning: str = Field(
-        max_length=400,
-        description="One line on why. Read by a human in the trace, never parsed.",
-    )
-    """No `min_length`: a terse model must not fail validation and burn a retry over
-    brevity. The field is still required, so the trace always has a reason."""
-
     @model_validator(mode="after")
     def _research_needs_a_question(self) -> SupervisorDecision:
         """A hop without a question would reach `web_search` as a blank query — a wasted
@@ -540,6 +664,19 @@ class RunState(BaseModel):
     validation_errors: list[str] = Field(default_factory=list, max_length=20)
     """What `validate_report` rejected on the previous attempt, quoted back into the
     retry prompt by S10. Empty on a first attempt."""
+    missing_context: list[str] = Field(default_factory=list, max_length=4)
+    """What the planner said the task does not state, when that is why the run stopped.
+
+    Additive and defaulted, so no construction site moved. It lives on the state rather than
+    travelling as a `finalise` parameter for the reason `previous` does: the stage that reads
+    it already receives this object, and "what this run knows" has one home. Keeping
+    `finalise`'s signature frozen also matters more than usual here — `main.py` and four test
+    modules call it, and a new required argument would churn all of them to carry a value
+    that is empty on almost every run.
+
+    Empty is the ordinary case and must stay indistinguishable from before: a task that
+    could be researched as written, a run that stopped for any other reason, and a planner
+    that never filled the field all arrive here as `[]`."""
 
     @property
     def all_sources(self) -> tuple[GatheredSource, ...]:

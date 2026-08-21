@@ -7,6 +7,7 @@ and schemas depends on nothing (plan section 19).
 from evergrove_agent.schemas.agents import (
     AcceptedSource,
     AgentAction,
+    ContextCheck,
     AppraisalRequest,
     AppraisalVerdict,
     GatheredSource,
@@ -36,6 +37,7 @@ from evergrove_agent.schemas.tools import (
 __all__ = [
     "AcceptedSource",
     "AgentAction",
+    "ContextCheck",
     "AppraisalRequest",
     "AppraisalVerdict",
     "ErrorCode",

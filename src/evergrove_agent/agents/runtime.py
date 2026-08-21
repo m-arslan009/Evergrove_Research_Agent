@@ -71,6 +71,7 @@ StopReason = Literal[
     "thin_evidence",
     "planner_unavailable",
     "appraiser_unavailable",
+    "missing_context",
 ]
 """Why the loop stopped. Read by `render_stop_reason`, which decides which of these are
 worth telling the user about — the first two mean the run finished, the rest mean it was
@@ -79,7 +80,13 @@ cut short.
 `thin_evidence` (T5) is the one that is easy to misread: the Appraiser said *sufficient*, but
 accepted fewer than two sources, so the plan's stop condition was not actually met. It is a
 cut-short reason rather than a finished one on purpose — a session planned on one accepted
-source must not read like a session planned on a body of evidence."""
+source must not read like a session planned on a body of evidence.
+
+`missing_context` is the newest, and it is the only one that stops a run *before* any
+evidence is gathered on purpose rather than by exhaustion: the planner said the task cannot
+be narrowed without inventing a detail nobody supplied. Reaching the Researcher anyway would
+turn that invention into a query, then into sources, then into a plan — so the run stops and
+the gap is reported instead."""
 
 
 class PreparationFailed(RuntimeError):
