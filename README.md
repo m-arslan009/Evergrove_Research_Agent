@@ -137,7 +137,7 @@ missing is those two runs, memory, tracing, the supervisor/worker split, and the
 | 3 | Single research agent — the core loop | **S1–S14 done and live-verified** — sign-off pending 2 more acceptance runs |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
-| 6 | MCP server, MCP client, hardening | Not started |
+| 6 | MCP server, MCP client, hardening | **Server, both clients and report storage done** — hardening, `--offline` and path safety not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
 Day 3's subtasks are all implemented. S14's live verification found and fixed five defects the
@@ -175,7 +175,7 @@ docs/                  research-agent-context.md — the implementation context
 .githooks/pre-push     ruff, then the offline suite
 ```
 
-Not present yet: `service.py`, `evals/`, `scripts/`, `.mcp.json`.
+Not present yet: `evals/`.
 
 ## Prerequisites
 
@@ -458,13 +458,35 @@ no report may cite a handwritten fixture.
 
 ## MCP
 
-> **TODO (Day 6):** an MCP server exposing one resource
-> (`evergrove://preparation/{run_id}`) and one tool (`prepare_focus_session`), a
-> `.mcp.json` for Claude Code, and a ~40-line custom stdio client in
-> `scripts/mcp_demo_client.py`. The server is a thin wrapper over `service.py` — if it
-> grows past 100 lines, logic has leaked into it. The `mcp` SDK is deliberately not a
-> dependency yet; its 2.x server API differs from the 1.x examples most tutorials show,
-> so the version gets pinned and the installed package's own quickstart gets read first.
+The whole capability is reachable from any MCP client. `src/evergrove_agent/mcp/server.py`
+is a thin wrapper over `service.py` — 52 lines of code — and holds no research logic.
+
+```
+uv run evergrove-mcp                                  # the server, speaking MCP on stdio
+uv run python scripts/mcp_demo_client.py              # list the surface, read the last report
+uv run python scripts/mcp_demo_client.py --task "Learn PostgreSQL indexing"
+```
+
+The demo client with no `--task` needs no model, no network and no waiting: it lists what the
+server exposes and reads the most recent stored preparation. With `--task` it does the full
+round trip — call the tool, take the `run_id` off the report, read that preparation back.
+
+| Surface | What it is |
+| --- | --- |
+| **Tool** `prepare_focus_session` | `(task_title, session_minutes=25, task_description=None, attachment_path=None)` → `FocusPreparationReport`. Calls the same `service.prepare_focus_session` the CLI does. Its input schema is generated from `TaskContext` and its output schema from the report model, so the CLI and MCP describe one thing. |
+| **Resource** `evergrove://preparation/{run_id}` | The stored report for that run, as JSON. |
+| **Resource** `evergrove://task/current` | The most recently stored report, so a client with no run id has an entry point. |
+
+`.mcp.json` in this directory points Claude Code at the same server; open Claude Code on the
+`Research Agent` directory so `uv run` resolves this project.
+
+Storage: a completed report is written whole to `prep_report` by the existing
+`save_preparation` tool, beside the lossy summary `prep_memory` keeps for continuation. The
+two answer different questions on different keys — see `memory/report_store.py`. Reports
+produced before this existed are not readable through the resource.
+
+> **Still Day 6's, not done here:** the graceful-degradation matrix, the `--offline` flag,
+> attachment path-safety hardening, and the optional FastAPI wrapper.
 
 ## Memory
 

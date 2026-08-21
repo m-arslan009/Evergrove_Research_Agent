@@ -1399,3 +1399,19 @@ keyword-specific rules for particular technologies; the solution must work acros
 Verify with focused automated tests first, then the minimum real-model runs needed to check
 insufficient context, complete standalone research, continuation with missing information,
 continuation after clarification, and insufficient research evidence.
+
+`Title`: Day 6 — MCP server exposing the research agent as one tool and one resource
+`User prompt`: Add an MCP server with at least one useful tool and one useful resource,
+integrated cleanly with the existing research agent. Core requirements: MCP must expose
+existing research-agent capability rather than duplicate agent/research logic. Provide at
+least one MCP tool that can trigger the preparation workflow. Provide at least one MCP
+resource that exposes a meaningful stored result from that workflow. Reuse the current
+service and domain models wherever appropriate. If existing persistence is insufficient for
+the resource, make the smallest clean change in the correct layer rather than putting
+storage logic inside the MCP server. Keep the MCP layer thin and architecture-consistent. Do
+not break the current CLI, agent flows, memory, tracing, validation, or tests. Use the
+appropriate MCP SDK/API for the repository's environment and verify against the
+installed/current package instead of relying on outdated examples. Add focused automated
+tests for the MCP server behavior using the existing test/fake infrastructure where possible.
+Do not run slow local-model or live-search tests unless genuinely necessary. Keep the
+implementation minimal and let the existing architecture drive the exact design.
