@@ -1,9 +1,10 @@
-"""Persistent preparation memory and session memory (Day 4 T4).
+"""Persistent preparation memory, the stored report, and session memory (Day 4 T4, Day 6).
 
-Two tables, two jobs, one suite — because the thing worth protecting is the *boundary*
-between them: `prep_memory` survives runs and is found by a normalised task key, while
-`run_memory` belongs to one run and describes its hops. A change that let either answer the
-other's question would be the expensive failure here, and it would not show up in a report.
+Three tables, three jobs, one suite — because the thing worth protecting is the *boundary*
+between them: `prep_memory` survives runs and is found by a normalised task key,
+`report_store` keeps one finished report whole and is found by its run id, and `run_memory`
+belongs to one run and describes its hops. A change that let any of them answer another's
+question would be the expensive failure here, and it would not show up in a report.
 
 What is deliberately not tested: `RunMemoryRecord`'s field access, the JSON encode/decode of a
 list, Pydantic validating its own bounds, and schema creation — `test_db.py` already proves the
@@ -23,7 +24,7 @@ from typing import Any
 import pytest
 
 from evergrove_agent.config import Settings
-from evergrove_agent.memory import db, prep_memory, run_memory
+from evergrove_agent.memory import db, prep_memory, report_store, run_memory
 from evergrove_agent.schemas import FocusPreparationReport
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -225,6 +226,46 @@ def test_an_unreadable_row_degrades_to_the_next_one(
 
     assert recalled is not None
     assert recalled.run_id == "run_older"
+
+
+# --- the stored report ------------------------------------------------------------------------
+
+
+def test_a_stored_report_round_trips_whole(
+    connection: sqlite3.Connection, report: FocusPreparationReport
+) -> None:
+    """Save then read returns the identical report, `HttpUrl` resources included.
+
+    Catches the one trap this table has: `Resource.url` is an `HttpUrl`, not a `str`, so a
+    write that reached for `model_dump()` and the stdlib encoder would raise on every report
+    that cites a source — which is every report worth storing. It also pins the difference
+    from `prep_memory`, whose summary drops `practice`, `success_criteria` and the resource
+    titles; a reader asking for a preparation must get back what was produced, not a digest
+    of it.
+    """
+    report_store.save_report(connection, report=report, now=NOW)
+
+    assert report_store.get_report(connection, report.run_id) == report
+    assert report_store.latest_report(connection) == report
+
+
+def test_an_unreadable_stored_report_is_absent_rather_than_fatal(
+    connection: sqlite3.Connection, report: FocusPreparationReport
+) -> None:
+    """A row an older build wrote reads as `None`, not an exception.
+
+    The MCP resource turns `None` into an honest "nothing is stored under that id". Letting a
+    stale row raise instead would make one unreadable report look like a broken server.
+    """
+    report_store.save_report(connection, report=report, now=NOW)
+    connection.execute(
+        "UPDATE prep_report SET report_json = 'not json' WHERE run_id = ?",
+        (report.run_id,),
+    )
+    connection.commit()
+
+    assert report_store.get_report(connection, report.run_id) is None
+    assert report_store.get_report(connection, "run_never") is None
 
 
 # --- session memory ---------------------------------------------------------------------------
