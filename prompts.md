@@ -1339,3 +1339,63 @@ correctly. Avoid unnecessary slow live LLM or SerpAPI runs unless a cleanup chan
 requires them. If any cleanup causes a regression, restore or correct the affected code rather than
 accepting reduced functionality. The final state must be functionally equivalent to the current
 working system, only cleaner and easier to maintain.
+
+`Title`: One narrated end-to-end demo of the current research agent
+`User prompt`: Run one complete end-to-end demo of the current research agent and make the
+execution visibly understandable in the terminal as it happens. Use the fastest currently
+supported real configuration that preserves the actual agent architecture and behavior; prefer
+the hosted provider over a long local Ollama run if the project already supports it. Do not
+introduce a new provider or bypass the agent flow just to make the demo faster. Use a realistic
+user question and session duration and run through the normal supported entry point exactly as a
+user would: the user provides a question, the system creates a run/session, the Supervisor
+interprets and narrows the goal, the Researcher searches and reads sources through the real
+tools, the Appraiser judges the evidence, any required evidence-driven follow-up hop occurs, the
+Supervisor finalises the preparation, validation runs, and the completed focus session is saved
+and shown to the user. The terminal output must remain visibly active throughout so nobody
+assumes the agent has frozen; show the question, duration, run_id, current agent/stage, hop
+number, Supervisor action, Researcher activity, each real tool call and whether it succeeded,
+source titles/URLs, Appraiser verdict, finalisation, validation, saving and completion, with
+timestamps or elapsed durations where the tracing implementation provides them. Do not print
+hidden chain-of-thought, keys, environment variables, full prompts or full downloaded pages.
+Make the Day 4 and Day 5 architecture clearly visible: the parent-child tracing structure for
+Supervisor -> Researcher -> tool calls and Supervisor -> Appraiser, using the actual stored
+run_id, span_id and parent_span_id, with Researcher tool calls beneath the correct Researcher
+span, no direct worker-to-worker communication, and control returning through the Supervisor.
+Demonstrate session memory naturally rather than forcing a second hop. At the end print the
+resulting focus preparation prominently in a demo-friendly user view, then render the stored
+trace for the same run_id as a concise tree from the real recorded rows. Perform one meaningful
+real E2E run only; reuse existing fast tests or evidence for supporting checks, and do not run
+the full test suite unless a failure requires a targeted check. If the real run fails, use its
+existing logs/trace to identify the exact failure and make only the smallest correction required
+for already-supported functionality. If progress visibility is insufficient, make the smallest
+safe progress-display improvement without changing agent decisions, architecture, output schemas
+or the final report. Finish with a compact demo summary and a PASS or FAIL verdict.
+
+`Title`: Fix assumption-based research: the agent must not turn missing context into facts
+`User prompt`: Analyze and fix a general behavior problem in the research agent. After a
+completed research session, a continuation that intentionally did not provide the
+application type, framework, backend, architecture or authentication protocol caused the
+agent to start searching for "the official procedure for securely rotating JWT access and
+refresh tokens in a web application using OAuth 2.0" — inventing two important facts, that
+this is a web application and that OAuth 2.0 is being used. This is not a JWT-specific
+issue; fix the general behavior. The agent must only use information grounded in current
+user input, valid recalled previous preparation, attachments, and evidence actually
+discovered during research. It must not turn assumptions into facts. If important context
+required for meaningful research is missing, the Supervisor should not send an
+assumption-based task to the Researcher; it should stop honestly and return the missing
+information through the existing unknowns/assumptions mechanism. "Improve my application"
+must not become "How to improve React web application performance" unless React/web was
+actually provided, but a complete task such as "Learn how PostgreSQL B-tree indexes work"
+should research immediately without unnecessary clarification. Continuation behavior
+matters too: a continuation should recall the previous preparation, keep the already
+completed work, recognize that application-specific details are missing, and report what
+additional context is required instead of inventing it; once the user supplies the missing
+details, the next run should reuse the previous work, use the new context, avoid repeating
+already-covered material, and continue from the unresolved part. Inspect the code and
+determine the real root cause before fixing it — the Supervisor prompt and decision flow,
+memory injection, Researcher assignment generation, and whether the control flow allows
+missing context to become an unsupported research assumption. Do not implement
+keyword-specific rules for particular technologies; the solution must work across domains.
+Verify with focused automated tests first, then the minimum real-model runs needed to check
+insufficient context, complete standalone research, continuation with missing information,
+continuation after clarification, and insufficient research evidence.

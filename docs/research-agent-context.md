@@ -23,7 +23,7 @@ anything.
 | --- | --- |
 | **Completed** | **Day 1**, **Day 2** |
 | **Current milestone** | **Day 5 — Supervisor + Researcher + Appraiser** — **T1–T6 done**: `single_agent.py`'s four stage functions now live in `supervisor.py` / `researcher.py` / `appraiser.py` over a shared `runtime.py`, `service.py` takes a `mode` (`multi` default, `single` retained), each role calls the provider its configuration names, the Appraiser returns a per-source reading of the evidence rather than a sufficiency flag, and the trace now carries the topology as `agent` spans. 577 offline tests pass |
-| **Day 4** | **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is still owed** — no live run has yet exercised either memory or been read back through the renderer |
+| **Day 4** | **T1–T6 done**: every tool call is traced, logged as one JSON line and budget-checked by the registry, both memories exist, a recalled preparation steers the planner and the report, and `scripts/show_trace.py` renders a run as a tree. **The Day 4 acceptance run is done (2026-08-18, `run_9bcee4`)** — a fully local multi-agent run recalled a previous preparation (`found=true`, from `run_2ec040`), mirrored its hop into `run_memory` (8 entries), saved the validated report, and was read back through the renderer as a correct tree. See *The Day 4/5 acceptance run* |
 | **Day 3** | S1–S14 implemented and live-verified. **Implementation complete; sign-off deferred to Day 7** — two acceptance runs are owed and banked there, see *S14 results* |
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
@@ -137,7 +137,7 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py`, `prep_memory.py` (cross-run preparation memory, T4), `run_memory.py` (the session-memory mirror, T4) |
 | `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls, plus `agent_span` — the context manager an agent boundary uses, Day 5 T6), `render.py` (the read side, Day 4 T6 — pure, writes nothing). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call, and the two loops write one per agent boundary |
-| `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested |
+| `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested. `demo_e2e.py` is the narrated demo surface — it calls `service.prepare_focus_session` and nothing else, and narrates the run by polling the `spans` rows over a second read connection; `--summarise <run_id>` re-renders a finished run read-only |
 | `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
 | `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
 | `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
@@ -1756,10 +1756,133 @@ One assertion each, in the suites that already exist (`test_llm_provider.py`,
 `test_prompt_context.py`). **Not added during S14** — the subtask authorised fixes and re-running
 affected tests, not new coverage. This is the highest-value coverage work outstanding.
 
-**Never exercised, live or offline:** the **retry ladder** (no live run has yet produced an invalid
-report, so `MAX_OUTPUT_RETRIES` has never fired against a real model) and the **hosted fallback**
-(`gemini-3.6-flash` is confirmed to exist for this key by ListModels, but no `generateContent` call
-has ever been made). S10's stake stands: the ladder's final rung is unproven.
+**Never exercised, live or offline:** the **retry ladder** — no live run has yet produced an
+invalid report, so `MAX_OUTPUT_RETRIES` has never fired against a real model.
+
+**Hosted `generateContent` is now proven, and so is one hosted defect (2026-08-18).** A structured
+round trip against `gemini-3.6-flash` returned a valid parsed object in 3.5 s, so the id works for
+this key and S10's third rung is no longer hypothetical. Two facts came with it:
+
+- **Hosted cannot serve the Researcher role.** `ResearchAction.arguments` is
+  `dict[str, str | int | float | bool]`, which Pydantic emits as `additionalProperties` with no
+  `properties`. Gemini's `responseSchema` is an OpenAPI 3.0 subset with no way to express an open
+  map, so `to_gemini_schema` drops the keyword and the model can only decode `{}`. Every dispatched
+  call then fails `_parse_args` as `BAD_ARGUMENTS` — **before the tracing pre-hook**, since
+  `ToolRegistry.call` validates arguments ahead of its hooks, so the run shows tool *failures* with
+  no tool *spans* (`run_2ec040`: "0 sources from 0 queries, 3 tool failures", zero `web_search`
+  rows). Fixing it means changing `ResearchAction`, which is a schema decision and was not taken
+  here. Until then `RESEARCHER_PROVIDER=hosted` is broken; the other two roles are unaffected,
+  because `SupervisorDecision` and `AppraisalVerdict` are flat and translate cleanly.
+- **The free tier is not dependable for a timed demo.** Two consecutive runs died at
+  `appraiser.judge` — `503 UNAVAILABLE` ("this model is currently experiencing high demand"), then
+  a connection failure after 120 s. Both propagated as `LLMError` and ended the run, `run_48cbae`
+  after it had already completed two full hops. Plan a demo around the local default and treat
+  hosted as the fast path when it happens to be healthy.
+
+## Grounding: the planner may not invent what the task did not say (2026-08-19)
+
+**The defect.** A continuation whose task never named a platform or a protocol —
+"continue this … for my application" — became the research question *"the official procedure
+for securely rotating … in a web application using OAuth 2.0"*. Two facts were manufactured
+by the planner and then inherited by the query, the sources and the report as though the
+user had supplied them.
+
+**Root cause, and it is three things at once.**
+
+1. `AgentAction` is `RESEARCH | FINALISE`. There was no way to express the third real
+   outcome — *this cannot be narrowed without inventing something* — so an underspecified
+   task had to be forced into one of the two.
+2. `plan.md` demanded a question "small enough to matter inside {session_minutes} minutes".
+   Narrowing a task whose setting was never stated is **only** possible by supplying that
+   setting, so the prompt's own quality bar manufactured the invention.
+3. **Nothing constrained the content of a research question.** Every grounding rule in the
+   project is about *citations*: `validate_report` checks cited URLs against
+   `RunState.evidence_urls`, `finalise.md` forbids inventing a URL, `research_step.md`
+   forbids substituting a remembered one. A fabricated *premise* passes all of them, because
+   the pages cited really were fetched. The strongest anti-hallucination guard in the system
+   never looks at what the run set out to ask.
+
+**The fix, in three layers.** No rule anywhere names a domain, a framework or a protocol.
+
+- **Schema** (`schemas/agents.py`): `SupervisorDecision` gains `context_check:
+  ContextCheck` (`ENOUGH | MISSING`, defaulted) and `missing_context: list[str]`
+  (defaulted, tidied by a validator, never rejected). `RunState.missing_context` carries the
+  gaps to `finalise`, which keeps that signature frozen.
+- **Control flow** (`supervisor._stop_for_missing_context`, used by *both* loops): either
+  signal stops the run with the new `StopReason` `"missing_context"`, **before** `_assign`
+  builds a `ResearchAssignment`. Read regardless of `action`, because a model that names a
+  gap and still says `RESEARCH` has told us two things and only the honest one is safe to
+  act on. This is what makes the refusal binding rather than advisory.
+- **Prompts**: `plan.md` gains the "who could answer this — a page, or only this user?"
+  test *before* the RESEARCH/FINALISE choice, the rule that every noun in a question must
+  trace back to the task, and the note that a request scoped to something *of the user's* is
+  applied work however general its subject; `finalise.md` requires anything not stated to
+  live in `assumptions`/`unknowns` and never inside the goal, topics or practice;
+  `research_step.md` forbids adding a platform or vendor the question did not name.
+
+**Field order in a decode schema is behaviour, and this is the evidence.** Three orders were
+measured against `qwen3:4b` on the same task:
+
+| Order | What the model did |
+| --- | --- |
+| `action` first (original) | committed to `RESEARCH`, then wrote a question supplying the missing detail — while `reasoning` said the task was "too vague" |
+| `missing_context` first | answered the hardest question as its first token, defaulted to `[]`, explained afterwards |
+| `reasoning` → `context_check` → `missing_context` → `action` | reasoned to a conclusion, then answered `MISSING` with both gaps named |
+
+A constrained decode has no scratch pad: each key is committed before the next is written,
+so the field order *is* the reasoning procedure. **Do not reorder `SupervisorDecision`.**
+`reasoning`'s bound went 400 → 800 → 1600 for the same reason — `maxLength` is enforced by
+stopping, so a too-short bound guillotines the analysis mid-sentence, and the model was
+twice cut off one clause short of its own conclusion.
+
+**A `Literal` beats a list when a small model must commit.** With `missing_context` alone,
+`qwen3:4b` concluded in prose that "the case is missing context" and emitted `[]` in the very
+next field. Naming a gap in a list is a generative act a model can decline; choosing between
+two tokens is not. `AppraisalVerdict` already had this shape — `sufficient` decides,
+`accepted`/`rejected` explain.
+
+**Verified live on `qwen3:4b`** — `Improve my application` → `MISSING`, both gaps named,
+nothing invented, run stops before the Researcher. `Learn how PostgreSQL B-tree indexes
+work` → `ENOUGH`, researches immediately, no clarifying questions. Continuation with the
+setting supplied → uses the supplied FastAPI/mobile terms and nothing else.
+
+**Residual, honestly.** On a task whose *title* is a self-standing subject and whose applied
+intent sits only in the description ("Continue my previous research for my application"),
+`qwen3:4b` judges the title dominant and answers `ENOUGH`. It invents nothing — its own
+reasoning notes the task "does not specify any particular platform, language, framework …" —
+but it does drop the applied half of the request. Prompt tuning was stopped there rather than
+over-fitted to one input; a larger supervisor model is the cheaper lever. The related
+weakness beside it: the planner still tends to re-ask the recalled session's own objective,
+which `_PLANNER_CONTINUATION` already forbids in words.
+
+## The Day 4/5 acceptance run
+
+**`run_9bcee4`, 2026-08-18, fully local (`qwen3:4b`), `SEARCH_BACKEND=serpapi`, `mode=multi`,
+636 s.** Question: "Add rate limiting to our NestJS REST API", 45-minute session. One hop, stopped
+on `thin_evidence` (the Appraiser answered `sufficient=True` with zero accepted sources, which T5's
+`_MIN_ACCEPTED` correctly refuses to read as a stop-on-sufficient). The report cites 2 resources,
+both fetched during the run, and `sources_examined=1`.
+
+What it settles, all read back off the stored rows rather than asserted:
+
+- **The tree is the topology.** `supervisor.run` is the only root; `supervisor.decide`,
+  `researcher.loop`, `appraiser.judge` and `supervisor.finalise` are its children; `web_search`
+  and both `fetch_url` calls nest under `researcher.loop` with nothing passed down;
+  `appraiser.judge` has no children. The three memory tool calls sit under `supervisor.run`.
+- **Both memories work.** `recall_previous_preparation` returned `found=true` from the earlier
+  `run_2ec040` and visibly steered the goal ("Continue implementing distributed rate limiting …
+  building on the previous session's basic rate limiting setup"); `record_run_memory` wrote 8
+  entries; `save_preparation` stored the validated report.
+- **The hooks are the only tool path.** Six tool calls, each with a timed span and one JSON
+  `evergrove_agent.trace` line carrying the same values.
+- **A tool failure is a value, not an exception.** `https://docs.nestjs.com/security/rate-limiting`
+  came back `EMPTY_FILE` (JavaScript-rendered); the hop continued and read a different source.
+- **`validate_report` writes no span, by design.** `finalise` imports it and calls it as a plain
+  function, so it is not a registry dispatch. A successful `save_preparation` is the structural
+  proof it passed — a preparation is saved only from the value `finalise` returned.
+
+Rendered with `uv run python scripts/show_trace.py run_9bcee4`, or re-summarised with
+`uv run python scripts/demo_e2e.py --summarise run_9bcee4`.
 
 **Known defects and rough edges:**
 
