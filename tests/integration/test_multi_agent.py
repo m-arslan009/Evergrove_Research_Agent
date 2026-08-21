@@ -1077,3 +1077,78 @@ async def test_a_single_agent_run_traces_as_one_agent(
     assert {span.name for span in get_spans(ledger, ctx.run_id) if span.kind == "agent"} == {
         "agent.run"
     }, "no supervisor, researcher or appraiser span: nothing was delegated"
+
+
+# --- 8. the run refuses to research a guess ------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", MODES)
+@respx.mock
+async def test_a_task_that_cannot_be_narrowed_without_guessing_never_reaches_the_researcher(
+    mode: AgentMode, workspace: Settings, report
+) -> None:
+    """The whole defect, end to end, in both topologies.
+
+    What went wrong in the field: an underspecified continuation ("continue this for my
+    application") was narrowed by inventing the two details it was missing, and the invention
+    then travelled into the query, the sources and the finished plan as though the user had
+    stated it. Nothing downstream could catch it — `validate_report` grounds *URLs* against
+    what the run read, and every one of those URLs was genuinely read. The premise was never
+    checked by anything.
+
+    Three assertions, because the fix has three halves and each fails independently:
+
+    - the Researcher is never called at all, which is the only form of "no assumption-based
+      assignment was sent" that a future edit cannot quietly weaken;
+    - no search was spent, so the guess never became a query;
+    - the gap reaches `unknowns` even though the scripted report omits it, because the
+      instruction to report it is a request and a model may decline it.
+
+    Parameterized over both modes: one agent playing every role must decline on exactly the
+    same terms as a Supervisor briefing a worker, and the two loops carry separate copies of
+    the control skeleton.
+    """
+    roles = Roles(
+        supervisor=[
+            json.dumps(
+                {
+                    "action": "RESEARCH",
+                    "research_question": "how do I do this in a web app using OAuth 2.0",
+                    "source_preference": "docs",
+                    "reasoning": "the task does not say what this runs on",
+                    "missing_context": ["the application type", "the backend framework"],
+                }
+            ),
+            report(unknowns=["nothing in particular"]),
+        ],
+        researcher=[],
+        appraiser=[],
+    )
+
+    result, ctx = await drive(roles, workspace, mode)
+
+    assert roles.researcher.calls == []
+    assert ctx.budget.searches_used == 0
+    assert any("the application type" in unknown for unknown in result.unknowns)
+    assert any("the backend framework" in unknown for unknown in result.unknowns)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@respx.mock
+async def test_a_well_specified_task_still_researches_without_being_questioned(
+    mode: AgentMode, workspace: Settings, report
+) -> None:
+    """The guard must not fire on the ordinary run, which is most runs.
+
+    This is the fix's own failure mode rather than the defect's: a planner encouraged to name
+    missing context could start naming it for tasks that never needed it, turning a working
+    research path into an empty report that asks the user questions nobody had to answer. An
+    empty `missing_context` is the ordinary case, and it must leave the loop exactly as it
+    was — same hop, same search, same citation.
+    """
+    serve_indexes_page()
+    result, ctx = await drive(one_hop(report()), workspace, mode)
+
+    assert result.hops_used == 1
+    assert ctx.budget.searches_used == 1
+    assert not any("Not stated in the task" in unknown for unknown in result.unknowns)

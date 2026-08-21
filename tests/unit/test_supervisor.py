@@ -30,8 +30,9 @@ from evergrove_agent.agents.supervisor import (
     _MIN_ACCEPTED,
     _outstanding_followup,
     _stop_after_hop,
+    _stop_for_missing_context,
 )
-from evergrove_agent.schemas import AppraisalVerdict
+from evergrove_agent.schemas import AppraisalVerdict, SupervisorDecision
 
 FOLLOWUP = "how do I read the plan EXPLAIN ANALYZE prints"
 
@@ -161,3 +162,123 @@ def test_the_accepted_source_bar_is_the_plans_number() -> None:
     behaviour T5 exists to remove.
     """
     assert _MIN_ACCEPTED == 2
+
+
+# --- the refusal to guess (the missing-context stop) ---------------------------------------
+
+
+@pytest.mark.parametrize("action", ["RESEARCH", "FINALISE"])
+def test_named_missing_context_stops_the_run_whatever_the_action_said(action: str) -> None:
+    """A planner that names a gap never reaches the Researcher, even while saying RESEARCH.
+
+    The defect this pins: an underspecified task ("continue this for my application") was
+    turned into a narrow question by inventing the setting it lacked — a platform and a
+    protocol nobody had mentioned — and that invention then travelled into the query, the
+    sources and the report as though the user had supplied it.
+
+    `action` is parameterized because the dangerous case is precisely the inconsistent one.
+    A model that fills `missing_context` *and* answers `RESEARCH` has produced both an honest
+    admission and a guess to act on; reading the action first would let the guess win on the
+    exact reply that proves the model knew better.
+    """
+    decision = SupervisorDecision(
+        action=action,
+        research_question="how does token rotation work in a web app using OAuth 2.0",
+        reasoning="narrowing the task",
+        missing_context=["the application type", "the backend framework"],
+    )
+
+    assert _stop_for_missing_context(decision) == "missing_context"
+
+
+def test_a_fully_specified_task_is_researched_exactly_as_before() -> None:
+    """The guard must be silent on every task that was never ambiguous.
+
+    The failure mode this protects against is the fix's own: a run that stops to ask about a
+    subject that stands on its own ("how PostgreSQL B-tree indexes work") is worse than the
+    invention it was meant to prevent, because it turns a working path into an empty report.
+    An empty `missing_context` is the ordinary case and must leave control flow untouched.
+    """
+    decision = SupervisorDecision(
+        action="RESEARCH",
+        research_question="how does a PostgreSQL B-tree index handle a page split",
+        reasoning="one checkable fact",
+    )
+
+    assert _stop_for_missing_context(decision) is None
+
+
+def test_a_reply_that_omits_missing_context_entirely_still_validates() -> None:
+    """The field is optional at the wire, not merely defaulted in Python.
+
+    `SupervisorDecision` is a constrained-decoding target, and a small model routinely fills
+    only the fields it understands. If this default were ever lost, a Day 3-shaped reply
+    would fail `model_validate_json`, spend `_decode`'s one re-ask and return `None` — which
+    the loop reads as `planner_unavailable`, so a *widened* schema would start ending runs
+    that used to succeed.
+    """
+    decision = SupervisorDecision.model_validate_json(
+        '{"action": "FINALISE", "reasoning": "enough to start"}'
+    )
+
+    assert decision.missing_context == []
+
+
+def test_the_gaps_are_tidied_rather_than_rejected() -> None:
+    """Blank, repeated and rambling entries cost no retry.
+
+    A model asked for short phrases sometimes answers with an empty string or the same gap
+    twice. Rejecting any of that would spend a model call re-asking a question the reply had
+    already answered, on the run that is already short of context.
+    """
+    decision = SupervisorDecision(
+        action="FINALISE",
+        reasoning="cannot narrow this",
+        missing_context=["  the platform  ", "", "the platform", "x" * 400],
+    )
+
+    assert decision.missing_context == ["the platform", "x" * 160]
+
+
+@pytest.mark.parametrize(
+    ("check", "gaps"),
+    [
+        ("MISSING", ["the platform"]),
+        ("MISSING", []),
+        ("ENOUGH", ["the platform"]),
+    ],
+)
+def test_either_half_of_the_judgement_is_enough_to_stop(check: str, gaps: list[str]) -> None:
+    """A model that answers only one of the two signals has still answered.
+
+    Both halves say one thing, and a small model reliably drops the harder half. Measured:
+    `qwen3:4b` concluded in prose that "the case is missing context" and then emitted
+    `missing_context: []` in the very next field — which is exactly the `MISSING` with no
+    list case below. Requiring both signals would throw away the honest answer for being
+    incomplete, and would restore the defect on the reply that proves the model understood.
+
+    The third case is the mirror: a list without the flag, which is what a model that fills
+    fields but ignores enums produces.
+    """
+    decision = SupervisorDecision(
+        reasoning="thinking", context_check=check, action="FINALISE", missing_context=gaps
+    )
+
+    assert _stop_for_missing_context(decision) == "missing_context"
+
+
+def test_the_ordinary_decision_carries_neither_signal() -> None:
+    """`ENOUGH` with nothing listed must be untouched by any of this.
+
+    The default on both fields, and the shape every pre-existing scripted decision has. If
+    this ever stopped a run, the fix would have broken every well-specified task in the
+    project rather than the one class of task it was written for.
+    """
+    decision = SupervisorDecision(
+        reasoning="a documented subject",
+        action="RESEARCH",
+        research_question="how does a B-tree index handle a page split",
+    )
+
+    assert decision.context_check == "ENOUGH"
+    assert _stop_for_missing_context(decision) is None
