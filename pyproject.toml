@@ -13,11 +13,16 @@ dependencies = [
     "pydantic-settings>=2.8,<3", # config.py reads .env (plan 21, feature 1)
     "httpx>=0.28,<1",          # the only HTTP client: Ollama + Google AI Studio (plan 6)
     "pypdf>=5.1,<7",           # read_document's PDF reader (plan 6). DOCX needs no
-                               # dependency: stdlib zipfile + ElementTree read its XML.
+    # dependency: stdlib zipfile + ElementTree read its XML.
+    "mcp[cli]>=2.0,<3",        # the MCP server surface (plan 6, 16). Upper bound is the
+                               # point: 2.0 renamed FastMCP to MCPServer and moved it to
+                               # mcp.server.mcpserver, so a major bump is a rewrite of
+                               # mcp/server.py, never a silent upgrade.
 ]
 
 [project.scripts]
 evergrove-agent = "evergrove_agent.main:main"
+evergrove-mcp = "evergrove_agent.mcp.server:main"
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "evergrove-research-agent": {
+      "command": "uv",
+      "args": ["run", "evergrove-mcp"]
+    }
+  }
+}
