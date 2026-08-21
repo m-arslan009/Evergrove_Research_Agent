@@ -3,7 +3,9 @@ memories that sit in it. Nothing in this package calls a network or a model.
 
 Two of these are memory in the plan's sense and are deliberately separate:
 `prep_memory` survives runs and is found by a normalised task key, while `run_memory` belongs
-to one `run_id` and records that run's hops. Every module here raises on a `sqlite3.Error`;
+to one `run_id` and records that run's hops. `report_store` is neither: it keeps the finished
+report whole so a surface can hand it back, which is what the MCP resource reads.
+Every module here raises on a `sqlite3.Error`;
 deciding what a storage failure *means* belongs to the caller — `tools/memory_tools.py` for the
 memories, `tracing/tracer.py` for the trace, `fetch_url` for the cache.
 """
@@ -35,6 +37,11 @@ from evergrove_agent.memory.prep_memory import (
     normalize_task_key,
     recall_previous_preparation,
     save_preparation,
+)
+from evergrove_agent.memory.report_store import (
+    get_report,
+    latest_report,
+    save_report,
 )
 from evergrove_agent.memory.run_memory import (
     RunMemoryEntry,
@@ -70,9 +77,11 @@ __all__ = [
     "entries_from",
     "get_cached_search",
     "get_cached_source",
+    "get_report",
     "get_run_memory",
     "get_search_usage",
     "initialize_schema",
+    "latest_report",
     "normalize_query",
     "normalize_task_key",
     "open_database",
@@ -80,6 +89,7 @@ __all__ = [
     "record_entries",
     "reserve_search_call",
     "save_preparation",
+    "save_report",
     "search_cache_key",
     "seen_queries",
     "seen_urls",

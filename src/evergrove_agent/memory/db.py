@@ -75,6 +75,15 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_prep_task_key ON prep_memory(task_key)",
     """
+    CREATE TABLE IF NOT EXISTS prep_report (
+        run_id      TEXT PRIMARY KEY,
+        task_key    TEXT NOT NULL,
+        report_json TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_prep_report_created ON prep_report(created_at)",
+    """
     CREATE TABLE IF NOT EXISTS run_memory (
         id         INTEGER PRIMARY KEY,
         run_id     TEXT NOT NULL,

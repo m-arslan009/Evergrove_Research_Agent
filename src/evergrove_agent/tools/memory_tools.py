@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from pydantic import BaseModel, ConfigDict, Field
 
 from evergrove_agent.config import Settings, get_settings
-from evergrove_agent.memory import prep_memory, run_memory
+from evergrove_agent.memory import prep_memory, report_store, run_memory
 from evergrove_agent.memory.db import open_database
 from evergrove_agent.memory.run_memory import RunMemoryEntry
 from evergrove_agent.schemas import (
@@ -211,10 +211,19 @@ class SavePreparationTool(_MemoryTool):
     async def run(
         self, args: SavePreparationInput, ctx: RunContext
     ) -> ToolResult[SavePreparationOutput]:
-        """Write the summary, or report that memory was unavailable. Never raises."""
+        """Write the summary and the report, or report that memory was unavailable.
+
+        Two writes, one connection, one `try`. The summary is what the *next run* reads and
+        the report is what a *surface* reads back (`memory/report_store.py` explains why they
+        are separate tables), but they are the same fact about the same validated report, so
+        storing one without the other would leave the database describing a preparation it
+        cannot produce. Sharing the `except` also means the report write inherits the
+        best-effort guarantee this whole module exists to provide.
+        """
         try:
             with self._connection_scope() as connection:
                 entry = prep_memory.save_preparation(connection, report=args.report)
+                report_store.save_report(connection, report=args.report)
         except (sqlite3.Error, OSError) as exc:
             return self._unavailable("saving this preparation", exc)
 
