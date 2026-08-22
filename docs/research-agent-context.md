@@ -28,7 +28,7 @@ anything.
 | **Completed Day 3 subtasks** | **S1 — Agent schemas** · **S2 — Model-facing tool integration** · **S3 — Agent prompts and assembly** · **S4 — In-memory budget counters on `RunContext`** · **S5–S8 — the orchestration loop** · **S9 — `validate_report` and grounding** · **S10 — structured finalisation and the retry ladder** · **S11 — `service.py`, the one entry point** · **S12 — CLI integration** · **S13 — offline integration tests** · **S14 — live end-to-end verification (run on 3 tasks, not the specified 5)** |
 | **Completed Day 4 subtasks** | **T1 — Tracing foundation**: the span stack on `RunContext`, the `runs`/`spans` tables, `tracing/store.py`, `tracing/tracer.py` · **T2 — Registry hook chains**: `tools/hooks.py`, one `tool` span per call, `service.py` owns the run's connection and writes the run header · **T3 — Budget enforcement in the pre-hook**: `_TOOL_BUDGET`/`_claim_for_tool` lifted out of `single_agent.py` · **T4 — Persistent and session memory**: `prep_memory`/`run_memory` tables, `memory/prep_memory.py`, `memory/run_memory.py`, `tools/memory_tools.py` (three registered, never-advertised tools), `PreviousPreparation`, and the two best-effort write calls in `run_agent` · **T5 — Memory-aware agent integration**: `RunState.previous`, the single `recall_previous_preparation` call in `run_agent`, `render_previous_preparation` → `plan.md`'s new `{previous_preparation}` placeholder, and `render_continuation_note` → an extra `finalise()` message |
 | **Completed Day 5 subtasks** | **T1 — the split, and the mode switch**: `agents/runtime.py` (shared plumbing + the orchestration mechanics both loops use), `agents/supervisor.py` (`decide_next_step`, `finalise`, `run_supervised`, `_delegate_hop`), `agents/researcher.py` (`run_research_step`), `agents/appraiser.py` (`judge_sufficiency`); `single_agent.py` keeps `run_agent` and re-exports the moved names; `config.AgentMode`, `service.prepare_focus_session(mode=…)`, `main.py --mode`; `tests/integration/test_multi_agent.py` · **T2 — typed inter-agent messages**: the five message models were found already defined *and already used at every boundary* (S1 built them, T1 wired them), so T2 added no new model and changed no signature. Its real content is `AppraisalVerdict`'s semantic judgement — `accepted[]`, `rejected[]`, `disagreements[]`, all defaulted — wired into `runtime._appraisal_line` (the `run_memory` row) and `prompt_context.render_research_context` (`finalise`'s prompt), plus `sufficiency.md`'s three new rules and 29 tests pinning the contracts · **T3 — per-role provider selection**: the wiring was found **already complete** — the three `*_PROVIDER` settings, `build_provider`, `AgentProviders.from_settings` and the `providers.<role>` argument at every stage were built by Day 1 and Day 5 T1 — so T3 added no mechanism. Its content is the proof and one guard: `build_provider` now **raises** on an unrecognised name instead of falling through to local, and a wire-level test drives three provider combinations (all-local, hosted Appraiser, local Researcher only) through `prepare_focus_session` with **nothing injected**, asserting from the HTTP endpoints that each role's calls reached the provider its configuration names · **T4 — Appraiser judgement quality**: `AcceptedSource` / `RejectedSource`, the rewritten `sufficiency.md`, the per-source rendering into the finalise prompt and the `run_memory` row, `finalise.md`'s do-not-cite-a-rejected-source rule, and `tests/unit/test_appraiser.py`. The rejection is guidance to the report, never a narrowed grounding set |
-| **Next task** | **Day 6 — MCP server and client, hardening.** Day 5 is implementation-complete. Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
+| **Next task** | **Day 6 hardening, then Day 7.** The MCP server, the MCP client, `.mcp.json` and the offline stdio demo are built and proven; what remains of Day 6 is the graceful-degradation matrix, attachment path safety and the optional FastAPI wrapper. Live runs remain Day 7's by standing decision (*Engineering decisions* 12) — three are banked there |
 
 `schemas/agents.py` is the contract every later Day 3 subtask builds against,
 `agents/tool_calling.py` is the only bridge between a model and the tool registry,
@@ -54,7 +54,7 @@ present.
 | 3 | Single research agent — the core loop | **Implementation complete and live-verified; 2 acceptance runs banked for Day 7** |
 | 4 | Memory, hooks, tracing | **Implementation complete — T1–T6 built and covered offline; acceptance run banked for Day 7** |
 | 5 | Supervisor + Researcher + Appraiser | **T1–T6 done — the split, the `--mode` switch, the typed message contracts, per-role provider selection, the Appraiser's per-source judgement and the evidence-driven multi-hop decision, and the cross-agent `agent` spans. Implementation complete** |
-| 6 | MCP server and client, hardening | Not started |
+| 6 | MCP server and client, hardening | **Server, client, `.mcp.json` and the offline stdio demo done** — graceful degradation, attachment path safety and the FastAPI wrapper not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
 ---
@@ -80,7 +80,7 @@ One process, a modular monolith layered internally. "Multi-agent" describes how 
 is organised, not how many services are deployed.
 
 ```
-                    CLI  ·  MCP server            ← surfaces   (CLI: BUILT · MCP: Day 6)
+                    CLI  ·  MCP server            ← surfaces   (both BUILT)
                           │
                      service.py                   ← BUILT (S11). Composition only:
                           │                          registry + providers + RunContext,
@@ -137,7 +137,7 @@ is organised, not how many services are deployed.
 | `src/evergrove_agent/documents/` | `base.py`, `reader.py`, `excerpt.py`, `text.py`, `pdf.py`, `docx.py`, `html.py` |
 | `src/evergrove_agent/memory/` | `db.py` (all DDL), `cache.py`, `search_cache.py`, `budget.py`, `prep_memory.py` (cross-run preparation memory, T4), `run_memory.py` (the session-memory mirror, T4) |
 | `src/evergrove_agent/tracing/` | `store.py` (the `runs`/`spans` rows), `tracer.py` (the API a hook calls, plus `agent_span` — the context manager an agent boundary uses, Day 5 T6), `render.py` (the read side, Day 4 T6 — pure, writes nothing). Day 4 T1, wired by T2 — `service.py` owns the connection, `tools/hooks.py` writes one span per tool call, and the two loops write one per agent boundary |
-| `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested. `demo_e2e.py` is the narrated demo surface — it calls `service.prepare_focus_session` and nothing else, and narrates the run by polling the `spans` rows over a second read connection; `--summarise <run_id>` re-renders a finished run read-only |
+| `scripts/` | Operator entry points, not library code. `show_trace.py <run_id>` prints one run's trace as a tree (T6). Not a package: the logic lives in `tracing/render.py` so it can be imported and tested. `demo_e2e.py` is the narrated demo surface — it calls `service.prepare_focus_session` and nothing else, and narrates the run by polling the `spans` rows over a second read connection; `--summarise <run_id>` re-renders a finished run read-only. `mcp_demo_client.py` is the MCP client — it spawns a server subprocess and speaks the protocol over its stdin/stdout, and imports nothing from `evergrove_agent` on purpose. `mcp_offline_server.py` is the same `build_server(settings)` surface with the model scripted at the `AgentProviders.from_settings` seam, so the full round trip is provable in seconds; it lives here rather than under `tests/` so the shipped demo and the test guarding the shipped demo drive one launcher instead of two that drift |
 | `src/evergrove_agent/service.py` | `prepare_focus_session` — the one entry point; composition only (S11) |
 | `src/evergrove_agent/main.py` | CLI entry point — research mode and `--no-research`, flat flags, the progress line (S12) |
 | `tests/unit/`, `tests/integration/`, `tests/conftest.py` | Offline suites; `settings` fixture is `Settings(_env_file=None)` |
@@ -147,7 +147,7 @@ is organised, not how many services are deployed.
 | `docs/research-agent-context.md` | This file |
 | `prompts.md` | The required AI interaction log |
 
-**Not present, do not assume:** `evals/`, `.mcp.json`.
+**Not present, do not assume:** `evals/`.
 
 ---
 
@@ -1678,9 +1678,10 @@ cached row — that, not a leak, is why `search_budget` runs slightly ahead of t
   bridge never touches a model's arguments. It travels on `ResearchAssignment` and reaches
   the tool through the researcher's prompt (S3) and the research step (S6), which own it.
 
-**Missing (later days):** the MCP server, client and `.mcp.json` (Day 6) · `evals/`, the
-requirement audit, the `--offline` demo (Day 7). Everything Day 4 and Day 5 specified is now
-built.
+**Missing (later days):** Day 6's remaining hardening — the graceful-degradation matrix,
+attachment path safety, the optional FastAPI wrapper · `evals/`, the requirement audit, the
+CLI's `--offline` demo (Day 7). The MCP server, the MCP client and `.mcp.json` are built;
+everything Day 4 and Day 5 specified is built.
 
 **`tool` and `agent` spans exist; `llm` spans do not.** Day 4 T2 wired the run header and one
 span per tool call; Day 5 T6 added the agent boundaries, and the prediction held exactly — the

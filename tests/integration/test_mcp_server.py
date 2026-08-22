@@ -4,7 +4,8 @@ Offline and model-free, the same way `test_service.py` is: `FakeProvider` is inj
 place of the composed providers, the registry is the real wired one with
 `SEARCH_BACKEND=fixture`, and every test points `DB_PATH` at a temporary file. No transport
 either — `Client` connects to an `MCPServer` object in process, so these tests exercise
-protocol dispatch without a subprocess. `scripts/mcp_demo_client.py` is what proves stdio.
+protocol dispatch without a subprocess. `tests/integration/test_mcp_client.py` is what proves
+stdio, by running the shipped demo client against a real server subprocess.
 
 What is deliberately not tested here: that the agent researches correctly (the loop suites own
 that), that `TaskContext` enforces its own bounds (Pydantic's job, and `test_schemas.py`

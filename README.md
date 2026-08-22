@@ -137,7 +137,7 @@ missing is those two runs, memory, tracing, the supervisor/worker split, and the
 | 3 | Single research agent — the core loop | **S1–S14 done and live-verified** — sign-off pending 2 more acceptance runs |
 | 4 | Memory, hooks, tracing | Not started |
 | 5 | Supervisor + Researcher + Appraiser | Not started |
-| 6 | MCP server, MCP client, hardening | **Server, both clients and report storage done** — hardening, `--offline` and path safety not started |
+| 6 | MCP server, MCP client, hardening | **Server, client, report storage and the offline demo done** — proven over real stdio; graceful degradation and path safety not started |
 | 7 | Tests, five evaluations, requirement audit, final demo | Not started |
 
 Day 3's subtasks are all implemented. S14's live verification found and fixed five defects the
@@ -463,13 +463,35 @@ is a thin wrapper over `service.py` — 52 lines of code — and holds no resear
 
 ```
 uv run evergrove-mcp                                  # the server, speaking MCP on stdio
+uv run python scripts/mcp_demo_client.py --offline    # the whole exchange, in ~10 seconds
 uv run python scripts/mcp_demo_client.py              # list the surface, read the last report
 uv run python scripts/mcp_demo_client.py --task "Learn PostgreSQL indexing"
 ```
 
-The demo client with no `--task` needs no model, no network and no waiting: it lists what the
-server exposes and reads the most recent stored preparation. With `--task` it does the full
-round trip — call the tool, take the `run_id` off the report, read that preparation back.
+`scripts/mcp_demo_client.py` is an MCP client and nothing else: it spawns the server as a
+child process, speaks JSON-RPC over its stdin and stdout, and imports nothing from
+`evergrove_agent` — a client that reached into the package would be proving the package
+works, not that the *protocol* does.
+
+**`--offline` is the demo.** It runs the complete exchange — discover the surface, call
+`prepare_focus_session`, receive a validated report, read that same report back through
+`evergrove://preparation/{run_id}`, then read one that was never stored so the refusal is
+visible too — against `scripts/mcp_offline_server.py`. That is the real server with one
+substitution: the model is scripted at the `AgentProviders.from_settings` seam, the same seam
+the offline tests use. `service.py`, the tool registry, the fixture search backend, tracing,
+grounding and the `prep_report` write are all the shipped ones, and the database is a
+throwaway file. It proves the **protocol**, not the research — the report comes back with
+`model_used: fake-model` and no `resources`, because the scripted plan opens no page and
+grounding rejects a citation the run never fetched.
+
+With no flags the client talks to the real server: it lists what is exposed and reads the
+most recent stored preparation. On a fresh clone that prints a not-found, because `data/` is
+gitignored and `prep_report` starts empty. With `--task` it does the same full round trip
+against the real agent, which takes 9–15 minutes and needs Ollama.
+
+Stdio is covered by `tests/integration/test_mcp_client.py`, which runs the shipped demo
+command as a subprocess; `tests/integration/test_mcp_server.py` stays the fast in-process
+surface test.
 
 | Surface | What it is |
 | --- | --- |
@@ -478,15 +500,18 @@ round trip — call the tool, take the `run_id` off the report, read that prepar
 | **Resource** `evergrove://task/current` | The most recently stored report, so a client with no run id has an entry point. |
 
 `.mcp.json` in this directory points Claude Code at the same server; open Claude Code on the
-`Research Agent` directory so `uv run` resolves this project.
+`Research Agent` directory so `uv run` resolves this project. Run `uv sync` once first — the
+`evergrove-mcp` console script has to exist in `.venv` before `uv run evergrove-mcp` can
+resolve. A host that spawns from somewhere else wants `uv run --directory <path>
+evergrove-mcp`; the absolute path stays out of the committed file.
 
 Storage: a completed report is written whole to `prep_report` by the existing
 `save_preparation` tool, beside the lossy summary `prep_memory` keeps for continuation. The
 two answer different questions on different keys — see `memory/report_store.py`. Reports
 produced before this existed are not readable through the resource.
 
-> **Still Day 6's, not done here:** the graceful-degradation matrix, the `--offline` flag,
-> attachment path-safety hardening, and the optional FastAPI wrapper.
+> **Still Day 6's, not done here:** the graceful-degradation matrix, attachment path-safety
+> hardening, and the optional FastAPI wrapper.
 
 ## Memory
 

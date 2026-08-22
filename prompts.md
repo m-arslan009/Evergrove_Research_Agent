@@ -1415,3 +1415,20 @@ installed/current package instead of relying on outdated examples. Add focused a
 tests for the MCP server behavior using the existing test/fake infrastructure where possible.
 Do not run slow local-model or live-search tests unless genuinely necessary. Keep the
 implementation minimal and let the existing architecture drive the exact design.
+
+`Title`: Day 6 — a working MCP client and a demonstrated end-to-end MCP interaction
+`User prompt`: Implement the second MCP requirement: add a working MCP client and
+demonstrate a complete interaction with the MCP server that is already implemented. Core
+requirements: build the client using the current MCP SDK and the existing server interface.
+The client should prove that an external MCP consumer can connect to the server, discover
+its capabilities, invoke the research-agent capability, receive the result, and read the
+related MCP resource. Reuse the existing service/server behavior; do not duplicate research
+logic in the client. Keep the client simple and suitable for a live mentor demo. Add any
+client configuration needed for a real MCP-capable application if it fits naturally with
+the current setup. Handle connection/protocol failures clearly so demo failures are
+understandable. Do not change agent behavior, prompts, schemas, memory, tracing, or research
+logic unless genuinely required for MCP interoperability. Add focused automated/integration
+tests where useful. Avoid slow local-model or live-search runs during implementation; use
+existing fake/offline infrastructure for development verification. After implementation,
+perform one concise MCP interaction demonstration showing the full client → server →
+research capability → result/resource flow.
