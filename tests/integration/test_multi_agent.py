@@ -21,6 +21,12 @@ Offline and model-free throughout, on the same terms as `test_single_loop.py`: `
 injected rather than patched, the **committed** `fixtures/search/` tree at the shipped
 default, `respx` active so any unrouted request fails the test, and only `DB_PATH` moved into
 `tmp_path`.
+
+The scripted run itself — the per-role scripts, `one_hop`, `drive` and the trace readers —
+lives in `offline_run.py`, and `workspace` / `ledger` / `report` in `conftest.py`, because
+`test_mcp_server.py` drives the *same* run through the MCP surface. Two copies of that script
+would make "an MCP-triggered run traces exactly like this one" untestable at the moment it
+started to drift.
 """
 
 from __future__ import annotations
@@ -28,200 +34,45 @@ from __future__ import annotations
 import ast
 import json
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 import respx
+from offline_run import (
+    DOCS_QUERY,
+    INDEXES_URL,
+    SUPERVISED_SPAN_TREE,
+    TASK,
+    Roles,
+    done,
+    drive,
+    indent_of,
+    one_hop,
+    plan,
+    serve_indexes_page,
+    span_tree,
+    tool_turn,
+    verdict,
+)
 
-from evergrove_agent.agents import AgentProviders
 from evergrove_agent.agents import supervisor as supervisor_module
 from evergrove_agent.agents.prompt_context import render_stop_reason
 from evergrove_agent.config import AgentMode, Settings
 from evergrove_agent.llm import FakeProvider
-from evergrove_agent.memory import db, get_search_usage
+from evergrove_agent.memory import get_search_usage
 from evergrove_agent.schemas import (
     AppraisalRequest,
     AppraisalVerdict,
     FocusPreparationReport,
-    ResearchAction,
     ResearchAssignment,
     ResearchFindings,
-    TaskContext,
 )
 from evergrove_agent.service import prepare_focus_session
-from evergrove_agent.tools.base import RunBudget, RunContext
 from evergrove_agent.tracing import get_run, get_spans, render_trace
 
-TASK = TaskContext(task_title="Learn PostgreSQL indexing", session_minutes=25)
-
-DOCS_QUERY = "postgresql b-tree index"
-"""`fixtures/search/postgresql-indexing.json`, `source_type=docs`."""
-
-INDEXES_URL = "https://www.postgresql.org/docs/current/indexes-types.html"
-"""That recording's top-ranked hit — the one page these runs open."""
-
-ARTICLE = Path(__file__).resolve().parents[2] / "fixtures" / "html" / "article.html"
-"""The committed page served in place of `INDEXES_URL`."""
-
 MODES: tuple[AgentMode, ...] = ("single", "multi")
-
-
-# --- the workspace ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def workspace(tmp_path: Path) -> Settings:
-    """Committed fixtures for input, a temporary file for state — as `test_single_loop.py`.
-
-    Only `DB_PATH` moves. `SEARCH_BACKEND` and `SEARCH_FIXTURE_DIR` stay exactly as a fresh
-    clone has them, because "both modes run offline on the shipped defaults" is part of what
-    is being accepted here.
-    """
-    return Settings(_env_file=None, db_path=tmp_path / "agent.sqlite3")
-
-
-@pytest.fixture
-def ledger(workspace: Settings) -> Iterator[sqlite3.Connection]:
-    """A second handle on the run's database, for reading spans and the search counter back."""
-    with db.open_database(workspace.db_path) as connection:
-        yield connection
-
-
-def serve_indexes_page() -> respx.Route:
-    """`INDEXES_URL` answered locally, so a run can genuinely read something."""
-    return respx.get(INDEXES_URL).mock(
-        return_value=httpx.Response(200, html=ARTICLE.read_text(encoding="utf-8"))
-    )
-
-
-# --- scripting one model per role ---------------------------------------------------------------
-#
-# Three providers rather than the one `test_single_loop.py` shares, because the whole subject
-# here is *which role was asked what*. A single provider answering all three makes that
-# unreadable: every call lands in one list and role bleed looks exactly like normal traffic.
-
-
-def plan(action: str, question: str | None = None, preference: str = "docs") -> str:
-    return json.dumps(
-        {
-            "action": action,
-            "research_question": question,
-            "source_preference": preference,
-            "reasoning": "because",
-        }
-    )
-
-
-def verdict(
-    sufficient: bool, followup: str | None = None, **judgement: list[Any]
-) -> str:
-    """A scripted `AppraisalVerdict`.
-
-    T4's `accepted` / `rejected` arrive through `**judgement` and are omitted when unset, so
-    every existing call site keeps scripting the Day 3 payload — which is what keeps those
-    runs proving that a verdict without the semantic judgement is still a valid verdict.
-    """
-    return json.dumps(
-        {
-            "sufficient": sufficient,
-            "missing_information": [],
-            "requested_followup": followup,
-            "reasoning": "because",
-            **judgement,
-        }
-    )
-
-
-def tool_turn(name: str, arguments: dict[str, Any]) -> str:
-    """One research turn, as S14's constrained `ResearchAction`."""
-    return ResearchAction(
-        tool=name, arguments=arguments, reasoning="scripted turn"
-    ).model_dump_json()
-
-
-def done() -> str:
-    """A research turn that asks for nothing — the model saying the hop has enough.
-
-    Preferred over an unparseable reply for ending the hop: both break the turn loop, but this
-    one ends it the way the contract describes rather than by tripping a validation error.
-    """
-    return ResearchAction(tool="", reasoning="enough gathered").model_dump_json()
-
-
-@pytest.fixture
-def report(valid_report_payload: dict[str, Any]):
-    """A report a model could plausibly return, citing nothing unless a test says otherwise.
-
-    The shared payload cites a real page these runs do open, but grounding is not this file's
-    subject and an unopened citation would fail a run for a reason none of these tests is
-    about. Citations are opted into.
-    """
-
-    def _report(**overrides: Any) -> str:
-        return json.dumps({**valid_report_payload, "resources": [], **overrides})
-
-    return _report
-
-
-class Roles:
-    """One `FakeProvider` per reasoning role, plus what each was asked for.
-
-    `RecordedCall` already carries `schema_name`, so nothing here inspects a prompt: the schema
-    a role was asked to fill *is* its job.
-
-    `RecordedCall.tool_names` is deliberately **not** used. Since the S14 contingency swap the
-    researcher's menu travels inside the rendered prompt rather than as `tools=`, so that field
-    is empty for every role — an assertion on it would pass for all three and prove nothing.
-    What a role may reach is asserted statically instead, in section 4.
-    """
-
-    def __init__(self, *, supervisor: list[Any], researcher: list[Any], appraiser: list[Any]):
-        self.supervisor = FakeProvider(supervisor)
-        self.researcher = FakeProvider(researcher)
-        self.appraiser = FakeProvider(appraiser)
-
-    @property
-    def providers(self) -> AgentProviders:
-        return AgentProviders(self.supervisor, self.researcher, self.appraiser)
-
-    def schemas(self, provider: FakeProvider) -> list[str | None]:
-        return [call.schema_name for call in provider.calls]
-
-
-def one_hop(report_json: str) -> Roles:
-    """A run that searches, opens `INDEXES_URL`, is judged sufficient, then reports.
-
-    The same shape for both modes, which is the point: identical inputs, and any difference in
-    the outcome is a difference in topology rather than in what the run was told to do.
-    """
-    return Roles(
-        supervisor=[plan("RESEARCH", "what does a B-tree index do"), report_json],
-        researcher=[
-            tool_turn("web_search", {"query": DOCS_QUERY, "source_type": "docs"}),
-            tool_turn("fetch_url", {"url": INDEXES_URL}),
-            done(),
-        ],
-        appraiser=[verdict(True)],
-    )
-
-
-async def drive(
-    roles: Roles, settings: Settings, mode: AgentMode
-) -> tuple[FocusPreparationReport, RunContext]:
-    """One run through the real entry point, in one mode.
-
-    `registry` is deliberately not passed: letting `prepare_focus_session` build it is the
-    difference between testing a loop and testing the composition — and it is also what puts
-    the tracer and the hooks on the registry the run actually uses.
-    """
-    ctx = RunContext(budget=RunBudget.from_settings(settings))
-    result = await prepare_focus_session(
-        TASK, mode=mode, settings=settings, providers=roles.providers, ctx=ctx
-    )
-    return result, ctx
 
 
 # --- 1. both modes still work ---------------------------------------------------------------------
@@ -928,38 +779,6 @@ async def test_a_sufficient_verdict_backed_by_one_source_finalises_honestly(
 # `tools/hooks.py`. These tests are what stop that derivation being silently lost.
 
 
-def span_tree(
-    ledger: sqlite3.Connection, run_id: str
-) -> tuple[list[str], dict[str, list[str]]]:
-    """One run's spans as `(root names, {span name: child names})`, in start order.
-
-    Names rather than ids, because an id proves the shape to a test and nothing to a reader:
-    `researcher.loop → web_search` is the assertion this section is actually about. Uniqueness
-    is asserted rather than assumed, so a run that opened two spans with one name cannot
-    silently collapse into a tree that looks right.
-    """
-    spans = get_spans(ledger, run_id)
-    names = [span.name for span in spans]
-    assert len(set(names)) == len(names), f"span names repeat in this run: {names}"
-
-    name_of = {span.span_id: span.name for span in spans}
-    roots: list[str] = []
-    children: dict[str, list[str]] = {name: [] for name in names}
-    for span in spans:
-        parent = name_of.get(span.parent_span_id) if span.parent_span_id else None
-        if parent is None:
-            roots.append(span.name)
-        else:
-            children[parent].append(span.name)
-    return roots, children
-
-
-def indent_of(lines: list[str], name: str) -> int:
-    """How far into its line a span's name starts — the tree prefix's width, in characters."""
-    line = next(line for line in lines if name in line)
-    return len(line) - len(line.lstrip("│├└─ "))
-
-
 @respx.mock
 async def test_the_trace_shows_which_agent_made_every_tool_call(
     workspace: Settings, ledger: sqlite3.Connection, report
@@ -981,30 +800,22 @@ async def test_the_trace_shows_which_agent_made_every_tool_call(
 
     The memory tools sitting under `supervisor.run` rather than under a worker is the same
     claim from the other side: filing a hop away is the coordinator's bookkeeping.
+
+    The shape is asserted against `SUPERVISED_SPAN_TREE` rather than a literal spelled out
+    here, because `test_mcp_server.py` asserts the *same object* for the same run started
+    through the MCP tool. That is what makes "a run traces identically whichever surface
+    started it" one definition rather than two literals that happen to agree today.
     """
     serve_indexes_page()
     roles = one_hop(report(resources=[]))
 
     _, ctx = await drive(roles, workspace, "multi")
 
-    roots, children = span_tree(ledger, ctx.run_id)
-
-    assert roots == ["supervisor.run"], "one root: the Supervisor holds the whole run"
-    assert children["supervisor.run"] == [
-        "recall_previous_preparation",
-        "supervisor.decide",
-        "researcher.loop",
-        "appraiser.judge",
-        "record_run_memory",
-        "supervisor.finalise",
-        "save_preparation",
-    ], "the coordination, in the order it happened, with both workers underneath it"
-    assert children["researcher.loop"] == ["web_search", "fetch_url"], (
-        "every tool the Researcher reached nests under the Researcher"
+    assert span_tree(ledger, ctx.run_id) == SUPERVISED_SPAN_TREE, (
+        "one root holding the coordination in the order it happened, with both workers "
+        "underneath it, every tool the Researcher reached nested under the Researcher, and "
+        "nothing at all under the Appraiser"
     )
-    assert children["appraiser.judge"] == [], "the Appraiser performs no research"
-    assert children["supervisor.decide"] == []
-    assert children["supervisor.finalise"] == []
 
     spans = get_spans(ledger, ctx.run_id)
     agents = {span.name for span in spans if span.kind == "agent"}

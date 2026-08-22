@@ -1432,3 +1432,25 @@ tests where useful. Avoid slow local-model or live-search runs during implementa
 existing fake/offline infrastructure for development verification. After implementation,
 perform one concise MCP interaction demonstration showing the full client → server →
 research capability → result/resource flow.
+
+`Title`: Day 6 — tracing must cover the MCP-triggered multi-agent flow
+`User prompt`: Implement and verify the third MCP requirement: ensure tracing covers the
+MCP-triggered multi-agent flow. Before making changes, inspect the current tracing
+architecture, MCP server/client implementation, service entry points, and existing trace
+storage/rendering. Explain whether the existing tracing already covers the MCP flow or
+whether a minimal extension is required. Core requirements: a request initiated through MCP
+must produce the same complete agent trace as requests coming through existing entry points.
+The full research workflow should remain observable: MCP client → MCP server → service layer
+→ Supervisor → Researcher → tools → Appraiser → finalisation/storage. Existing parent-child
+span relationships must remain correct. Tool calls made during MCP-triggered runs must
+continue to appear under the correct agent span. The generated run_id from an MCP request
+must be traceable using the existing trace inspection tools. Do not duplicate tracing logic
+inside the MCP layer if the existing service layer already provides it. Keep MCP as a thin
+interface layer. Only add MCP-specific tracing if there is a real visibility gap that cannot
+be solved by the existing tracing architecture. Verify that Supervisor, Researcher, Appraiser
+and tool spans are recorded with correct parents, that start/end timestamps and
+success/failure states are preserved, that a run created through MCP can be inspected using
+the existing trace renderer, and that no existing CLI/service tracing behavior is broken. Add
+focused tests if needed, using the existing fake/offline infrastructure. Do not work on
+improving console trace visualization, changing the existing multi-agent architecture, adding
+new tracing frameworks, or changing agent prompts or schemas.
